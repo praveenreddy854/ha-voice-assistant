@@ -32,7 +32,7 @@ export async function getHACommandBody(
   });
 
   let response = await client.responses.create({
-    model: "gpt-4.1-nano",
+    model: "gpt-4.1-mini",
     input: JSON.stringify({
       messages: [
         {

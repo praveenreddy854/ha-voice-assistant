@@ -1,5 +1,6 @@
 import express from "express";
 import axios from "axios";
+import cors from "cors";
 import {
   HOME_ASSISTANT_URL,
   HOME_ASSISTANT_TOKEN,
@@ -14,6 +15,7 @@ const port = process.env.PORT || 3005;
 
 // Middleware to parse JSON bodies
 app.use(express.json());
+app.use(cors());
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.get("/", (req, res, next) => {
@@ -140,6 +142,30 @@ app.get("/api/get-speech-token", (req, res, next) => {
       res.status(err?.response?.status || 500).json({
         error: "Error retrieving token",
         details: err.message,
+      });
+    }
+  })();
+});
+
+app.get("/api/get-speech-credentials", (req, res, next) => {
+  (async () => {
+    try {
+      if (!SPEECH_KEY || !SPEECH_REGION) {
+        return res.status(400).json({
+          error: "Azure Speech Service key or region is not configured",
+        });
+      }
+      res.json({
+        speechKey: SPEECH_KEY,
+        speechRegion: SPEECH_REGION,
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error retrieving speech credentials:", err);
+      res.status(500).json({
+        error: "Error retrieving speech credentials",
+        message: err.message,
+        stack: err.stack,
       });
     }
   })();
