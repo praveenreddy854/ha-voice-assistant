@@ -12,12 +12,13 @@ import { Message } from "../types/chat";
 interface SpeechRecognize {
   setRecognizedText: (message: Message) => void;
   setIsListening: React.Dispatch<React.SetStateAction<boolean>>;
+  isListeningForWakeWord: React.RefObject<boolean>;
 }
 
 let recognizer: SpeechRecognizer | undefined;
 
 export const startRecognition = async (props: SpeechRecognize) => {
-  const { setIsListening, setRecognizedText } = props;
+  const { setIsListening, setRecognizedText, isListeningForWakeWord } = props;
 
   const { speechKey, speechRegion } = await getSpeechCredentials();
 
@@ -29,30 +30,59 @@ export const startRecognition = async (props: SpeechRecognize) => {
     return;
   }
 
-  setIsListening(true);
   const speechConfig = SpeechConfig.fromSubscription(speechKey, speechRegion);
   speechConfig.speechRecognitionLanguage = "en-US";
   const audioConfig = AudioConfig.fromDefaultMicrophoneInput();
   recognizer = new SpeechRecognizer(speechConfig, audioConfig);
 
+  setIsListening(true);
+  isListeningForWakeWord.current = true;
+
   recognizer.recognized = async (s, e) => {
-    if (e.result.reason === ResultReason.RecognizedSpeech) {
-      setRecognizedText({ sender: "user", text: e.result.text });
-    }
+    try {
+      if (e.result.reason === ResultReason.RecognizedSpeech) {
+        console.log("Recognized text:", e.result.text);
+        const text = e.result.text.trim().replace(/\.$/, "");
+        console.log("isListeningForWakeWord:", isListeningForWakeWord.current);
+        console.log("Recognized text:", text);
+        // Check for wake word first
+        if (isListeningForWakeWord.current) {
+          if (
+            text.toLowerCase() === "assistant" ||
+            text.toLowerCase() === "hey assistant"
+          ) {
+            setRecognizedText({ sender: "user", text });
+            isListeningForWakeWord.current = false;
+            return;
+          }
+          // If listening for wake word but didn't detect it, return early
+          return;
+        }
 
-    // Check intent of the recognized text
-    const intent = await getIntent(e.result.text);
+        if (text.toLowerCase() === "stop" || text.toLowerCase() === "stop it") {
+          isListeningForWakeWord.current = true;
+          setRecognizedText({ sender: "user", text: "Stop" });
+          return;
+        }
 
-    if (intent === Intent.HACommand) {
-      // Handle Home Assistant command
-      const result = await postHaCommand(e.result.text);
-      setRecognizedText({
-        sender: "assistant",
-        text: `Command executed: Success: ${result.success}, Message: ${result.message}`,
-      });
-    } else if (intent === Intent.Chat) {
-      // Handle chat intent (if applicable)
-      console.log("Chat intent recognized:", e.result.text);
+        setRecognizedText({ sender: "user", text });
+        // Check intent of the recognized text
+        const intent = await getIntent(text);
+
+        if (intent === Intent.HACommand) {
+          // Handle Home Assistant command
+          const result = await postHaCommand(text);
+          setRecognizedText({
+            sender: "assistant",
+            text: `Command executed: Success: ${result.success}, Message: ${result.message}`,
+          });
+        } else if (intent === Intent.Chat) {
+          // Handle chat intent (if applicable)
+          console.log("Chat intent recognized:", e.result.text);
+        }
+      }
+    } catch (error) {
+      console.error("Error recognizing speech:", error);
     }
   };
 

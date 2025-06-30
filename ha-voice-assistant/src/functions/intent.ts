@@ -3,7 +3,7 @@ export enum Intent {
   Chat = "Chat",
 }
 
-export const getIntent = async (text: string): Promise<string> => {
+export const getIntent = async (text: string): Promise<Intent> => {
   try {
     const response = await fetch("http://localhost:3005/api/classifyIntent", {
       method: "POST",
@@ -21,6 +21,6 @@ export const getIntent = async (text: string): Promise<string> => {
     return data.intent as Intent;
   } catch (error) {
     console.error("Error fetching intent:", error);
-    return "unknown";
+    throw error;
   }
 };
