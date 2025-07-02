@@ -17,7 +17,7 @@ interface SpeechRecognize {
 
 let recognizer: SpeechRecognizer | undefined;
 
-export const startRecognition = async (props: SpeechRecognize) => {
+export const startAzureSpeechRecognition = async (props: SpeechRecognize) => {
   const { setIsListening, setRecognizedText, isListeningForWakeWord } = props;
 
   const { speechKey, speechRegion } = await getSpeechCredentials();
@@ -45,19 +45,6 @@ export const startRecognition = async (props: SpeechRecognize) => {
         const text = e.result.text.trim().replace(/\.$/, "");
         console.log("isListeningForWakeWord:", isListeningForWakeWord.current);
         console.log("Recognized text:", text);
-        // Check for wake word first
-        if (isListeningForWakeWord.current) {
-          if (
-            text.toLowerCase() === "assistant" ||
-            text.toLowerCase() === "hey assistant"
-          ) {
-            setRecognizedText({ sender: "user", text });
-            isListeningForWakeWord.current = false;
-            return;
-          }
-          // If listening for wake word but didn't detect it, return early
-          return;
-        }
 
         if (text.toLowerCase() === "stop" || text.toLowerCase() === "stop it") {
           isListeningForWakeWord.current = true;
