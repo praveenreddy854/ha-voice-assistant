@@ -74,13 +74,20 @@ export const startAzureSpeechRecognition = async (props: SpeechRecognize) => {
   };
 
   recognizer.sessionStopped = (s, e) => {
-    setIsListening(false);
-    recognizer?.close();
+    stopRecognition(props);
   };
 
   recognizer.startContinuousRecognitionAsync();
 };
 
-export const stopRecognition = () => {
+export const stopRecognition = (props: SpeechRecognize) => {
+  const { setIsListening, isListeningForWakeWord, setRecognizedText } = props;
+  setRecognizedText({
+    sender: "assistant",
+    text: "Speech recognition stopped. You can now say 'assistant' to start listening again.",
+  });
+  setIsListening(false);
+  isListeningForWakeWord.current = true;
   recognizer?.stopContinuousRecognitionAsync();
+  recognizer?.close();
 };

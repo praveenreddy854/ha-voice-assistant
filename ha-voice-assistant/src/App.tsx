@@ -33,12 +33,17 @@ function App() {
     // to avoid interrupting their session.
     if (!isListeningForWakeWord.current) {
       const timer = setTimeout(() => {
+        console.log("Auto stopping after 1 min of continuous listening");
         handleRecognizedText({
           sender: "assistant",
           text: "Auto stopping after 1 min of continuous listening",
         });
         resetTranscript();
-        stopRecognition();
+        stopRecognition({
+          setRecognizedText: handleRecognizedText,
+          setIsListening,
+          isListeningForWakeWord,
+        });
         startWakeWordListening();
         isListeningForWakeWord.current = true;
       }, 60000); // 1 minute
@@ -91,7 +96,11 @@ function App() {
       <button
         onClick={() => {
           SpeechRecognition.abortListening();
-          stopRecognition();
+          stopRecognition({
+            setIsListening,
+            isListeningForWakeWord,
+            setRecognizedText: handleRecognizedText,
+          });
         }}
         disabled={!isListening && !isListeningForWakeWord.current}
         style={{ marginBottom: 16, marginLeft: 16 }}
