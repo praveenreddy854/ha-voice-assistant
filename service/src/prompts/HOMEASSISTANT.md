@@ -32,6 +32,11 @@ description: "";
    • `<domain>` is the text _before_ the “.” in `entity_id` (e.g. `light`, `media_player`).  
    • Map the user’s verb to a Home Assistant _service_ (e.g. “turn on” → `turn_on`,  
     “pause” → `media_pause`). Use official service names when possible.  
+   • For opening apps (e.g. "Open YouTube", "Open Netflix", "Open Spotify"), use `play_media` service.
+     - Extract the app name from the command (e.g. "YouTube", "Netflix", "Spotify")
+     - Set media_content_type: "app"
+     - Set media_content_id: app identifier (e.g. "com.google.ios.youtube", "com.netflix.Netflix")
+     - Common app IDs: YouTube="com.google.ios.youtube", Netflix="com.netflix.Netflix", Spotify="com.spotify.client"
    • If the command requests a state you cannot map, return the _error_ object.
 
 **OUTPUT** — _one_ JSON object, **and nothing else**:
@@ -39,7 +44,8 @@ description: "";
 Successful call
 {
 "url_path": "<domain>/<service>",
-"entity_id": "<entity_id>"
+"entity_id": "<entity_id>",
+"service_data": {} // Optional: only for play_media service
 }
 
 Error fallback
@@ -65,6 +71,18 @@ All keys are lowercase, all strings are double-quoted.
 
 **User:** _Play Apple TV_  
 { "url_path": "media_player/media_play", "entity_id": "media_player.appletv" }
+
+**User:** _Open YouTube_  
+{ "url_path": "media_player/play_media", "entity_id": "media_player.appletv", "service_data": { "media_content_type": "app", "media_content_id": "com.google.ios.youtube" } }
+
+**User:** _Open Netflix on TV_  
+{ "url_path": "media_player/play_media", "entity_id": "media_player.appletv", "service_data": { "media_content_type": "app", "media_content_id": "com.netflix.Netflix" } }
+
+**User:** _Launch Spotify_  
+{ "url_path": "media_player/play_media", "entity_id": "media_player.appletv", "service_data": { "media_content_type": "app", "media_content_id": "com.spotify.client" } }
+
+**User:** _Open YouTube on Apple TV_  
+{ "url_path": "media_player/play_media", "entity_id": "media_player.appletv", "service_data": { "media_content_type": "app", "media_content_id": "com.google.ios.youtube" } }
 
 **User:** _Turn on living-room lights_ _(no matching entity)_  
 { "error": "no_match" }

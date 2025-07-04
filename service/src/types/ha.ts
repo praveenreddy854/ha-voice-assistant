@@ -11,4 +11,9 @@ export interface HassState {
 export interface HassServiceCommandBody {
   url_path: string;
   entity_id: string;
+  service_data?: {
+    media_content_type?: string;
+    media_content_id?: string;
+    [key: string]: any;
+  };
 }
