@@ -36,7 +36,7 @@ export const startAzureSpeechRecognition = async (props: SpeechRecognize) => {
   recognizer = new SpeechRecognizer(speechConfig, audioConfig);
 
   setIsListening(true);
-  isListeningForWakeWord.current = true;
+  isListeningForWakeWord.current = false;
 
   recognizer.recognized = async (s, e) => {
     try {
@@ -62,6 +62,7 @@ export const startAzureSpeechRecognition = async (props: SpeechRecognize) => {
           setRecognizedText({
             sender: "assistant",
             text: `Command executed: Success: ${result.success}, Message: ${result.message}`,
+            messageToAnnounce: result.message,
           });
         } else if (intent === Intent.Chat) {
           // Handle chat intent (if applicable)
@@ -80,7 +81,7 @@ export const startAzureSpeechRecognition = async (props: SpeechRecognize) => {
   recognizer.startContinuousRecognitionAsync();
 };
 
-export const stopRecognition = (props: SpeechRecognize) => {
+export const stopRecognition = (props: SpeechRecognize, callback?: () => void) => {
   const { setIsListening, isListeningForWakeWord, setRecognizedText } = props;
   setRecognizedText({
     sender: "assistant",
@@ -88,6 +89,19 @@ export const stopRecognition = (props: SpeechRecognize) => {
   });
   setIsListening(false);
   isListeningForWakeWord.current = true;
-  recognizer?.stopContinuousRecognitionAsync();
-  recognizer?.close();
+  
+  recognizer?.stopContinuousRecognitionAsync(
+    () => {
+      console.log("Azure Speech recognition stopped successfully");
+      recognizer?.close();
+      recognizer = undefined;
+      callback?.();
+    },
+    (err) => {
+      console.error("Error stopping Azure Speech recognition:", err);
+      recognizer?.close();
+      recognizer = undefined;
+      callback?.();
+    }
+  );
 };
