@@ -11,6 +11,7 @@ import fs from "fs";
 import path from "path";
 import { HassServiceCommandBody, HassState } from "./types/ha";
 import { AzureOpenAI } from "openai";
+import axios from "axios";
 
 const promptCache = new Map();
 const homeAssistantCacheKey = "HOMEASSISTANT";
@@ -62,34 +63,12 @@ async function getHAPrompt(command: string) {
       path.join(__dirname, "prompts", "HOMEASSISTANT.md"),
       "utf8"
     );
+    const deviceStates = await getDeviceStates();
 
-    // Replace placeholders in the prompt with actual values
-    const response = await fetch(`${HOME_ASSISTANT_URL}/api/states`, {
-      headers: {
-        Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    });
-    if (!response.ok) {
-      throw new Error(`Failed to fetch devices: ${response.statusText}`);
-    }
-
-    const states = (await response.json()) as HassState[];
-    const devices: Record<string, HassState[]> = {};
-
-    // Group devices by domain
-    states.forEach((state) => {
-      const [domain, device] = state.entity_id.split(".");
-
-      if (device === "appletv") {
-        if (!devices[domain]) {
-          devices[domain] = [];
-        }
-        devices[domain].push(state);
-      }
-    });
-
-    prompt = prompt.replace("{{{Devices}}}", JSON.stringify(devices, null, 2));
+    prompt = prompt.replace(
+      "{{{Devices}}}",
+      JSON.stringify(deviceStates, null, 2)
+    );
 
     promptCache.set(homeAssistantCacheKey, prompt);
   }
@@ -99,3 +78,57 @@ async function getHAPrompt(command: string) {
     .replace("{{{UserCommand}}}", command);
   return cachedPrompt;
 }
+
+async function getDeviceStates(
+  devicesEntities?: string[]
+): Promise<Record<string, HassState[]>> {
+  // Replace placeholders in the prompt with actual values
+  const response = await axios.get(`${HOME_ASSISTANT_URL}/api/states`, {
+    headers: {
+      Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`Failed to fetch devices: ${response.statusText}`);
+  }
+
+  const states = response.data as HassState[];
+
+  // Create devices object to devices.json
+  // const devicesFilePath = path.join(__dirname, "devices.json");
+  // if (!fs.existsSync(devicesFilePath)) {
+  //   fs.writeFileSync(devicesFilePath, JSON.stringify(states, null, 2));
+  // }
+
+  const devices: Record<string, HassState[]> = {};
+  const knownDevices = await getKnownDevices();
+
+  // Group devices by domain
+  states.forEach((state) => {
+    const [domain, device] = state.entity_id.split(".");
+
+    if (knownDevices.includes(device)) {
+      if (!devices[domain]) {
+        devices[domain] = [];
+      }
+      devices[domain].push(state);
+    }
+  });
+
+  if (devicesEntities) {
+    return Object.keys(devices).reduce((acc, domain) => {
+      acc[domain] = devices[domain].filter((state) =>
+        devicesEntities.includes(state.entity_id)
+      );
+      return acc;
+    }, {} as Record<string, HassState[]>);
+  }
+  return devices;
+}
+
+export const getKnownDevices = async (): Promise<string[]> => {
+  const devices = process.env.HOME_ASSISTANT_DEVICES;
+  return devices ? devices.split(",") : [];
+};

@@ -15,3 +15,5 @@ yarn-error.log*
 # Ignore coverage output
 coverage/
 node_modules/
+
+devices.json

@@ -73,51 +73,29 @@ app.post("/api/postHACommand", (req, res, next) => {
         urlPath = urlPath.substring(1);
       }
 
-      // For Apple TV play_media with app content type, we're opening apps directly
-      if (urlPath === "media_player/play_media" && haBody.entity_id === "media_player.appletv" && haBody.service_data) {
-        console.log("Processing Apple TV app launch request:", haBody.service_data);
-        // App launching should work directly with the app bundle IDs
-        // No additional processing needed for app content type
-      }
-
       // Prepare the request body
       const requestBody: any = { entity_id: haBody.entity_id };
-      
+
       // Add service_data if present (for play_media and other services that need additional data)
       if (haBody.service_data) {
         // For Home Assistant API, merge service_data fields directly at the top level
         Object.assign(requestBody, haBody.service_data);
       }
 
-      console.log("Sending to Home Assistant:", JSON.stringify(requestBody, null, 2));
-      console.log("URL:", `${HOME_ASSISTANT_URL}/api/services/${urlPath}`);
-
-      const haResponse = await fetch(
+      const haResponse = await axios.post(
         `${HOME_ASSISTANT_URL}/api/services/${urlPath}`,
+        requestBody,
         {
-          method: "POST",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
           },
-          body: JSON.stringify(requestBody),
         }
       );
 
-      if (!haResponse.ok) {
-        const errorText = await haResponse.text();
+      if (haResponse.status < 200 || haResponse.status >= 300) {
+        const errorText = haResponse.data;
         console.error("Home Assistant error response:", errorText);
-        
-        // Special handling for play_media failures
-        if (urlPath === "media_player/play_media") {
-          return res.status(400).json({
-            success: false,
-            message: `Unable to play media on ${haBody.entity_id}. This device may not support direct media playback or the content format. Try using basic controls like turn_on, turn_off, or media_play instead.`,
-            error: `Home Assistant error: ${haResponse.status}`
-          });
-        }
-        
-        throw new Error(`Home Assistant returned status: ${haResponse.status} - ${errorText}`);
       }
 
       res.json({
@@ -183,31 +161,38 @@ app.get("/api/check-device-services/:entity_id", (req, res, next) => {
   (async () => {
     try {
       const { entity_id } = req.params;
-      
       // Get device state and attributes
-      const deviceResponse = await fetch(`${HOME_ASSISTANT_URL}/api/states/${entity_id}`, {
-        headers: {
-          Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-      });
+      const deviceResponse = await fetch(
+        `${HOME_ASSISTANT_URL}/api/states/${entity_id}`,
+        {
+          headers: {
+            Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
 
       if (!deviceResponse.ok) {
         throw new Error(`Failed to fetch device: ${deviceResponse.statusText}`);
       }
 
       const deviceState = await deviceResponse.json();
-      
+
       // Get available services for media_player domain
-      const servicesResponse = await fetch(`${HOME_ASSISTANT_URL}/api/services/media_player`, {
-        headers: {
-          Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-      });
+      const servicesResponse = await fetch(
+        `${HOME_ASSISTANT_URL}/api/services/media_player`,
+        {
+          headers: {
+            Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
 
       if (!servicesResponse.ok) {
-        throw new Error(`Failed to fetch services: ${servicesResponse.statusText}`);
+        throw new Error(
+          `Failed to fetch services: ${servicesResponse.statusText}`
+        );
       }
 
       const services = await servicesResponse.json();
@@ -221,6 +206,41 @@ app.get("/api/check-device-services/:entity_id", (req, res, next) => {
       console.error("Error checking device services:", err);
       res.status(500).json({
         error: "Error checking device services",
+        message: err.message,
+      });
+    }
+  })();
+});
+
+// New endpoint to check available notify services
+app.get("/api/check-notify-services", (req, res, next) => {
+  (async () => {
+    try {
+      const servicesResponse = await fetch(
+        `${HOME_ASSISTANT_URL}/api/services/notify`,
+        {
+          headers: {
+            Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      if (!servicesResponse.ok) {
+        throw new Error(
+          `Failed to fetch notify services: ${servicesResponse.statusText}`
+        );
+      }
+
+      const services = await servicesResponse.json();
+      res.json({
+        available_notify_services: services,
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error checking notify services:", err);
+      res.status(500).json({
+        error: "Error checking notify services",
         message: err.message,
       });
     }
