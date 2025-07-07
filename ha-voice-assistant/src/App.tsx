@@ -141,8 +141,11 @@ function App() {
         isListeningForWakeWord.current
       );
       if (
-        finalTranscript.toLocaleLowerCase() === "assistant" ||
-        finalTranscript.toLocaleLowerCase() === "hey assistant"
+        finalTranscript.toLocaleLowerCase().includes("assistant") ||
+        finalTranscript.toLocaleLowerCase().includes("hey assistant") ||
+        finalTranscript.toLocaleLowerCase().includes("hey, assistant") ||
+        finalTranscript.toLocaleLowerCase().includes("ok assistant") ||
+        finalTranscript.toLocaleLowerCase().includes("ok, assistant")
       ) {
         // If the wake word is detected, reset the transcript and start listening for commands
         console.log("Wake word detected:", finalTranscript);
