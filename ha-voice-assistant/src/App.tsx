@@ -12,6 +12,7 @@ import SpeechRecognition, {
 import { synthesizeTextToBuffer } from "./functions/textToSpeech";
 import { USE_AZURE_SPEECH } from "./utils/config";
 import { processRecognizedText } from "./functions/speech";
+import { playChime } from "./functions/chime";
 
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -149,6 +150,7 @@ function App() {
       ) {
         // If the wake word is detected, reset the transcript and start listening for commands
         console.log("Wake word detected:", finalTranscript);
+        playChime(); // Play chime sound
         handleRecognizedText({ sender: "user", text: finalTranscript });
         isListeningForWakeWord.current = false;
         setIsWakeWordMode(false);
