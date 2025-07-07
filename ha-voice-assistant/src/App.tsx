@@ -10,6 +10,8 @@ import SpeechRecognition, {
   useSpeechRecognition,
 } from "react-speech-recognition";
 import { synthesizeTextToBuffer } from "./functions/textToSpeech";
+import { USE_AZURE_SPEECH } from "./utils/config";
+import { processRecognizedText } from "./functions/speech";
 
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -18,7 +20,32 @@ function App() {
   const [countdown, setCountdown] = useState<number | null>(null);
   const isListeningForWakeWord = useRef(false);
 
-  const { transcript, resetTranscript } = useSpeechRecognition();
+  const { finalTranscript, resetTranscript } = useSpeechRecognition();
+
+  const handleRecognizedText = useCallback(async (message: Message) => {
+    setMessages((prevMessages) => [...prevMessages, message]);
+    if (message.sender === "assistant" && message.messageToAnnounce) {
+      const { audioBuffer } = await synthesizeTextToBuffer({
+        text: message.messageToAnnounce,
+      });
+
+      if (!audioBuffer) {
+        console.error("Failed to synthesize text to audio buffer");
+        return;
+      }
+    }
+  }, []);
+
+  const processRecognizedTextCallback = useCallback(
+    async (text: string) => {
+      await processRecognizedText(
+        text,
+        handleRecognizedText,
+        isListeningForWakeWord
+      );
+    },
+    [handleRecognizedText]
+  );
 
   const startWakeWordListening = useCallback(() => {
     console.log("Starting wake word listening...");
@@ -36,9 +63,9 @@ function App() {
   }, [resetTranscript]);
 
   React.useEffect(() => {
-    // Auto-stop after 10 seconds when listening for commands (not wake words)
+    // Auto-stop after 30 seconds when listening for commands (not wake words)
     if (isListening && !isListeningForWakeWord.current) {
-      setCountdown(10);
+      setCountdown(30);
 
       // Update countdown every second
       const countdownInterval = setInterval(() => {
@@ -52,26 +79,42 @@ function App() {
 
       // Auto-stop timer
       const timer = setTimeout(() => {
-        console.log("Auto stopping after 10 seconds of continuous listening");
+        console.log("Auto stopping after 30 seconds of continuous listening");
         setCountdown(null);
         handleRecognizedText({
           sender: "assistant",
-          text: "Auto stopping after 10 seconds of continuous listening",
+          text: "Auto stopping after 30 seconds of continuous listening",
         });
-        resetTranscript();
-        stopRecognition(
-          {
-            setRecognizedText: handleRecognizedText,
-            setIsListening,
-            isListeningForWakeWord,
-          },
-          () => {
-            // Callback executed after Azure SDK is properly stopped
+        if (USE_AZURE_SPEECH) {
+          stopRecognition(
+            {
+              setRecognizedText: handleRecognizedText,
+              setIsListening,
+              isListeningForWakeWord,
+              processRecognizedText: processRecognizedTextCallback,
+            },
+            () => {
+              // Callback executed after Azure SDK is properly stopped
+              console.log("Azure SDK stopped, starting wake word listening...");
+              startWakeWordListening();
+            }
+          );
+        } else {
+          SpeechRecognition.stopListening().then(() => {
+            console.log(
+              "SpeechRecognition stopped, starting wake word listening..."
+            );
+            setIsListening(false);
+            isListeningForWakeWord.current = true;
+            handleRecognizedText({
+              sender: "assistant",
+              text: "Auto stopped listening for commands",
+            });
             console.log("Azure SDK stopped, starting wake word listening...");
             startWakeWordListening();
-          }
-        );
-      }, 60000); // 60 seconds
+          });
+        }
+      }, 30000); // 30 seconds
 
       return () => {
         clearTimeout(timer);
@@ -81,61 +124,57 @@ function App() {
     } else {
       setCountdown(null);
     }
-  }, [isListening, resetTranscript, startWakeWordListening]);
+  }, [
+    isListening,
+    resetTranscript,
+    startWakeWordListening,
+    processRecognizedTextCallback,
+    handleRecognizedText,
+  ]);
 
   React.useEffect(() => {
-    // Clear transcript every 10 seconds when listening for wake words to prevent accumulation
-    if (isWakeWordMode && !isListening) {
-      const timer = setInterval(() => {
-        console.log("Clearing transcript while listening for wake words");
-        resetTranscript();
-      }, 60000); // 60 seconds
-      return () => clearInterval(timer);
-    }
-  }, [isWakeWordMode, isListening, resetTranscript]);
-
-  React.useEffect(() => {
-    if (transcript) {
+    if (finalTranscript) {
       console.log(
         "Transcript received:",
-        transcript,
+        finalTranscript,
         "isListeningForWakeWord:",
         isListeningForWakeWord.current
       );
       if (
-        transcript.toLocaleLowerCase().includes("assistant") ||
-        transcript.toLocaleLowerCase().includes("hey assistant")
+        finalTranscript.toLocaleLowerCase() === "assistant" ||
+        finalTranscript.toLocaleLowerCase() === "hey assistant"
       ) {
         // If the wake word is detected, reset the transcript and start listening for commands
-        console.log("Wake word detected:", transcript);
-        resetTranscript();
-        handleRecognizedText({ sender: "user", text: transcript });
+        console.log("Wake word detected:", finalTranscript);
+        handleRecognizedText({ sender: "user", text: finalTranscript });
         isListeningForWakeWord.current = false;
         setIsWakeWordMode(false);
-        SpeechRecognition.abortListening();
+        setIsListening(true);
+      } else if (isListening) {
+        if (USE_AZURE_SPEECH) {
+          SpeechRecognition.abortListening();
 
-        startAzureSpeechRecognition({
-          setIsListening,
-          setRecognizedText: handleRecognizedText,
-          isListeningForWakeWord,
-        });
+          startAzureSpeechRecognition({
+            setIsListening,
+            setRecognizedText: handleRecognizedText,
+            isListeningForWakeWord,
+            processRecognizedText: processRecognizedTextCallback,
+          });
+        } else {
+          // Process the recognized text directly
+          processRecognizedTextCallback(finalTranscript);
+        }
       }
-    }
-  }, [transcript, resetTranscript]);
 
-  const handleRecognizedText = async (message: Message) => {
-    setMessages((prevMessages) => [...prevMessages, message]);
-    if (message.sender === "assistant" && message.messageToAnnounce) {
-      const { audioBuffer } = await synthesizeTextToBuffer({
-        text: message.messageToAnnounce,
-      });
-
-      if (!audioBuffer) {
-        console.error("Failed to synthesize text to audio buffer");
-        return;
-      }
+      resetTranscript();
     }
-  };
+  }, [
+    finalTranscript,
+    isListening,
+    resetTranscript,
+    handleRecognizedText,
+    processRecognizedTextCallback,
+  ]);
 
   const handleOnStartRecognition = () => {
     startWakeWordListening();
@@ -161,6 +200,7 @@ function App() {
             setIsListening,
             isListeningForWakeWord,
             setRecognizedText: handleRecognizedText,
+            processRecognizedText: processRecognizedTextCallback,
           });
         }}
         disabled={!isListening && !isListeningForWakeWord.current}

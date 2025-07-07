@@ -5,20 +5,24 @@ import {
   ResultReason,
 } from "microsoft-cognitiveservices-speech-sdk";
 import { getSpeechCredentials } from "../utils/config";
-import { getIntent, Intent } from "./intent";
-import { postHaCommand } from "./ha";
 import { Message } from "../types/chat";
 
 interface SpeechRecognize {
   setRecognizedText: (message: Message) => void;
   setIsListening: React.Dispatch<React.SetStateAction<boolean>>;
   isListeningForWakeWord: React.RefObject<boolean>;
+  processRecognizedText: (text: string) => void;
 }
 
 let recognizer: SpeechRecognizer | undefined;
 
 export const startAzureSpeechRecognition = async (props: SpeechRecognize) => {
-  const { setIsListening, setRecognizedText, isListeningForWakeWord } = props;
+  const {
+    setIsListening,
+    setRecognizedText,
+    isListeningForWakeWord,
+    processRecognizedText,
+  } = props;
 
   const { speechKey, speechRegion } = await getSpeechCredentials();
 
@@ -38,7 +42,7 @@ export const startAzureSpeechRecognition = async (props: SpeechRecognize) => {
   setIsListening(true);
   isListeningForWakeWord.current = false;
 
-  recognizer.recognized = async (s, e) => {
+  recognizer.recognized = async (_, e) => {
     try {
       if (e.result.reason === ResultReason.RecognizedSpeech) {
         console.log("Recognized text:", e.result.text);
@@ -46,42 +50,25 @@ export const startAzureSpeechRecognition = async (props: SpeechRecognize) => {
         console.log("isListeningForWakeWord:", isListeningForWakeWord.current);
         console.log("Recognized text:", text);
 
-        if (text.toLowerCase() === "stop" || text.toLowerCase() === "stop it") {
-          isListeningForWakeWord.current = true;
-          setRecognizedText({ sender: "user", text: "Stop" });
-          return;
-        }
-
-        setRecognizedText({ sender: "user", text });
-        // Check intent of the recognized text
-        const intent = await getIntent(text);
-
-        if (intent === Intent.HACommand) {
-          // Handle Home Assistant command
-          const result = await postHaCommand(text);
-          setRecognizedText({
-            sender: "assistant",
-            text: `Command executed: Success: ${result.success}, Message: ${result.message}`,
-            messageToAnnounce: result.message,
-          });
-        } else if (intent === Intent.Chat) {
-          // Handle chat intent (if applicable)
-          console.log("Chat intent recognized:", e.result.text);
-        }
+        // Pass the recognized text to the parent component for processing
+        processRecognizedText(text);
       }
     } catch (error) {
       console.error("Error recognizing speech:", error);
     }
   };
 
-  recognizer.sessionStopped = (s, e) => {
+  recognizer.sessionStopped = () => {
     stopRecognition(props);
   };
 
   recognizer.startContinuousRecognitionAsync();
 };
 
-export const stopRecognition = (props: SpeechRecognize, callback?: () => void) => {
+export const stopRecognition = (
+  props: SpeechRecognize,
+  callback?: () => void
+) => {
   const { setIsListening, isListeningForWakeWord, setRecognizedText } = props;
   setRecognizedText({
     sender: "assistant",
@@ -89,7 +76,7 @@ export const stopRecognition = (props: SpeechRecognize, callback?: () => void) =
   });
   setIsListening(false);
   isListeningForWakeWord.current = true;
-  
+
   recognizer?.stopContinuousRecognitionAsync(
     () => {
       console.log("Azure Speech recognition stopped successfully");

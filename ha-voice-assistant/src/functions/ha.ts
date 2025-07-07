@@ -14,10 +14,9 @@ export async function postHaCommand(command: string): Promise<any> {
     return response.data;
   } catch (error) {
     console.error("Error posting command to Home Assistant:", error);
-    throw new Error(
-      `Failed to post command to Home Assistant: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    );
+    return {
+      success: false,
+      message: error instanceof Error ? error.message : String(error),
+    };
   }
 }
