@@ -1,10 +1,19 @@
+import { Response } from "../types/response";
+
 export enum Intent {
   HACommand = "HACommand",
   Chat = "Chat",
 }
 
-export const getIntent = async (text: string): Promise<Intent> => {
+export const getIntent = async (text: string): Promise<Response<Intent>> => {
   try {
+    if (!text || typeof text !== "string") {
+      return {
+        success: false,
+        errorMessage: "Invalid input text",
+      };
+    }
+
     const response = await fetch("http://localhost:3005/api/classifyIntent", {
       method: "POST",
       headers: {
@@ -18,9 +27,15 @@ export const getIntent = async (text: string): Promise<Intent> => {
     }
 
     const data = await response.json();
-    return data.intent as Intent;
+    return {
+      success: true,
+      data: data.intent as Intent,
+    };
   } catch (error) {
     console.error("Error fetching intent:", error);
-    throw error;
+    return {
+      success: false,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    };
   }
 };
