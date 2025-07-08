@@ -107,19 +107,19 @@ async function getDeviceStates(
 
   // Group devices by domain
   states.forEach((state) => {
-    const [domain, device] = state.entity_id.split(".");
+    const [_, device] = state.entity_id.split(".");
 
     if (knownDevices.includes(device)) {
-      if (!devices[domain]) {
-        devices[domain] = [];
+      if (!devices[device]) {
+        devices[device] = [];
       }
-      devices[domain].push(state);
+      devices[device].push(state);
     }
   });
 
   if (devicesEntities) {
-    return Object.keys(devices).reduce((acc, domain) => {
-      acc[domain] = devices[domain].filter((state) =>
+    return Object.keys(devices).reduce((acc, device) => {
+      acc[device] = devices[device].filter((state) =>
         devicesEntities.includes(state.entity_id)
       );
       return acc;
