@@ -10,6 +10,11 @@ import {
 import { getHACommandBody } from "./ha";
 import { classifyIntent } from "./intent";
 
+// Global declaration for announcement storage
+declare global {
+  var pendingAnnouncement: string | null;
+}
+
 const app = express();
 const port = process.env.PORT || 3005;
 
@@ -266,6 +271,40 @@ app.get("/api/get-speech-credentials", (req, res, next) => {
         error: "Error retrieving speech credentials",
         message: err.message,
         stack: err.stack,
+      });
+    }
+  })();
+});
+
+// Endpoint to check laundry switch status
+app.get("/api/laundry-status", (req, res, next) => {
+  (async () => {
+    try {
+      const entityId = "switch.laundry_switch";
+      const response = await axios.get(
+        `${HOME_ASSISTANT_URL}/api/states/${entityId}`,
+        {
+          headers: {
+            Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      const state = response.data as any;
+      res.json({
+        entity_id: entityId,
+        state: state.state,
+        last_changed: state.last_changed,
+        last_updated: state.last_updated,
+        attributes: state.attributes,
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error checking laundry status:", err);
+      res.status(500).json({
+        error: "Error checking laundry status",
+        message: err.message,
       });
     }
   })();

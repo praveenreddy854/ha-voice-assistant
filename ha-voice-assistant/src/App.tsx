@@ -13,6 +13,7 @@ import { synthesizeTextToBuffer } from "./functions/textToSpeech";
 import { USE_AZURE_SPEECH } from "./utils/config";
 import { processRecognizedText } from "./functions/speech";
 import { playChime } from "./functions/chime";
+import LaundryMonitor from "./components/LaundryMonitor";
 
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -36,6 +37,15 @@ function App() {
       }
     }
   }, []);
+
+  const handleLaundryAnnouncement = useCallback(async (message: string) => {
+    const assistantMessage: Message = {
+      sender: "assistant",
+      text: message,
+      messageToAnnounce: message,
+    };
+    await handleRecognizedText(assistantMessage);
+  }, [handleRecognizedText]);
 
   const processRecognizedTextCallback = useCallback(
     async (text: string) => {
@@ -223,6 +233,13 @@ function App() {
         </div>
       )}
       <Chat messages={messages} />
+      
+      <div style={{ marginTop: '30px', borderTop: '2px solid #e0e0e0', paddingTop: '20px' }}>
+        <h2 style={{ marginBottom: '20px', color: '#333', fontSize: '24px' }}>System Monitors</h2>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '20px' }}>
+          <LaundryMonitor onAnnouncement={handleLaundryAnnouncement} />
+        </div>
+      </div>
     </div>
   );
 }
