@@ -6,6 +6,7 @@ import {
   HOME_ASSISTANT_TOKEN,
   SPEECH_KEY,
   SPEECH_REGION,
+  VACUUM_CLEANER_ENTITY_ID,
 } from "./config";
 import { getHACommandBody } from "./ha";
 import { classifyIntent } from "./intent";
@@ -304,6 +305,40 @@ app.get("/api/laundry-status", (req, res, next) => {
       console.error("Error checking laundry status:", err);
       res.status(500).json({
         error: "Error checking laundry status",
+        message: err.message,
+      });
+    }
+  })();
+});
+
+// Endpoint to check vacuum status
+app.get("/api/vacuum-status", (req, res, next) => {
+  (async () => {
+    try {
+      const entityId = VACUUM_CLEANER_ENTITY_ID;
+      const response = await axios.get(
+        `${HOME_ASSISTANT_URL}/api/states/${entityId}`,
+        {
+          headers: {
+            Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      const state = response.data as any;
+      res.json({
+        entity_id: entityId,
+        state: state.state,
+        last_changed: state.last_changed,
+        last_updated: state.last_updated,
+        attributes: state.attributes,
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error checking vacuum status:", err);
+      res.status(500).json({
+        error: "Error checking vacuum status",
         message: err.message,
       });
     }
