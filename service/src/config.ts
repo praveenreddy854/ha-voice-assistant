@@ -24,3 +24,5 @@ export const SPEECH_REGION = process.env.AZURE_SPEECH_REGION || "eastus";
 export const HOME_ASSISTANT_URL =
   process.env.HOME_ASSISTANT_URL || "http://homeassistant.local:8123";
 export const HOME_ASSISTANT_TOKEN = process.env.HOME_ASSISTANT_TOKEN;
+
+export const VACUUM_CLEANER_ENTITY_ID = process.env.VACUUM_CLEANER_ENTITY_ID;

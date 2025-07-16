@@ -1,7 +1,7 @@
 import axios from "axios";
 
 // Define constants for Azure OpenAI API
-export const USE_AZURE_SPEECH = false;
+export const USE_AZURE_SPEECH = true;
 
 export const getSpeechCredentials = async () => {
   try {
