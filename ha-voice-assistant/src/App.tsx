@@ -13,19 +13,46 @@ import { synthesizeTextToBuffer } from "./functions/textToSpeech";
 import { USE_AZURE_SPEECH } from "./utils/config";
 import { processRecognizedText } from "./functions/speech";
 import { playChime } from "./functions/chime";
-import { LaundryMonitor, VacuumMonitor } from "./skills";
+import { LaundryMonitor, VacuumMonitor, ReminderManager } from "./skills";
+
+declare global {
+  interface Window {
+    addReminderToManager?: (reminder: any) => void;
+  }
+}
 
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isListening, setIsListening] = useState(false);
   const [isWakeWordMode, setIsWakeWordMode] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
+  const [voiceReminders, setVoiceReminders] = useState<any[]>([]);
+  const [allReminders, setAllReminders] = useState<any[]>([]);
   const isListeningForWakeWord = useRef(false);
 
   const { finalTranscript, resetTranscript } = useSpeechRecognition();
 
   const handleRecognizedText = useCallback(async (message: Message) => {
     setMessages((prevMessages) => [...prevMessages, message]);
+    
+    // Handle voice-created reminders
+    if (message.reminderData) {
+      // Convert service reminder format to local format
+      const reminder = {
+        ...message.reminderData,
+        dueDate: new Date(message.reminderData.dueDate),
+        createdAt: new Date(message.reminderData.createdAt),
+        updatedAt: new Date(message.reminderData.updatedAt),
+      };
+      
+      // Add directly to ReminderManager
+      if (window.addReminderToManager) {
+        window.addReminderToManager(reminder);
+      }
+      
+      setVoiceReminders((prev) => [...prev, message.reminderData]);
+    }
+    
     if (message.sender === "assistant" && message.messageToAnnounce) {
       const { audioBuffer } = await synthesizeTextToBuffer({
         text: message.messageToAnnounce,
@@ -50,15 +77,20 @@ function App() {
     [handleRecognizedText]
   );
 
+  const handleRemindersChange = useCallback((reminders: any[]) => {
+    setAllReminders(reminders);
+  }, []);
+
   const processRecognizedTextCallback = useCallback(
     async (text: string) => {
       await processRecognizedText(
         text,
         handleRecognizedText,
-        isListeningForWakeWord
+        isListeningForWakeWord,
+        allReminders
       );
     },
-    [handleRecognizedText]
+    [handleRecognizedText, allReminders]
   );
 
   const startWakeWordListening = useCallback(() => {
@@ -245,7 +277,7 @@ function App() {
         }}
       >
         <h2 style={{ marginBottom: "20px", color: "#333", fontSize: "24px" }}>
-          System Monitors
+          Smart Home Dashboard
         </h2>
         <div
           style={{
@@ -256,6 +288,10 @@ function App() {
         >
           <LaundryMonitor onAnnouncement={handleAnnouncement} />
           <VacuumMonitor onAnnouncement={handleAnnouncement} />
+          <ReminderManager 
+            onAnnouncement={handleAnnouncement} 
+            onRemindersChange={handleRemindersChange}
+          />
         </div>
       </div>
     </div>

@@ -9,7 +9,7 @@ export const API_KEY = process.env.AZURE_OPENAI_API_KEY;
 
 export const COMPLETIONS_URL = process.env.AZURE_OPENAI_COMPLETION_URL;
 
-export const OPEN_AI_BASE_URL = process.env.OPENAI_BASE_URL;
+export const OPEN_AI_BASE_URL = process.env.AZURE_OPENAI_ENDPOINT;
 export const AZURE_OPENAI_API_DEPLOYMENT_NAME =
   process.env.AZURE_OPENAI_API_DEPLOYMENT_NAME;
 

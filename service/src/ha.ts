@@ -1,10 +1,9 @@
 import {
   API_KEY,
-  COMPLETIONS_URL,
+  OPENAI_RESPONSES_API_VERSION,
   HOME_ASSISTANT_URL,
   HOME_ASSISTANT_TOKEN,
   OPEN_AI_BASE_URL,
-  OPENAI_RESPONSES_API_VERSION,
   AZURE_OPENAI_API_DEPLOYMENT_NAME,
 } from "./config";
 import fs from "fs";
@@ -19,12 +18,11 @@ const homeAssistantCacheKey = "HOMEASSISTANT";
 export async function getHACommandBody(
   command: string
 ): Promise<HassServiceCommandBody> {
-  if (!COMPLETIONS_URL || !API_KEY) {
+  if (!OPEN_AI_BASE_URL || !API_KEY) {
     throw new Error("Configuration missing required values");
   }
   const prompt = await getHAPrompt(command);
 
-  fs.writeFileSync("temp.log", prompt);
   // Make LLM call to get the command body
   const client = new AzureOpenAI({
     baseURL: OPEN_AI_BASE_URL,
@@ -33,7 +31,7 @@ export async function getHACommandBody(
   });
 
   let response = await client.responses.create({
-    model: "gpt-4.1-mini",
+    model: AZURE_OPENAI_API_DEPLOYMENT_NAME,
     input: JSON.stringify({
       messages: [
         {
@@ -48,13 +46,15 @@ export async function getHACommandBody(
 
   while (response.status === "queued" || response.status === "in_progress") {
     console.log(`Current status: ${response.status}`);
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 50));
     response = await client.responses.retrieve(response.id);
   }
-
-  console.log(response);
-
-  return JSON.parse(response.output_text);
+  try {
+    return JSON.parse(response.output_text) as HassServiceCommandBody;
+  } catch (error) {
+    console.error("Failed to parse response:", error);
+    throw new Error("Invalid response format from AI model");
+  }
 }
 
 async function getHAPrompt(command: string) {

@@ -1,7 +1,6 @@
 import fs from "fs";
 import path from "path";
 import {
-  COMPLETIONS_URL,
   API_KEY,
   OPEN_AI_BASE_URL,
   AZURE_OPENAI_API_DEPLOYMENT_NAME,
@@ -13,8 +12,7 @@ const promptCache = new Map();
 const intentCacheKey = "INTENT";
 
 export async function classifyIntent(userPrompt: string) {
-  console.log(`Completions, api key ${COMPLETIONS_URL}, ${API_KEY}`);
-  if (!COMPLETIONS_URL || !API_KEY) {
+  if (!API_KEY) {
     throw new Error("Configuration missing required values");
   }
 

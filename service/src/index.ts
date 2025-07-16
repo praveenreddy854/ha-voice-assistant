@@ -1,6 +1,8 @@
 import express from "express";
 import axios from "axios";
 import cors from "cors";
+import fs from "fs";
+import path from "path";
 import {
   HOME_ASSISTANT_URL,
   HOME_ASSISTANT_TOKEN,
@@ -10,6 +12,7 @@ import {
 } from "./config";
 import { getHACommandBody } from "./ha";
 import { classifyIntent } from "./intent";
+import { processReminderRequest } from "./reminder";
 
 // Global declaration for announcement storage
 declare global {
@@ -18,6 +21,19 @@ declare global {
 
 const app = express();
 const port = process.env.PORT || 3005;
+
+// File paths for storage
+const REMINDERS_FILE = path.join(__dirname, "../data/reminders.json");
+const PROCESSED_REMINDERS_FILE = path.join(
+  __dirname,
+  "../data/processed_reminders.json"
+);
+
+// Ensure data directory exists
+const DATA_DIR = path.join(__dirname, "../data");
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
 
 // Middleware to parse JSON bodies
 app.use(express.json());
@@ -341,6 +357,336 @@ app.get("/api/vacuum-status", (req, res, next) => {
         error: "Error checking vacuum status",
         message: err.message,
       });
+    }
+  })();
+});
+
+// Unified endpoint to process all reminder requests (CREATE, LIST, QUERY)
+app.post("/api/processReminder", (req, res, next) => {
+  (async () => {
+    try {
+      const { userPrompt, reminders } = req.body;
+      if (!userPrompt) {
+        return res.status(400).json({ error: "User prompt is required" });
+      }
+      if (!reminders || !Array.isArray(reminders)) {
+        return res.status(400).json({ error: "Reminders array is required" });
+      }
+
+      const reminderData = await processReminderRequest(userPrompt, reminders);
+
+      if (reminderData.action === "CREATE") {
+        // Handle reminder creation
+        const reminderId =
+          Date.now().toString(36) + Math.random().toString(36).substring(2);
+
+        const reminder = {
+          id: reminderId,
+          ...reminderData,
+          status: "active",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          notificationSent: false,
+        };
+
+        res.json({
+          success: true,
+          action: "CREATE",
+          reminder,
+          message: `Reminder created: ${reminder.title} at ${new Date(
+            reminder.dueDate
+          ).toLocaleString()}`,
+        });
+
+        console.log("Reminder created:", reminder);
+      } else if (reminderData.action === "LIST") {
+        // Handle reminder listing with intelligent filtering
+        let filteredReminders = reminders.filter((r) => r.status === "active");
+        const now = new Date();
+
+        // Handle intelligent prioritization from LLM
+        if (reminderData.prioritizeOverdue) {
+          const overdueReminders = filteredReminders.filter(
+            (r) => new Date(r.dueDate) < now
+          );
+          const upcomingReminders = filteredReminders.filter(
+            (r) => new Date(r.dueDate) >= now
+          );
+
+          overdueReminders.sort(
+            (a: any, b: any) =>
+              new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime()
+          );
+
+          upcomingReminders.sort((a: any, b: any) => {
+            const priorityOrder: { [key: string]: number } = {
+              urgent: 0,
+              high: 1,
+              medium: 2,
+              low: 3,
+            };
+            const aPriority = priorityOrder[a.priority] || 2;
+            const bPriority = priorityOrder[b.priority] || 2;
+
+            if (aPriority !== bPriority) {
+              return aPriority - bPriority;
+            }
+            return (
+              new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime()
+            );
+          });
+
+          filteredReminders = [...overdueReminders, ...upcomingReminders];
+        } else {
+          filteredReminders.sort((a: any, b: any) => {
+            const priorityOrder: { [key: string]: number } = {
+              urgent: 0,
+              high: 1,
+              medium: 2,
+              low: 3,
+            };
+            const aPriority = priorityOrder[a.priority] || 2;
+            const bPriority = priorityOrder[b.priority] || 2;
+
+            if (aPriority !== bPriority) {
+              return aPriority - bPriority;
+            }
+            return (
+              new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime()
+            );
+          });
+        }
+
+        if (reminderData.limit) {
+          filteredReminders = filteredReminders.slice(0, reminderData.limit);
+        }
+
+        let message = "";
+        if (reminderData.intelligentSuggestion) {
+          message = reminderData.intelligentSuggestion;
+          if (filteredReminders.length > 0) {
+            message += " ";
+            filteredReminders.forEach((reminder, index) => {
+              const dueDate = new Date(reminder.dueDate);
+              const isOverdue = dueDate < now;
+              const timeStr =
+                dueDate.toLocaleDateString() +
+                " at " +
+                dueDate.toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                });
+              const overdueTag = isOverdue ? " (OVERDUE)" : "";
+              message += `${index + 1}. ${
+                reminder.title
+              } - ${timeStr}${overdueTag}. `;
+            });
+          }
+        } else {
+          if (filteredReminders.length === 0) {
+            message = "You have no active reminders.";
+          } else {
+            const count = reminderData.limit
+              ? `top ${Math.min(reminderData.limit, filteredReminders.length)}`
+              : "all";
+            message = `Here are your ${count} reminders: `;
+
+            filteredReminders.forEach((reminder, index) => {
+              const dueDate = new Date(reminder.dueDate);
+              const timeStr =
+                dueDate.toLocaleDateString() +
+                " at " +
+                dueDate.toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                });
+              message += `${index + 1}. ${reminder.title} - ${timeStr}. `;
+            });
+          }
+        }
+
+        res.json({
+          success: true,
+          action: "LIST",
+          reminders: filteredReminders,
+          message,
+        });
+      } else if (reminderData.action === "QUERY") {
+        // Handle reminder queries with filtering
+        let filteredReminders = reminders.filter((r) => r.status === "active");
+
+        if (reminderData.category) {
+          filteredReminders = filteredReminders.filter(
+            (r) => r.category === reminderData.category
+          );
+        }
+
+        if (reminderData.dateFilter) {
+          const today = new Date();
+          const tomorrow = new Date(today);
+          tomorrow.setDate(tomorrow.getDate() + 1);
+
+          if (reminderData.dateFilter === "tomorrow") {
+            filteredReminders = filteredReminders.filter((r) => {
+              const reminderDate = new Date(r.dueDate);
+              return reminderDate.toDateString() === tomorrow.toDateString();
+            });
+          }
+        }
+
+        let message = "";
+        if (reminderData.intelligentSuggestion) {
+          message = reminderData.intelligentSuggestion;
+          if (filteredReminders.length > 0) {
+            message += " ";
+            filteredReminders.forEach((reminder, index) => {
+              const dueDate = new Date(reminder.dueDate);
+              const now = new Date();
+              const isOverdue = dueDate < now;
+              const timeStr =
+                dueDate.toLocaleDateString() +
+                " at " +
+                dueDate.toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                });
+              const overdueTag = isOverdue ? " (OVERDUE)" : "";
+              message += `${index + 1}. ${
+                reminder.title
+              } - ${timeStr}${overdueTag}. `;
+            });
+          }
+        } else {
+          if (filteredReminders.length === 0) {
+            if (reminderData.category) {
+              message = `You have no ${reminderData.category} reminders.`;
+            } else if (reminderData.dateFilter) {
+              message = `You have no reminders for ${reminderData.dateFilter}.`;
+            } else {
+              message = "No reminders found matching your criteria.";
+            }
+          } else {
+            if (reminderData.category) {
+              message = `You have ${filteredReminders.length} ${
+                reminderData.category
+              } reminder${filteredReminders.length > 1 ? "s" : ""}: `;
+            } else {
+              message = `Found ${filteredReminders.length} reminder${
+                filteredReminders.length > 1 ? "s" : ""
+              }: `;
+            }
+
+            filteredReminders.forEach((reminder, index) => {
+              const dueDate = new Date(reminder.dueDate);
+              const timeStr =
+                dueDate.toLocaleDateString() +
+                " at " +
+                dueDate.toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                });
+              message += `${index + 1}. ${reminder.title} - ${timeStr}. `;
+            });
+          }
+        }
+
+        res.json({
+          success: true,
+          action: "QUERY",
+          reminders: filteredReminders,
+          message,
+        });
+      }
+
+      console.log("Reminder processed:", reminderData);
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error processing reminder:", err);
+      res.status(500).json({
+        error: "Error processing reminder",
+        message: err.message,
+        stack: err.stack,
+      });
+    }
+  })();
+});
+
+// Endpoint to read reminders from JSON file
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.get("/api/reminders", (req, res, next) => {
+  try {
+    if (fs.existsSync(REMINDERS_FILE)) {
+      const data = fs.readFileSync(REMINDERS_FILE, "utf8");
+      const reminders = JSON.parse(data);
+      res.json(reminders);
+    } else {
+      res.json([]);
+    }
+  } catch (error) {
+    console.error("Error reading reminders:", error);
+    res.status(500).json({ error: "Failed to read reminders" });
+  }
+});
+
+// Endpoint to write reminders to JSON file
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.post("/api/reminders", (req, res, next) => {
+  (async () => {
+    try {
+      const { reminders } = req.body;
+      if (!Array.isArray(reminders)) {
+        return res.status(400).json({ error: "Reminders must be an array" });
+      }
+
+      fs.writeFileSync(REMINDERS_FILE, JSON.stringify(reminders, null, 2));
+      res.json({ success: true, message: "Reminders saved successfully" });
+    } catch (error) {
+      console.error("Error writing reminders:", error);
+      res.status(500).json({ error: "Failed to save reminders" });
+    }
+  })();
+});
+
+// Endpoint to read processed reminders from JSON file
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.get("/api/processed-reminders", (req, res, next) => {
+  try {
+    if (fs.existsSync(PROCESSED_REMINDERS_FILE)) {
+      const data = fs.readFileSync(PROCESSED_REMINDERS_FILE, "utf8");
+      const processedReminders = JSON.parse(data);
+      res.json(processedReminders);
+    } else {
+      res.json([]);
+    }
+  } catch (error) {
+    console.error("Error reading processed reminders:", error);
+    res.status(500).json({ error: "Failed to read processed reminders" });
+  }
+});
+
+// Endpoint to write processed reminders to JSON file
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.post("/api/processed-reminders", (req, res, next) => {
+  (async () => {
+    try {
+      const { processedReminders } = req.body;
+      if (!Array.isArray(processedReminders)) {
+        return res
+          .status(400)
+          .json({ error: "Processed reminders must be an array" });
+      }
+
+      fs.writeFileSync(
+        PROCESSED_REMINDERS_FILE,
+        JSON.stringify(processedReminders, null, 2)
+      );
+      res.json({
+        success: true,
+        message: "Processed reminders saved successfully",
+      });
+    } catch (error) {
+      console.error("Error writing processed reminders:", error);
+      res.status(500).json({ error: "Failed to save processed reminders" });
     }
   })();
 });
