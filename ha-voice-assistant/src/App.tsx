@@ -13,8 +13,7 @@ import { synthesizeTextToBuffer } from "./functions/textToSpeech";
 import { USE_AZURE_SPEECH } from "./utils/config";
 import { processRecognizedText } from "./functions/speech";
 import { playChime } from "./functions/chime";
-import LaundryMonitor from "./components/LaundryMonitor";
-import VacuumMonitor from "./components/VacuumMonitor";
+import { LaundryMonitor, VacuumMonitor } from "./skills";
 
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
