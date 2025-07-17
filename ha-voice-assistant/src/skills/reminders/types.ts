@@ -45,4 +45,5 @@ export interface ReminderManagerProps {
   voiceReminders?: Reminder[];
   onRemindersChange?: (reminders: Reminder[]) => void;
   onAddReminder?: (reminder: Reminder) => void;
+  enabled?: boolean;
 }

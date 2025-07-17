@@ -10,9 +10,10 @@ interface LaundryStatus {
 
 interface LaundryMonitorProps {
   onAnnouncement?: (message: string) => void;
+  enabled?: boolean;
 }
 
-const LaundryMonitor: React.FC<LaundryMonitorProps> = ({ onAnnouncement }) => {
+const LaundryMonitor: React.FC<LaundryMonitorProps> = ({ onAnnouncement, enabled = true }) => {
   const [laundryStatus, setLaundryStatus] = useState<LaundryStatus | null>(
     null
   );
@@ -28,21 +29,19 @@ const LaundryMonitor: React.FC<LaundryMonitorProps> = ({ onAnnouncement }) => {
   const CHECK_INTERVAL_MS = 30000; // 30 seconds
 
   useEffect(() => {
-    // Start monitoring automatically when component mounts
-    startMonitoring();
+    if (enabled) {
+      // Start monitoring when enabled
+      startMonitoring();
+    } else {
+      // Stop monitoring when disabled
+      stopMonitoring();
+    }
 
     return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-      }
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-      }
-      if (laundryTimerRef.current) {
-        clearTimeout(laundryTimerRef.current);
-      }
+      // Cleanup on unmount
+      stopMonitoring();
     };
-  }, []);
+  }, [enabled]);
 
   const fetchLaundryStatus = async (): Promise<LaundryStatus | null> => {
     try {
@@ -125,7 +124,7 @@ const LaundryMonitor: React.FC<LaundryMonitorProps> = ({ onAnnouncement }) => {
   };
 
   const startMonitoring = () => {
-    if (isMonitoring) return;
+    if (isMonitoring || !enabled) return;
 
     setIsMonitoring(true);
     setError(null);
@@ -137,6 +136,29 @@ const LaundryMonitor: React.FC<LaundryMonitorProps> = ({ onAnnouncement }) => {
     intervalRef.current = setInterval(checkLaundryState, CHECK_INTERVAL_MS);
 
     console.log("Laundry monitoring started");
+  };
+
+  const stopMonitoring = () => {
+    if (!isMonitoring) return;
+
+    setIsMonitoring(false);
+    
+    // Clear all intervals and timers
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    if (laundryTimerRef.current) {
+      clearTimeout(laundryTimerRef.current);
+      laundryTimerRef.current = null;
+    }
+    
+    setTimeRemaining(null);
+    console.log("Laundry monitoring stopped");
   };
 
   const formatTime = (ms: number): string => {

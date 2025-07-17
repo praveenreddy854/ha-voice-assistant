@@ -9,63 +9,13 @@ import {
 } from './utils';
 import { saveReminders, loadReminders, saveProcessedReminders, loadProcessedReminders } from './storage';
 
-const ReminderManager: React.FC<ReminderManagerProps> = ({ onAnnouncement, onRemindersChange }) => {
+const ReminderManager: React.FC<ReminderManagerProps> = ({ onAnnouncement, onRemindersChange, enabled = true }) => {
   const [reminders, setReminders] = useState<Reminder[]>([]);
 
   const checkIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const processedRemindersRef = useRef<Set<string>>(new Set());
 
   const CHECK_INTERVAL_MS = 30000; // Check every 30 seconds
-
-  useEffect(() => {
-    const loadInitialData = async () => {
-      try {
-        const loaded = await loadReminders();
-        setReminders(loaded);
-        
-        // Load processed reminders from API
-        processedRemindersRef.current = await loadProcessedReminders();
-        
-        startReminderChecking();
-      } catch (error) {
-        console.error('Failed to load initial data:', error);
-      }
-    };
-    
-    loadInitialData();
-
-    return () => {
-      if (checkIntervalRef.current) {
-        clearInterval(checkIntervalRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    const saveRemindersAsync = async () => {
-      try {
-        await saveReminders(reminders);
-        // Notify parent component of reminder changes
-        if (onRemindersChange) {
-          onRemindersChange(reminders);
-        }
-      } catch (error) {
-        console.error('Failed to save reminders:', error);
-      }
-    };
-    
-    saveRemindersAsync();
-  }, [reminders, onRemindersChange]);
-
-  // Expose addReminder function globally so it can be called from voice processing
-  React.useEffect(() => {
-    window.addReminderToManager = addReminder;
-  }, []);
-
-  const startReminderChecking = useCallback(() => {
-    checkReminders();
-    checkIntervalRef.current = setInterval(checkReminders, CHECK_INTERVAL_MS);
-  }, []);
 
   const checkReminders = useCallback(() => {
     setReminders(currentReminders => {
@@ -120,6 +70,79 @@ const ReminderManager: React.FC<ReminderManagerProps> = ({ onAnnouncement, onRem
       return hasChanges ? updatedReminders : currentReminders;
     });
   }, [onAnnouncement]);
+
+  const startReminderChecking = useCallback(() => {
+    if (!enabled) return;
+    
+    // Stop any existing interval first
+    if (checkIntervalRef.current) {
+      clearInterval(checkIntervalRef.current);
+    }
+    
+    checkReminders();
+    checkIntervalRef.current = setInterval(checkReminders, CHECK_INTERVAL_MS);
+  }, [enabled, checkReminders]);
+
+  const stopReminderChecking = useCallback(() => {
+    if (checkIntervalRef.current) {
+      clearInterval(checkIntervalRef.current);
+      checkIntervalRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    const loadInitialData = async () => {
+      try {
+        const loaded = await loadReminders();
+        setReminders(loaded);
+        
+        // Load processed reminders from API
+        processedRemindersRef.current = await loadProcessedReminders();
+        
+        if (enabled) {
+          startReminderChecking();
+        }
+      } catch (error) {
+        console.error('Failed to load initial data:', error);
+      }
+    };
+    
+    loadInitialData();
+
+    return () => {
+      stopReminderChecking();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (enabled) {
+      startReminderChecking();
+    } else {
+      stopReminderChecking();
+    }
+  }, [enabled, startReminderChecking, stopReminderChecking]);
+
+  useEffect(() => {
+    const saveRemindersAsync = async () => {
+      try {
+        await saveReminders(reminders);
+        // Notify parent component of reminder changes
+        if (onRemindersChange) {
+          onRemindersChange(reminders);
+        }
+      } catch (error) {
+        console.error('Failed to save reminders:', error);
+      }
+    };
+    
+    saveRemindersAsync();
+  }, [reminders, onRemindersChange]);
+
+  // Expose addReminder function globally so it can be called from voice processing
+  React.useEffect(() => {
+    window.addReminderToManager = enabled ? addReminder : undefined;
+  }, [enabled]);
+
 
   // Function to add reminders (for future voice integration)
   const addReminder = (reminder: Reminder) => {

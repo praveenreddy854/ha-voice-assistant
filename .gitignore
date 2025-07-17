@@ -17,4 +17,4 @@ coverage/
 node_modules/
 
 devices.json
-reminders.json
+generated_data/

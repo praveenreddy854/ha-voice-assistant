@@ -1,4 +1,4 @@
-import React, { useRef, useState, useCallback } from "react";
+import React, { useRef, useState, useCallback, useEffect } from "react";
 import "./App.css";
 import {
   startAzureSpeechRecognition,
@@ -14,6 +14,14 @@ import { USE_AZURE_SPEECH } from "./utils/config";
 import { processRecognizedText } from "./functions/speech";
 import { playChime } from "./functions/chime";
 import { LaundryMonitor, VacuumMonitor, ReminderManager } from "./skills";
+import SkillToggles from "./components/SkillToggles";
+import SkillWrapper from "./components/SkillWrapper";
+import { 
+  SkillToggleState, 
+  loadSkillToggleState, 
+  saveSkillToggleState, 
+  isSkillEnabled 
+} from "./utils/skillToggle";
 
 declare global {
   interface Window {
@@ -27,9 +35,22 @@ function App() {
   const [isWakeWordMode, setIsWakeWordMode] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [allReminders, setAllReminders] = useState<any[]>([]);
+  const [skillState, setSkillState] = useState<SkillToggleState>(loadSkillToggleState());
   const isListeningForWakeWord = useRef(false);
 
   const { finalTranscript, resetTranscript } = useSpeechRecognition();
+
+  useEffect(() => {
+    saveSkillToggleState(skillState);
+  }, [skillState]);
+
+  const handleToggleGlobal = useCallback((enabled: boolean) => {
+    setSkillState(prev => ({ ...prev, globalEnabled: enabled }));
+  }, []);
+
+  const handleToggleSkill = useCallback((skill: keyof Omit<SkillToggleState, 'globalEnabled'>, enabled: boolean) => {
+    setSkillState(prev => ({ ...prev, [skill]: enabled }));
+  }, []);
 
   const handleRecognizedText = useCallback(async (message: Message) => {
     setMessages((prevMessages) => [...prevMessages, message]);
@@ -264,7 +285,22 @@ function App() {
           : "Stop Voice Assistant"}
       </button>
       {countdown !== null && (
-        <div style={{ marginBottom: 16, fontSize: 18, fontWeight: "bold" }}>
+        <div style={{ 
+          marginBottom: 20,
+          padding: '12px 24px',
+          background: 'linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)',
+          border: '2px solid rgba(245, 158, 11, 0.3)',
+          borderRadius: '16px',
+          fontSize: 16,
+          fontWeight: 600,
+          color: '#92400e',
+          boxShadow: '0 4px 12px rgba(245, 158, 11, 0.2)',
+          animation: 'pulse 1s ease-in-out infinite',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '8px'
+        }}>
+          <span style={{ fontSize: '18px' }}>⏱️</span>
           Auto-stop in: {countdown}s
         </div>
       )}
@@ -275,24 +311,76 @@ function App() {
           marginTop: "30px",
           borderTop: "2px solid #e0e0e0",
           paddingTop: "20px",
+          width: "100%",
+          maxWidth: "1200px"
         }}
       >
-        <h2 style={{ marginBottom: "20px", color: "#333", fontSize: "24px" }}>
-          Smart Home Dashboard
+        <h2 style={{ 
+          marginBottom: "30px", 
+          color: "#1e293b", 
+          fontSize: "28px",
+          fontWeight: "700",
+          textAlign: "center",
+          background: "linear-gradient(135deg, #334155 0%, #64748b 100%)",
+          WebkitBackgroundClip: "text",
+          WebkitTextFillColor: "transparent",
+          backgroundClip: "text"
+        }}>
+          🏠 Smart Home Dashboard
         </h2>
+        
+        <SkillToggles
+          skillState={skillState}
+          onToggleGlobal={handleToggleGlobal}
+          onToggleSkill={handleToggleSkill}
+        />
+        
         <div
+          className="dashboard-grid"
           style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
-            gap: "20px",
+            animation: "fadeIn 0.8s ease-out",
+            justifyItems: "stretch"
           }}
         >
-          <LaundryMonitor onAnnouncement={handleAnnouncement} />
-          <VacuumMonitor onAnnouncement={handleAnnouncement} />
-          <ReminderManager
-            onAnnouncement={handleAnnouncement}
-            onRemindersChange={handleRemindersChange}
-          />
+          <SkillWrapper
+            skillName="Laundry Monitor"
+            enabled={skillState.laundryMonitor}
+            globalEnabled={skillState.globalEnabled}
+            onToggle={(enabled) => handleToggleSkill('laundryMonitor', enabled)}
+            description="Monitors laundry machine status"
+          >
+            <LaundryMonitor 
+              onAnnouncement={isSkillEnabled('laundryMonitor', skillState) ? handleAnnouncement : undefined}
+              enabled={isSkillEnabled('laundryMonitor', skillState)}
+            />
+          </SkillWrapper>
+          
+          <SkillWrapper
+            skillName="Vacuum Monitor"
+            enabled={skillState.vacuumMonitor}
+            globalEnabled={skillState.globalEnabled}
+            onToggle={(enabled) => handleToggleSkill('vacuumMonitor', enabled)}
+            description="Monitors vacuum cleaner status"
+          >
+            <VacuumMonitor 
+              onAnnouncement={isSkillEnabled('vacuumMonitor', skillState) ? handleAnnouncement : undefined}
+              enabled={isSkillEnabled('vacuumMonitor', skillState)}
+            />
+          </SkillWrapper>
+          
+          <SkillWrapper
+            skillName="Voice Reminders"
+            enabled={skillState.reminderManager}
+            globalEnabled={skillState.globalEnabled}
+            onToggle={(enabled) => handleToggleSkill('reminderManager', enabled)}
+            description="Voice-controlled reminder system"
+          >
+            <ReminderManager
+              onAnnouncement={isSkillEnabled('reminderManager', skillState) ? handleAnnouncement : undefined}
+              onRemindersChange={handleRemindersChange}
+              enabled={isSkillEnabled('reminderManager', skillState)}
+            />
+          </SkillWrapper>
         </div>
       </div>
     </div>

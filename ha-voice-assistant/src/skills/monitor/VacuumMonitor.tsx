@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback, use } from "react";
 
 interface VacuumStatus {
   entity_id: string;
@@ -10,9 +10,13 @@ interface VacuumStatus {
 
 interface VacuumMonitorProps {
   onAnnouncement?: (message: string) => void;
+  enabled?: boolean;
 }
 
-const VacuumMonitor: React.FC<VacuumMonitorProps> = ({ onAnnouncement }) => {
+const VacuumMonitor: React.FC<VacuumMonitorProps> = ({
+  onAnnouncement,
+  enabled = true,
+}) => {
   const [vacuumStatus, setVacuumStatus] = useState<VacuumStatus | null>(null);
   const [isMonitoring, setIsMonitoring] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -24,41 +28,47 @@ const VacuumMonitor: React.FC<VacuumMonitorProps> = ({ onAnnouncement }) => {
   const CHECK_INTERVAL_MS = 60000 * 60; // Check every hour
   const ANNOUNCEMENT_TIME = 9; // 9 AM
 
-  useEffect(() => {
-    startMonitoring();
-
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
+  const fetchVacuumStatus =
+    useCallback(async (): Promise<VacuumStatus | null> => {
+      try {
+        const response = await fetch("http://localhost:3005/api/vacuum-status");
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+        return data;
+      } catch (error) {
+        console.error("Error fetching vacuum status:", error);
+        setError("Failed to fetch vacuum status");
+        return null;
       }
-      if (timeCheckRef.current) {
-        clearInterval(timeCheckRef.current);
-      }
-    };
-  }, []);
+    }, []);
 
-  const fetchVacuumStatus = async (): Promise<VacuumStatus | null> => {
-    try {
-      const response = await fetch("http://localhost:3005/api/vacuum-status");
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      const data = await response.json();
-      return data;
-    } catch (error) {
-      console.error("Error fetching vacuum status:", error);
-      setError("Failed to fetch vacuum status");
-      return null;
-    }
-  };
-
-  const isDocked = (status: VacuumStatus): boolean => {
+  const isDocked = useCallback((status: VacuumStatus): boolean => {
     return (
       status.state === "docked" || status.attributes?.status === "Charging"
     );
-  };
+  }, []);
 
-  const checkTime = () => {
+  const checkVacuumAndAnnounce = useCallback(
+    async (today: string) => {
+      const status = await fetchVacuumStatus();
+      if (!status) return;
+
+      if (!isDocked(status)) {
+        const message =
+          "The robot vacuum is not docked. It might be stuck somewhere and needs assistance.";
+        console.log(message);
+        if (onAnnouncement) {
+          onAnnouncement(message);
+        }
+        setLastAnnouncementDate(today);
+      }
+    },
+    [fetchVacuumStatus, isDocked, onAnnouncement]
+  );
+
+  const checkTime = useCallback(() => {
     const now = new Date();
     const currentHour = now.getHours();
     const currentMinute = now.getMinutes();
@@ -72,24 +82,9 @@ const VacuumMonitor: React.FC<VacuumMonitorProps> = ({ onAnnouncement }) => {
     ) {
       checkVacuumAndAnnounce(today);
     }
-  };
+  }, [lastAnnouncementDate, checkVacuumAndAnnounce]);
 
-  const checkVacuumAndAnnounce = async (today: string) => {
-    const status = await fetchVacuumStatus();
-    if (!status) return;
-
-    if (!isDocked(status)) {
-      const message =
-        "The robot vacuum is not docked. It might be stuck somewhere and needs assistance.";
-      console.log(message);
-      if (onAnnouncement) {
-        onAnnouncement(message);
-      }
-      setLastAnnouncementDate(today);
-    }
-  };
-
-  const checkVacuumState = async () => {
+  const checkVacuumState = useCallback(async () => {
     const status = await fetchVacuumStatus();
     if (!status) return;
 
@@ -98,10 +93,10 @@ const VacuumMonitor: React.FC<VacuumMonitorProps> = ({ onAnnouncement }) => {
 
     // Check time for 9 AM announcement
     checkTime();
-  };
+  }, [checkTime, fetchVacuumStatus]);
 
-  const startMonitoring = () => {
-    if (isMonitoring) return;
+  const startMonitoring = useCallback(() => {
+    if (isMonitoring || !enabled) return;
 
     setIsMonitoring(true);
     setError(null);
@@ -113,7 +108,40 @@ const VacuumMonitor: React.FC<VacuumMonitorProps> = ({ onAnnouncement }) => {
     intervalRef.current = setInterval(checkVacuumState, CHECK_INTERVAL_MS);
 
     console.log("Vacuum monitoring started");
-  };
+  }, [isMonitoring, enabled, checkVacuumState, CHECK_INTERVAL_MS]);
+
+  const stopMonitoring = useCallback(() => {
+    if (!isMonitoring) return;
+
+    setIsMonitoring(false);
+
+    // Clear all intervals and timers
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    if (timeCheckRef.current) {
+      clearInterval(timeCheckRef.current);
+      timeCheckRef.current = null;
+    }
+
+    console.log("Vacuum monitoring stopped");
+  }, [isMonitoring]);
+
+  useEffect(() => {
+    if (enabled) {
+      // Start monitoring when enabled
+      startMonitoring();
+    } else {
+      // Stop monitoring when disabled
+      stopMonitoring();
+    }
+
+    return () => {
+      // Cleanup on unmount
+      stopMonitoring();
+    };
+  }, [enabled, startMonitoring, stopMonitoring]);
 
   const getStatusDisplay = (
     status: VacuumStatus

@@ -23,10 +23,10 @@ const app = express();
 const port = process.env.PORT || 3005;
 
 // File paths for storage
-const REMINDERS_FILE = path.join(__dirname, "../data/reminders.json");
+const REMINDERS_FILE = path.join(__dirname, "../generated_data/reminders.json");
 const PROCESSED_REMINDERS_FILE = path.join(
   __dirname,
-  "../data/processed_reminders.json"
+  "../generated_data/processed_reminders.json"
 );
 
 // Ensure data directory exists
