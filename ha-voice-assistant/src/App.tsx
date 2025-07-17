@@ -26,7 +26,6 @@ function App() {
   const [isListening, setIsListening] = useState(false);
   const [isWakeWordMode, setIsWakeWordMode] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
-  const [voiceReminders, setVoiceReminders] = useState<any[]>([]);
   const [allReminders, setAllReminders] = useState<any[]>([]);
   const isListeningForWakeWord = useRef(false);
 
@@ -34,7 +33,7 @@ function App() {
 
   const handleRecognizedText = useCallback(async (message: Message) => {
     setMessages((prevMessages) => [...prevMessages, message]);
-    
+
     // Handle voice-created reminders
     if (message.reminderData) {
       // Convert service reminder format to local format
@@ -44,15 +43,13 @@ function App() {
         createdAt: new Date(message.reminderData.createdAt),
         updatedAt: new Date(message.reminderData.updatedAt),
       };
-      
+
       // Add directly to ReminderManager
       if (window.addReminderToManager) {
         window.addReminderToManager(reminder);
       }
-      
-      setVoiceReminders((prev) => [...prev, message.reminderData]);
     }
-    
+
     if (message.sender === "assistant" && message.messageToAnnounce) {
       const { audioBuffer } = await synthesizeTextToBuffer({
         text: message.messageToAnnounce,
@@ -200,20 +197,24 @@ function App() {
         isListeningForWakeWord.current = false;
         setIsWakeWordMode(false);
         setIsListening(true);
-      } else if (isListening) {
-        if (USE_AZURE_SPEECH) {
-          SpeechRecognition.abortListening();
 
-          startAzureSpeechRecognition({
-            setIsListening,
-            setRecognizedText: handleRecognizedText,
-            isListeningForWakeWord,
-            processRecognizedText: processRecognizedTextCallback,
+        // Immediately start Azure speech recognition for command listening
+        if (USE_AZURE_SPEECH) {
+          SpeechRecognition.abortListening().then(() => {
+            console.log(
+              "SpeechRecognition aborted, starting Azure speech recognition..."
+            );
+            startAzureSpeechRecognition({
+              setIsListening,
+              setRecognizedText: handleRecognizedText,
+              isListeningForWakeWord,
+              processRecognizedText: processRecognizedTextCallback,
+            });
           });
-        } else {
-          // Process the recognized text directly
-          processRecognizedTextCallback(finalTranscript);
         }
+      } else if (isListening && !USE_AZURE_SPEECH) {
+        // Process the recognized text directly for non-Azure speech
+        processRecognizedTextCallback(finalTranscript);
       }
 
       resetTranscript();
@@ -288,8 +289,8 @@ function App() {
         >
           <LaundryMonitor onAnnouncement={handleAnnouncement} />
           <VacuumMonitor onAnnouncement={handleAnnouncement} />
-          <ReminderManager 
-            onAnnouncement={handleAnnouncement} 
+          <ReminderManager
+            onAnnouncement={handleAnnouncement}
             onRemindersChange={handleRemindersChange}
           />
         </div>
