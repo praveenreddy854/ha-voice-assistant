@@ -16,6 +16,8 @@ export const AZURE_OPENAI_API_DEPLOYMENT_NAME =
 export const OPENAI_RESPONSES_API_VERSION =
   process.env.OPENAI_RESPONSES_API_VERSION;
 
+export const HA_COMMAND_PROCESS_MODEL = process.env.HA_COMMAND_PROCESS_MODEL;
+
 // Azure Speech Service credentials
 // For demo purposes only, you should use environment variables in production
 export const SPEECH_KEY = process.env.AZURE_SPEECH_KEY;

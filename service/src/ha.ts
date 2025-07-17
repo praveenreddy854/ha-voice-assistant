@@ -4,7 +4,7 @@ import {
   HOME_ASSISTANT_URL,
   HOME_ASSISTANT_TOKEN,
   OPEN_AI_BASE_URL,
-  AZURE_OPENAI_API_DEPLOYMENT_NAME,
+  HA_COMMAND_PROCESS_MODEL,
 } from "./config";
 import fs from "fs";
 import path from "path";
@@ -31,7 +31,7 @@ export async function getHACommandBody(
   });
 
   let response = await client.responses.create({
-    model: AZURE_OPENAI_API_DEPLOYMENT_NAME,
+    model: HA_COMMAND_PROCESS_MODEL,
     input: JSON.stringify({
       messages: [
         {

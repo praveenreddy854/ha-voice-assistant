@@ -124,7 +124,7 @@ app.post("/api/postHACommand", (req, res, next) => {
         success: true,
         message: `Command ${command} sent successfully`,
       });
-      console.log("Received command to post to Home Assistant:", command);
+      console.log(`Received command: ${command}; Response:`, haResponse.data);
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       console.error("Error posting command to Home Assistant:", err);
