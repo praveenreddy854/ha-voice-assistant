@@ -19,7 +19,13 @@ Your task is to examine each incoming user message and decide which of the three
 
 3. Chat – Any other message meant for open-ended conversation with the chatbot (questions, chit-chat, explanations, etc.).
 
-Return only the name of the selected class: HACommand, Reminder, or Chat.
+### Successful call
+
+Return intent of the selected class in JSON format: {intent: "HACommand"}, {intent: "Reminder"} or {intent: "Chat" }.
+
+### Error fallback
+
+If the intent cannot be determined, return an error in JSON format: { "error": "no_match" }.
 
 Here is the user prompt:
 {{{UserPrompt}}}

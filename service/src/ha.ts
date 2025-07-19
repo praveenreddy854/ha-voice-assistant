@@ -1,15 +1,11 @@
 import {
-  API_KEY,
-  OPENAI_RESPONSES_API_VERSION,
   HOME_ASSISTANT_URL,
   HOME_ASSISTANT_TOKEN,
-  OPEN_AI_BASE_URL,
-  HA_COMMAND_PROCESS_MODEL,
 } from "./config";
 import fs from "fs";
 import path from "path";
 import { HassServiceCommandBody, HassState } from "./types/ha";
-import { AzureOpenAI } from "openai";
+import { openAIService } from "./openai";
 import axios from "axios";
 
 const promptCache = new Map();
@@ -18,42 +14,14 @@ const homeAssistantCacheKey = "HOMEASSISTANT";
 export async function getHACommandBody(
   command: string
 ): Promise<HassServiceCommandBody> {
-  if (!OPEN_AI_BASE_URL || !API_KEY) {
-    throw new Error("Configuration missing required values");
-  }
   const prompt = await getHAPrompt(command);
-
-  // Make LLM call to get the command body
-  const client = new AzureOpenAI({
-    baseURL: OPEN_AI_BASE_URL,
-    apiKey: API_KEY,
-    apiVersion: OPENAI_RESPONSES_API_VERSION,
-  });
-
-  let response = await client.responses.create({
-    model: HA_COMMAND_PROCESS_MODEL,
-    input: JSON.stringify({
-      messages: [
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-      max_tokens: 1000,
-      temperature: 0.5,
-    }),
-  });
-
-  while (response.status === "queued" || response.status === "in_progress") {
-    console.log(`Current status: ${response.status}`);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    response = await client.responses.retrieve(response.id);
-  }
+  
   try {
-    return JSON.parse(response.output_text) as HassServiceCommandBody;
+    const responseText = await openAIService.createHomeAssistantCompletion(prompt);
+    return JSON.parse(responseText) as HassServiceCommandBody;
   } catch (error) {
-    console.error("Failed to parse response:", error);
-    throw new Error("Invalid response format from AI model");
+    console.error("Failed to get Home Assistant command:", error);
+    throw new Error("Failed to process Home Assistant command");
   }
 }
 

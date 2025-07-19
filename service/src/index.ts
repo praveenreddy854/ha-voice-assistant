@@ -53,7 +53,7 @@ app.post("/api/classifyIntent", (req, res, next) => {
         return res.status(400).json({ error: "User prompt is required" });
       }
       const intent = await classifyIntent(prompt);
-      res.json({ intent });
+      res.json(intent);
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       console.error("Error classifying intent:", err);
