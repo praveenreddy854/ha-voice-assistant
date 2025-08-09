@@ -10,33 +10,37 @@ interface GestureEvent {
 
 export default function HandGestureDetector() {
   const videoRef = useRef<HTMLVideoElement>(null);
-  
+
   // ONLY UI state - minimize re-renders
   const [currentGesture, setCurrentGesture] = useState("");
   const [recentGestures, setRecentGestures] = useState<GestureEvent[]>([]);
   const [debugMode, setDebugMode] = useState(false);
   const [handDistance, setHandDistance] = useState("Unknown");
-  
+
   // ALL internal state as refs - NO re-renders
   const handsRef = useRef<Hands | null>(null);
   const cameraRef = useRef<any>(null);
   const gestureEngineRef = useRef<GestureEngine | null>(null);
   const isInitializedRef = useRef(false);
-  
+
   // TV Remote Gesture Engine - Simple and Reliable
   class GestureEngine {
-    private handHistory: Array<{ centroid: { x: number; y: number }; scale: number; timestamp: number }> = [];
+    private handHistory: Array<{
+      centroid: { x: number; y: number };
+      scale: number;
+      timestamp: number;
+    }> = [];
     private lastGesture: string = "";
     private lastGestureTime: number = 0;
     private gestureTimeout: NodeJS.Timeout | null = null;
-    
+
     // Gesture state tracking
     private gestureStartTime: number = 0;
     private gestureDirection: string = "";
     private gestureConfidence: number = 0;
     private readonly MIN_GESTURE_DURATION = 250; // Faster response for better UX
     private readonly GESTURE_COOLDOWN = 600; // Prevent rapid fire
-    
+
     // Distance and sensitivity
     private currentHandSize: number = 0;
     private adaptiveThreshold: number = 0;
@@ -53,15 +57,19 @@ export default function HandGestureDetector() {
         return { x: landmarks?.[0]?.x ?? 0, y: landmarks?.[0]?.y ?? 0 };
       }
     }
-    
-    constructor(private onGestureDetected: (gesture: string, confidence: number) => void) {}
-    
+
+    constructor(
+      private onGestureDetected: (gesture: string, confidence: number) => void
+    ) {}
+
     processHand(landmarks: any[]) {
       const now = Date.now();
-      
+
       // Calculate hand metrics
       this.currentHandSize = this.calculateHandSize(landmarks);
-      this.adaptiveThreshold = this.calculateAdaptiveThreshold(this.currentHandSize);
+      this.adaptiveThreshold = this.calculateAdaptiveThreshold(
+        this.currentHandSize
+      );
 
       // Compute and store stable motion sample (centroid + scale)
       const centroid = this.computeCentroid(landmarks);
@@ -70,27 +78,33 @@ export default function HandGestureDetector() {
       if (this.handHistory.length > 12) {
         this.handHistory.shift();
       }
-      
+
       // Clean old entries (keep ~1 second of history)
-      this.handHistory = this.handHistory.filter((entry) => now - entry.timestamp < 1000);
-      
+      this.handHistory = this.handHistory.filter(
+        (entry) => now - entry.timestamp < 1000
+      );
+
       // Need minimum history for stable detection
       if (this.handHistory.length < 4) return;
-      
+
       // Check for fist/select gesture first (stationary gesture)
       const fistGesture = this.detectFistGesture(landmarks);
       if (fistGesture) {
         this.handleGestureDetection("Select", fistGesture, now);
         return;
       }
-      
+
       // Check for swipe gestures (movement-based)
       const swipeGesture = this.detectSwipeGesture();
       if (swipeGesture) {
-        this.handleGestureDetection(swipeGesture.type, swipeGesture.confidence, now);
+        this.handleGestureDetection(
+          swipeGesture.type,
+          swipeGesture.confidence,
+          now
+        );
         return;
       }
-      
+
       // No clear gesture - reset tracking
       this.resetGestureTracking();
     }
@@ -99,36 +113,51 @@ export default function HandGestureDetector() {
       // TV-optimized thresholds based on hand size (distance proxy)
       // Smaller hand = further away = need lower threshold
       if (handSize > 0.12) return 0.025; // Very close (1-2 feet)
-      if (handSize > 0.08) return 0.020; // Close (2-4 feet)  
+      if (handSize > 0.08) return 0.02; // Close (2-4 feet)
       if (handSize > 0.05) return 0.015; // Medium (4-7 feet)
       if (handSize > 0.03) return 0.012; // Far (7-10 feet)
-      return 0.010; // Very far (10+ feet)
+      return 0.01; // Very far (10+ feet)
     }
-    
-    private handleGestureDetection(gestureType: string, confidence: number, now: number) {
+
+    private handleGestureDetection(
+      gestureType: string,
+      confidence: number,
+      now: number
+    ) {
       // Check cooldown period
       if (now - this.lastGestureTime < this.GESTURE_COOLDOWN) {
         console.log(`Gesture ${gestureType} blocked by cooldown`);
         return;
       }
-      
+
       // Start or continue gesture tracking
       if (this.gestureDirection !== gestureType) {
         // New gesture type detected
-        console.log(`Starting new gesture: ${gestureType}, confidence: ${confidence.toFixed(3)}`);
+        console.log(
+          `Starting new gesture: ${gestureType}, confidence: ${confidence.toFixed(
+            3
+          )}`
+        );
         this.gestureDirection = gestureType;
         this.gestureStartTime = now;
         this.gestureConfidence = confidence;
       } else {
         // Same gesture - update confidence
         this.gestureConfidence = Math.max(this.gestureConfidence, confidence);
-        
+
         // Check if gesture has been sustained long enough
         const duration = now - this.gestureStartTime;
-        console.log(`Continuing gesture: ${gestureType}, duration: ${duration}ms, confidence: ${this.gestureConfidence.toFixed(3)}`);
-        
+        console.log(
+          `Continuing gesture: ${gestureType}, duration: ${duration}ms, confidence: ${this.gestureConfidence.toFixed(
+            3
+          )}`
+        );
+
         // Slightly adapt duration for very far distances (more jitter)
-        const effectiveMin = Math.max(180, this.MIN_GESTURE_DURATION * (this.currentHandSize < 0.035 ? 1.1 : 1.0));
+        const effectiveMin = Math.max(
+          180,
+          this.MIN_GESTURE_DURATION * (this.currentHandSize < 0.035 ? 1.1 : 1.0)
+        );
         if (duration >= effectiveMin && this.gestureConfidence > 0.5) {
           // Trigger gesture
           console.log(`🎯 TRIGGERING GESTURE: ${gestureType}`);
@@ -136,7 +165,7 @@ export default function HandGestureDetector() {
           this.lastGesture = gestureType;
           this.lastGestureTime = now;
           this.resetGestureTracking();
-          
+
           // Auto-clear display
           if (this.gestureTimeout) clearTimeout(this.gestureTimeout);
           this.gestureTimeout = setTimeout(() => {
@@ -145,13 +174,13 @@ export default function HandGestureDetector() {
         }
       }
     }
-    
+
     private resetGestureTracking() {
       this.gestureDirection = "";
       this.gestureStartTime = 0;
       this.gestureConfidence = 0;
     }
-    
+
     private calculateHandSize(landmarks: any[]): number {
       try {
         // Simple and reliable hand size calculation
@@ -159,61 +188,63 @@ export default function HandGestureDetector() {
         const middleTip = landmarks[12];
         const thumbTip = landmarks[4];
         const pinkyTip = landmarks[20];
-        
+
         // Hand length (wrist to middle finger tip)
         const length = Math.sqrt(
-          Math.pow(middleTip.x - wrist.x, 2) + Math.pow(middleTip.y - wrist.y, 2)
+          Math.pow(middleTip.x - wrist.x, 2) +
+            Math.pow(middleTip.y - wrist.y, 2)
         );
-        
+
         // Hand width (thumb to pinky)
         const width = Math.sqrt(
-          Math.pow(thumbTip.x - pinkyTip.x, 2) + Math.pow(thumbTip.y - pinkyTip.y, 2)
+          Math.pow(thumbTip.x - pinkyTip.x, 2) +
+            Math.pow(thumbTip.y - pinkyTip.y, 2)
         );
-        
+
         // Average for consistent measurement
         return (length + width) / 2;
       } catch {
         return 0.08; // Default medium distance
       }
     }
-    
+
     private detectFistGesture(landmarks: any[]): number | null {
       try {
         // Simple fist detection - check if fingertips are close to palm
         const palmCenter = landmarks[9]; // Middle finger MCP joint as palm reference
         const fingerTips = [8, 12, 16, 20]; // Index, middle, ring, pinky tips
-        
+
         let closedFingers = 0;
         const fistThreshold = this.currentHandSize * 0.6; // Adaptive threshold
-        
+
         for (const tipIndex of fingerTips) {
           const tip = landmarks[tipIndex];
           const distanceToPalm = Math.sqrt(
-            Math.pow(tip.x - palmCenter.x, 2) + Math.pow(tip.y - palmCenter.y, 2)
+            Math.pow(tip.x - palmCenter.x, 2) +
+              Math.pow(tip.y - palmCenter.y, 2)
           );
-          
+
           if (distanceToPalm < fistThreshold) {
             closedFingers++;
           }
         }
-        
+
         // Need at least 3 out of 4 fingers closed for fist
         const confidence = closedFingers / 4;
         return confidence >= 0.75 ? confidence : null;
-        
       } catch {
         return null;
       }
     }
-    
-    private detectSwipeGesture(): { type: string, confidence: number } | null {
+
+    private detectSwipeGesture(): { type: string; confidence: number } | null {
       if (this.handHistory.length < 4) return null;
-      
+
       try {
         const start = this.handHistory[0];
         const end = this.handHistory[this.handHistory.length - 1];
         const timeSpan = end.timestamp - start.timestamp;
-        
+
         // Allow faster gestures, but ignore ultra quick noise
         if (timeSpan < 160 || timeSpan > 1500) return null;
 
@@ -235,9 +266,19 @@ export default function HandGestureDetector() {
         // Compare early and late windows (centroid smoothing)
         const n = this.handHistory.length;
         const w = Math.max(2, Math.floor(n / 3));
-        const avgWindow = (arr: typeof this.handHistory, s: number, e: number) => {
-          let sx = 0, sy = 0, ss = 0;
-          for (let i = s; i < e; i++) { sx += arr[i].centroid.x; sy += arr[i].centroid.y; ss += arr[i].scale; }
+        const avgWindow = (
+          arr: typeof this.handHistory,
+          s: number,
+          e: number
+        ) => {
+          let sx = 0,
+            sy = 0,
+            ss = 0;
+          for (let i = s; i < e; i++) {
+            sx += arr[i].centroid.x;
+            sy += arr[i].centroid.y;
+            ss += arr[i].scale;
+          }
           const len = e - s;
           return { x: sx / len, y: sy / len, scale: ss / len };
         };
@@ -254,22 +295,24 @@ export default function HandGestureDetector() {
         const minMovementN = Math.max(baseThresholdN, avgJitter * 3.0);
 
         if (totalMovementN < minMovementN) return null;
-        
+
         // Direction decision using normalized deltas
         const horizontalMovement = Math.abs(ndx);
         const verticalMovement = Math.abs(ndy);
-        
+
         let gestureType = "";
         let dirConfidence = 0;
-        
+
         if (horizontalMovement > verticalMovement * 1.2) {
           // Horizontal gesture (mirrored for camera)
           gestureType = ndx > 0 ? "Swipe Left" : "Swipe Right";
-          dirConfidence = horizontalMovement / (horizontalMovement + verticalMovement);
+          dirConfidence =
+            horizontalMovement / (horizontalMovement + verticalMovement);
         } else if (verticalMovement > horizontalMovement * 1.2) {
           // Vertical gesture
           gestureType = ndy > 0 ? "Swipe Down" : "Swipe Up";
-          dirConfidence = verticalMovement / (horizontalMovement + verticalMovement);
+          dirConfidence =
+            verticalMovement / (horizontalMovement + verticalMovement);
         } else if (horizontalMovement >= verticalMovement) {
           gestureType = ndx > 0 ? "Swipe Left" : "Swipe Right";
           dirConfidence = 0.6;
@@ -277,22 +320,33 @@ export default function HandGestureDetector() {
           gestureType = ndy > 0 ? "Swipe Down" : "Swipe Up";
           dirConfidence = 0.6;
         }
-        
+
         // Blend direction confidence with speed factor
         const speedFactor = Math.min(1.0, totalMovementN / (minMovementN * 2));
-        const finalConfidence = Math.max(0.5, dirConfidence * 0.6 + speedFactor * 0.4);
-        
-        const result = finalConfidence > 0.55 ? { type: gestureType, confidence: finalConfidence } : null;
+        const finalConfidence = Math.max(
+          0.5,
+          dirConfidence * 0.6 + speedFactor * 0.4
+        );
+
+        const result =
+          finalConfidence > 0.55
+            ? { type: gestureType, confidence: finalConfidence }
+            : null;
         if (result) {
-          console.log(`Swipe Detected: ${gestureType}, nMove=${totalMovementN.toFixed(2)}, thr=${minMovementN.toFixed(2)}, conf=${finalConfidence.toFixed(2)}, jitter=${avgJitter.toFixed(2)}, dt=${timeSpan}ms`);
+          console.log(
+            `Swipe Detected: ${gestureType}, nMove=${totalMovementN.toFixed(
+              2
+            )}, thr=${minMovementN.toFixed(2)}, conf=${finalConfidence.toFixed(
+              2
+            )}, jitter=${avgJitter.toFixed(2)}, dt=${timeSpan}ms`
+          );
         }
         return result;
-        
       } catch {
         return null;
       }
     }
-    
+
     processNoHand() {
       // Reset all gesture tracking when hand disappears
       this.resetGestureTracking();
@@ -300,29 +354,31 @@ export default function HandGestureDetector() {
       this.currentHandSize = 0;
       this.adaptiveThreshold = 0;
     }
-    
+
     cleanup() {
       if (this.gestureTimeout) {
         clearTimeout(this.gestureTimeout);
       }
     }
-    
   }
-  
+
   // Gesture callback - only updates UI
-  const handleGestureDetected = useCallback((gestureType: string, confidence: number) => {
-    setCurrentGesture(gestureType);
-    setRecentGestures(prev => [
-      { type: gestureType, confidence, timestamp: Date.now() },
-      ...prev.slice(0, 7)
-    ]);
-    
-    // Auto-clear gesture display
-    setTimeout(() => {
-      setCurrentGesture("");
-    }, 2500);
-  }, []);
-  
+  const handleGestureDetected = useCallback(
+    (gestureType: string, confidence: number) => {
+      setCurrentGesture(gestureType);
+      setRecentGestures((prev) => [
+        { type: gestureType, confidence, timestamp: Date.now() },
+        ...prev.slice(0, 7),
+      ]);
+
+      // Auto-clear gesture display
+      setTimeout(() => {
+        setCurrentGesture("");
+      }, 2500);
+    },
+    []
+  );
+
   // Distance estimation callback - simplified and reliable
   const updateHandDistance = useCallback((landmarks: any[]) => {
     try {
@@ -330,16 +386,17 @@ export default function HandGestureDetector() {
       const middleTip = landmarks[12];
       const thumbTip = landmarks[4];
       const pinkyTip = landmarks[20];
-      
+
       // Calculate hand size same as gesture engine
       const length = Math.sqrt(
         Math.pow(middleTip.x - wrist.x, 2) + Math.pow(middleTip.y - wrist.y, 2)
       );
       const width = Math.sqrt(
-        Math.pow(thumbTip.x - pinkyTip.x, 2) + Math.pow(thumbTip.y - pinkyTip.y, 2)
+        Math.pow(thumbTip.x - pinkyTip.x, 2) +
+          Math.pow(thumbTip.y - pinkyTip.y, 2)
       );
       const handSize = (length + width) / 2;
-      
+
       // Distance categories for TV use
       let distanceText = "";
       if (handSize > 0.12) distanceText = "Very Close (1-2 ft)";
@@ -347,45 +404,47 @@ export default function HandGestureDetector() {
       else if (handSize > 0.05) distanceText = "Good (4-7 ft)";
       else if (handSize > 0.03) distanceText = "Far (7-10 ft)";
       else distanceText = "TV Distance (10+ ft)";
-      
+
       setHandDistance(distanceText);
     } catch {
       setHandDistance("Unknown");
     }
   }, []);
-  
+
   // Initialize everything ONCE - never re-run
   useEffect(() => {
     if (isInitializedRef.current) return;
-    
+
     const videoElement = videoRef.current;
     if (!videoElement) return;
-    
+
     // Initialize gesture engine
     gestureEngineRef.current = new GestureEngine(handleGestureDetected);
-    
+
     // Initialize MediaPipe
     const hands = new Hands({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
+      locateFile: (file) =>
+        `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
     });
-    
+
     hands.setOptions({
       maxNumHands: 1,
       modelComplexity: 1,
       minDetectionConfidence: 0.7,
       minTrackingConfidence: 0.6,
     });
-    
+
     // Process results - completely independent of React
     hands.onResults((results) => {
       if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
         const landmarks = results.multiHandLandmarks[0];
-        
+
         // Process gesture
         gestureEngineRef.current?.processHand(landmarks);
-        
+
         // Update distance (throttled)
-        if (Math.random() < 0.1) { // Only update 10% of the time
+        if (Math.random() < 0.1) {
+          // Only update 10% of the time
           updateHandDistance(landmarks);
         }
       } else {
@@ -393,7 +452,7 @@ export default function HandGestureDetector() {
         gestureEngineRef.current?.processNoHand();
       }
     });
-    
+
     // Initialize camera - ONCE
     try {
       const camera = new Camera(videoElement, {
@@ -403,22 +462,21 @@ export default function HandGestureDetector() {
         width: 640,
         height: 480,
       });
-      
+
       camera.start();
-      
+
       // Store references
       handsRef.current = hands;
       cameraRef.current = camera;
       isInitializedRef.current = true;
-      
     } catch (error) {
       console.error("Failed to initialize camera:", error);
     }
-    
+
     // Cleanup function
     return () => {
       gestureEngineRef.current?.cleanup();
-      
+
       if (cameraRef.current) {
         try {
           cameraRef.current.stop();
@@ -426,38 +484,50 @@ export default function HandGestureDetector() {
           console.warn("Camera cleanup error:", e);
         }
       }
-      
+
       isInitializedRef.current = false;
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [handleGestureDetected, updateHandDistance]); // GestureEngine is class defined above
-  
+
   // Gesture display component
   const GestureDisplay = ({ gesture }: { gesture: string }) => {
     if (!gesture) return null;
-    
+
     const getGestureIcon = () => {
       switch (gesture) {
-        case "Swipe Right": return "👉";
-        case "Swipe Left": return "👈";
-        case "Swipe Up": return "👆";
-        case "Swipe Down": return "👇";
-        case "Select": return "✊";
-        default: return "✋";
+        case "Swipe Right":
+          return "👉";
+        case "Swipe Left":
+          return "👈";
+        case "Swipe Up":
+          return "👆";
+        case "Swipe Down":
+          return "👇";
+        case "Select":
+          return "✊";
+        default:
+          return "✋";
       }
     };
-    
+
     const getAnimation = () => {
       switch (gesture) {
-        case "Swipe Right": return "slide-right";
-        case "Swipe Left": return "slide-left";
-        case "Swipe Up": return "slide-up";
-        case "Swipe Down": return "slide-down";
-        case "Select": return "pulse-select";
-        default: return "fade-in";
+        case "Swipe Right":
+          return "slide-right";
+        case "Swipe Left":
+          return "slide-left";
+        case "Swipe Up":
+          return "slide-up";
+        case "Swipe Down":
+          return "slide-down";
+        case "Select":
+          return "pulse-select";
+        default:
+          return "fade-in";
       }
     };
-    
+
     return (
       <div className={`gesture-display ${getAnimation()}`}>
         <div className="gesture-icon">{getGestureIcon()}</div>
@@ -465,7 +535,7 @@ export default function HandGestureDetector() {
       </div>
     );
   };
-  
+
   return (
     <div className="tv-gesture-control">
       <div className="header">
@@ -473,7 +543,7 @@ export default function HandGestureDetector() {
           <span className="icon">📺</span>
           TV Gesture Control
         </h2>
-        <button 
+        <button
           type="button"
           className="debug-toggle"
           onClick={() => setDebugMode(!debugMode)}
@@ -481,28 +551,23 @@ export default function HandGestureDetector() {
           {debugMode ? "Hide Debug" : "Show Debug"}
         </button>
       </div>
-      
+
       {debugMode && (
         <div className="debug-panel">
           <span>Hand Distance: {handDistance}</span>
           <span>Recent Gestures: {recentGestures.length}</span>
         </div>
       )}
-      
+
       <div className="main-content">
         <div className="video-section">
-          <video
-            ref={videoRef}
-            className="video-feed"
-            playsInline
-            muted
-          />
-          
+          <video ref={videoRef} className="video-feed" playsInline muted />
+
           <div className="gesture-overlay">
             <GestureDisplay gesture={currentGesture} />
           </div>
         </div>
-        
+
         <div className="info-section">
           <div className="gesture-history">
             <h3>Recent Gestures</h3>
@@ -511,13 +576,22 @@ export default function HandGestureDetector() {
             ) : (
               <div className="gesture-list">
                 {recentGestures.map((gesture, index) => (
-                  <div key={`${gesture.timestamp}-${index}`} className="gesture-item">
+                  <div
+                    key={`${gesture.timestamp}-${index}`}
+                    className="gesture-item"
+                  >
                     <span className="gesture-icon">
-                      {gesture.type === "Swipe Right" ? "👉" :
-                       gesture.type === "Swipe Left" ? "👈" :
-                       gesture.type === "Swipe Up" ? "👆" :
-                       gesture.type === "Swipe Down" ? "👇" :
-                       gesture.type === "Select" ? "✊" : "✋"}
+                      {gesture.type === "Swipe Right"
+                        ? "👉"
+                        : gesture.type === "Swipe Left"
+                        ? "👈"
+                        : gesture.type === "Swipe Up"
+                        ? "👆"
+                        : gesture.type === "Swipe Down"
+                        ? "👇"
+                        : gesture.type === "Select"
+                        ? "✊"
+                        : "✋"}
                     </span>
                     <span className="gesture-name">{gesture.type}</span>
                     {debugMode && (
@@ -533,7 +607,7 @@ export default function HandGestureDetector() {
               </div>
             )}
           </div>
-          
+
           <div className="instructions">
             <h3>How to Use</h3>
             <div className="instruction-list">
@@ -557,7 +631,7 @@ export default function HandGestureDetector() {
           </div>
         </div>
       </div>
-      
+
       <style>{`
         .tv-gesture-control {
           padding: 24px;
