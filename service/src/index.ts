@@ -48,11 +48,11 @@ app.get("/", (req, res, next) => {
 app.post("/api/classifyIntent", (req, res, next) => {
   (async () => {
     try {
-      const { userPrompt: prompt } = req.body;
+      const { userPrompt: prompt, messageHistory } = req.body;
       if (!prompt) {
         return res.status(400).json({ error: "User prompt is required" });
       }
-      const intent = await classifyIntent(prompt);
+      const intent = await classifyIntent(prompt, messageHistory);
       res.json(intent);
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
@@ -70,8 +70,8 @@ app.post("/api/classifyIntent", (req, res, next) => {
 app.post("/api/postHACommand", (req, res, next) => {
   (async () => {
     try {
-      const { command } = req.body;
-      const haBody = await getHACommandBody(command);
+      const { command, messageHistory } = req.body;
+      const haBody = await getHACommandBody(command, messageHistory);
       let urlPath = haBody.url_path;
       const entityId = haBody.entity_id;
 
@@ -365,7 +365,7 @@ app.get("/api/vacuum-status", (req, res, next) => {
 app.post("/api/processReminder", (req, res, next) => {
   (async () => {
     try {
-      const { userPrompt, reminders } = req.body;
+      const { userPrompt, reminders, messageHistory } = req.body;
       if (!userPrompt) {
         return res.status(400).json({ error: "User prompt is required" });
       }
@@ -373,7 +373,7 @@ app.post("/api/processReminder", (req, res, next) => {
         return res.status(400).json({ error: "Reminders array is required" });
       }
 
-      const reminderData = await processReminderRequest(userPrompt, reminders);
+      const reminderData = await processReminderRequest(userPrompt, reminders, messageHistory);
 
       if (reminderData.action === "CREATE") {
         // Handle reminder creation

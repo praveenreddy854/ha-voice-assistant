@@ -1,4 +1,5 @@
 import { Response } from "../types/response";
+import { messageHistoryManager } from "../utils/sessionManager";
 
 export enum Intent {
   HACommand = "HACommand",
@@ -20,7 +21,10 @@ export const getIntent = async (text: string): Promise<Response<Intent>> => {
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ userPrompt: text }),
+      body: JSON.stringify({ 
+        userPrompt: text, 
+        messageHistory: messageHistoryManager.getContextualHistory() 
+      }),
     });
 
     if (!response.ok) {
@@ -28,6 +32,10 @@ export const getIntent = async (text: string): Promise<Response<Intent>> => {
     }
 
     const data = await response.json();
+    
+    // Add user message to history
+    messageHistoryManager.addMessage('user', text);
+    
     return {
       success: true,
       data: data.intent as Intent,
@@ -55,7 +63,11 @@ export const processReminder = async (text: string, reminders: any[]): Promise<R
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ userPrompt: text, reminders }),
+      body: JSON.stringify({ 
+        userPrompt: text, 
+        reminders, 
+        messageHistory: messageHistoryManager.getContextualHistory() 
+      }),
     });
 
     if (!response.ok) {
@@ -63,6 +75,13 @@ export const processReminder = async (text: string, reminders: any[]): Promise<R
     }
 
     const data = await response.json();
+    
+    // Add user message and assistant response to history
+    messageHistoryManager.addMessage('user', text);
+    if (data.message) {
+      messageHistoryManager.addMessage('assistant', data.message);
+    }
+    
     return {
       success: true,
       data: data.action === 'CREATE' ? data.reminder : data.reminders,

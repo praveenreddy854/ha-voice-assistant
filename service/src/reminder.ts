@@ -60,7 +60,8 @@ export type ReminderRequest =
 
 export async function processReminderRequest(
   userPrompt: string,
-  currentReminders?: any[]
+  currentReminders?: any[],
+  messageHistory?: Array<{ role: string; content: string }>
 ): Promise<ReminderRequest> {
   console.log(`Processing reminder request: ${userPrompt}`);
 
@@ -83,8 +84,14 @@ export async function processReminderRequest(
     .replace("{{{CurrentDateTime}}}", currentDateTime)
     .replace("{{{CurrentReminders}}}", remindersContext);
 
+  // Combine message history with current prompt
+  const messages = [
+    ...(messageHistory || []),
+    { role: "user", content: prompt }
+  ];
+
   try {
-    return await openAIService.createReminderCompletion<ReminderRequest>(prompt);
+    return await openAIService.createReminderCompletion<ReminderRequest>(messages);
   } catch (error) {
     console.error("Failed to process reminder request:", error);
     throw new Error("Failed to process reminder request");

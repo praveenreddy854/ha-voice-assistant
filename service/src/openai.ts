@@ -164,7 +164,7 @@ class OpenAIService {
   }
 
   async createHomeAssistantCompletion(
-    prompt: string,
+    messages: Array<{ role: string; content: string }>,
     retryOptions?: RetryOptions
   ): Promise<string> {
     const finalRetryOptions = { ...this.defaultRetryOptions, ...retryOptions };
@@ -177,7 +177,7 @@ class OpenAIService {
         let response = await this.client.responses.create({
           model: HA_COMMAND_PROCESS_MODEL,
           input: JSON.stringify({
-            messages: [{ role: "user", content: prompt }],
+            messages,
             max_tokens: 1000,
             temperature: 0.5,
           }),
@@ -224,14 +224,14 @@ class OpenAIService {
   }
 
   async createIntentClassification(
-    prompt: string,
+    messages: Array<{ role: string; content: string }>,
     retryOptions?: RetryOptions
   ): Promise<IntentClassificationResponse | IntentErrorResponse> {
     return await this.createCompletion<
       IntentClassificationResponse | IntentErrorResponse
     >(
       {
-        messages: [{ role: "user", content: prompt }],
+        messages,
         max_tokens: 1000,
         temperature: 0.5,
       },
@@ -240,12 +240,12 @@ class OpenAIService {
   }
 
   async createReminderCompletion<T>(
-    prompt: string,
+    messages: Array<{ role: string; content: string }>,
     retryOptions?: RetryOptions
   ): Promise<T> {
     return await this.createCompletionWithJsonResponse<T>(
       {
-        messages: [{ role: "user", content: prompt }],
+        messages,
         max_tokens: 1000,
         temperature: 0.5,
       },

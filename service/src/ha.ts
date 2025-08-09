@@ -12,12 +12,19 @@ const promptCache = new Map();
 const homeAssistantCacheKey = "HOMEASSISTANT";
 
 export async function getHACommandBody(
-  command: string
+  command: string,
+  messageHistory?: Array<{ role: string; content: string }>
 ): Promise<HassServiceCommandBody> {
   const prompt = await getHAPrompt(command);
   
+  // Combine message history with current prompt
+  const messages = [
+    ...(messageHistory || []),
+    { role: "user", content: prompt }
+  ];
+  
   try {
-    const responseText = await openAIService.createHomeAssistantCompletion(prompt);
+    const responseText = await openAIService.createHomeAssistantCompletion(messages);
     return JSON.parse(responseText) as HassServiceCommandBody;
   } catch (error) {
     console.error("Failed to get Home Assistant command:", error);

@@ -12,7 +12,7 @@ export interface IntentErrorResponse {
   error: "no_match";
 }
 
-export async function classifyIntent(userPrompt: string) {
+export async function classifyIntent(userPrompt: string, messageHistory?: Array<{ role: string; content: string }>) {
   if (!promptCache.has(intentCacheKey)) {
     const prompt = fs.readFileSync(
       path.join(__dirname, "prompts", "INTENT.md"),
@@ -24,8 +24,14 @@ export async function classifyIntent(userPrompt: string) {
     .get(intentCacheKey)
     .replace("{{{UserPrompt}}}", userPrompt);
 
+  // Combine message history with current prompt
+  const messages = [
+    ...(messageHistory || []),
+    { role: "user", content: prompt }
+  ];
+
   try {
-    return await openAIService.createIntentClassification(prompt);
+    return await openAIService.createIntentClassification(messages);
   } catch (error) {
     console.error("Failed to classify intent:", error);
     throw new Error("Failed to classify user intent");

@@ -16,6 +16,7 @@ import { playChime } from "./functions/chime";
 import { LaundryMonitor, VacuumMonitor, ReminderManager } from "./skills";
 import SkillToggles from "./components/SkillToggles";
 import SkillWrapper from "./components/SkillWrapper";
+import HandGestureDetector from "./skills/gestures/HandGestureDetector";
 import { 
   SkillToggleState, 
   loadSkillToggleState, 
@@ -382,6 +383,33 @@ function App() {
             />
           </SkillWrapper>
         </div>
+      </div>
+
+      {/* Gesture Detection Section */}
+      <div
+        style={{
+          marginTop: "40px",
+          borderTop: "2px solid #e0e0e0",
+          paddingTop: "30px",
+          width: "100%",
+          maxWidth: "1200px"
+        }}
+      >
+        <h2 style={{ 
+          marginBottom: "30px", 
+          color: "#1e293b", 
+          fontSize: "28px",
+          fontWeight: "700",
+          textAlign: "center",
+          background: "linear-gradient(135deg, #7c3aed 0%, #a855f7 100%)",
+          WebkitBackgroundClip: "text",
+          WebkitTextFillColor: "transparent",
+          backgroundClip: "text"
+        }}>
+          🤲 Gesture Control
+        </h2>
+        
+        <HandGestureDetector />
       </div>
     </div>
   );
