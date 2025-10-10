@@ -124,6 +124,7 @@ OPENAI_RESPONSES_API_VERSION=2024-02-15-preview
    - "Turn on the living room lights"
    - "Set the thermostat to 72 degrees"
    - "Play music on Apple TV"
+   - "Launch Netflix on the Samsung TV"
    - "Turn off all lights"
 4. **Receive confirmation** through both text and voice responses
 5. **Chat mode** for general conversation when not issuing device commands
@@ -140,7 +141,7 @@ The application integrates with Home Assistant through:
 ### Supported Device Types
 
 - Lights and switches
-- Media players (Apple TV, etc.)
+- Media players (Apple TV, Samsung TV, etc.)
 - Climate control (thermostats)
 - Sensors and binary sensors
 - Custom automations and scripts

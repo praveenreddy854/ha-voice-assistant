@@ -4,6 +4,7 @@ Your task is to examine each incoming user message and decide which of the three
    Typical form: a direct command aimed at smart-home devices.
    Examples:
    • "Turn on Apple TV"
+   • "Turn on Samsung TV"
    • "Turn off the kitchen lights"
    • "Open Netflix"
 
