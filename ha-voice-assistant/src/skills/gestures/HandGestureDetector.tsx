@@ -45,6 +45,10 @@ export default function HandGestureDetector() {
     private currentHandSize: number = 0;
     private adaptiveThreshold: number = 0;
 
+    // Fist (Select) hold detection state
+    private fistStartTime: number = 0;
+    private fistAnchor: { x: number; y: number; scale: number } | null = null;
+
     // Compute a stable hand centroid for motion (less jitter than a single landmark)
     private computeCentroid(landmarks: any[]): { x: number; y: number } {
       try {
@@ -87,11 +91,46 @@ export default function HandGestureDetector() {
       // Need minimum history for stable detection
       if (this.handHistory.length < 4) return;
 
-      // Check for fist/select gesture first (stationary gesture)
-      const fistGesture = this.detectFistGesture(landmarks);
-      if (fistGesture) {
-        this.handleGestureDetection("Select", fistGesture, now);
+      // Check for fist/select gesture first (must be held stationary for >= 1s)
+      const fistConfidence = this.detectFistGesture(landmarks);
+      if (fistConfidence) {
+        // Initialize hold tracking if needed
+        if (!this.fistAnchor || this.fistStartTime === 0) {
+          this.fistAnchor = { x: centroid.x, y: centroid.y, scale };
+          this.fistStartTime = now;
+        } else {
+          // Measure normalized displacement from anchor (in hand widths)
+          const meanScale = Math.max(0.02, (this.fistAnchor.scale + scale) / 2);
+          const ndx = (centroid.x - this.fistAnchor.x) / meanScale;
+          const ndy = (centroid.y - this.fistAnchor.y) / meanScale;
+          const displacementN = Math.hypot(ndx, ndy);
+
+          const heldMs = now - this.fistStartTime;
+          const stationaryThresholdN = 0.12; // must stay within ~0.12 hand widths
+
+          // If moved too much, restart the hold window
+          if (displacementN > stationaryThresholdN) {
+            this.fistAnchor = { x: centroid.x, y: centroid.y, scale };
+            this.fistStartTime = now;
+          } else if (heldMs >= 1000) {
+            // Check cooldown and trigger Select
+            if (now - this.lastGestureTime >= this.GESTURE_COOLDOWN) {
+              this.onGestureDetected("Select", Math.min(1, fistConfidence));
+              this.lastGesture = "Select";
+              this.lastGestureTime = now;
+            }
+            // Reset fist tracking after trigger
+            this.fistAnchor = null;
+            this.fistStartTime = 0;
+            this.resetGestureTracking();
+          }
+        }
+        // While fist is present, do not consider swipe gestures
         return;
+      } else {
+        // Not a fist — clear any ongoing hold state
+        this.fistAnchor = null;
+        this.fistStartTime = 0;
       }
 
       // Check for swipe gestures (movement-based)
@@ -353,6 +392,8 @@ export default function HandGestureDetector() {
       this.handHistory = [];
       this.currentHandSize = 0;
       this.adaptiveThreshold = 0;
+      this.fistAnchor = null;
+      this.fistStartTime = 0;
     }
 
     cleanup() {
