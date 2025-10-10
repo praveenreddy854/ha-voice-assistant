@@ -18,6 +18,16 @@ description: "";
 /* … */
 }
 /* … */
+},
+{
+"entity_id": "media_player.samsung_tv",
+"state": "off",
+"attributes": {
+"friendly_name": "Samsung TV",
+description: "";
+/* … */
+}
+/* … */
 }
 ]
 
@@ -81,10 +91,19 @@ All keys are lowercase, all strings are double-quoted.
 **User:** _Launch Spotify_  
 { "url_path": "media_player/play_media", "entity_id": "media_player.appletv", "service_data": { "media_content_type": "app", "media_content_id": "com.spotify.client" } }
 
-**User:** _Open YouTube on Apple TV_  
+**User:** _Open YouTube on Apple TV_
 { "url_path": "media_player/play_media", "entity_id": "media_player.appletv", "service_data": { "media_content_type": "app", "media_content_id": "com.google.ios.youtube" } }
 
-**User:** _Turn on living-room lights_ _(no matching entity)_  
+**User:** _Turn on the Samsung TV_
+{ "url_path": "media_player/turn_on", "entity_id": "media_player.samsung_tv" }
+
+**User:** _Turn off Samsung TV_
+{ "url_path": "media_player/turn_off", "entity_id": "media_player.samsung_tv" }
+
+**User:** _Open YouTube on Samsung TV_
+{ "url_path": "media_player/play_media", "entity_id": "media_player.samsung_tv", "service_data": { "media_content_type": "app", "media_content_id": "com.google.ios.youtube" } }
+
+**User:** _Turn on living-room lights_ _(no matching entity)_
 { "error": "no_match" }
 
 ### User
