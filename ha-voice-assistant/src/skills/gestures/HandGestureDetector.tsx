@@ -16,6 +16,10 @@ export default function HandGestureDetector() {
   const [recentGestures, setRecentGestures] = useState<GestureEvent[]>([]);
   const [debugMode, setDebugMode] = useState(false);
   const [handDistance, setHandDistance] = useState("Unknown");
+  const [cameraStatus, setCameraStatus] = useState<
+    "checking" | "unavailable" | "available" | "starting" | "ready" | "error"
+  >("checking");
+  const [cameraError, setCameraError] = useState<string | null>(null);
 
   // ALL internal state as refs - NO re-renders
   const handsRef = useRef<Hands | null>(null);
@@ -452,9 +456,58 @@ export default function HandGestureDetector() {
     }
   }, []);
 
+  useEffect(() => {
+    if (typeof navigator === "undefined") {
+      setCameraStatus("unavailable");
+      return;
+    }
+
+    const checkCameraAvailability = async () => {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+        setCameraStatus("unavailable");
+        return;
+      }
+
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const hasVideoInput = devices.some(
+          (device) => device.kind === "videoinput"
+        );
+
+        if (!hasVideoInput) {
+          setCameraStatus("unavailable");
+        } else {
+          setCameraStatus("available");
+          setCameraError(null);
+        }
+      } catch (error) {
+        console.error("Failed to enumerate media devices:", error);
+        setCameraStatus("error");
+        setCameraError(
+          error instanceof Error ? error.message : String(error)
+        );
+      }
+    };
+
+    checkCameraAvailability();
+  }, []);
+
+  useEffect(() => {
+    if (cameraStatus === "ready") return;
+    if (cameraStatus === "unavailable" || cameraStatus === "error") {
+      setCurrentGesture("");
+      setRecentGestures([]);
+    }
+  }, [cameraStatus]);
+
+  const isCameraUnavailable =
+    cameraStatus === "unavailable" || cameraStatus === "error";
+  const isCameraReady = cameraStatus === "ready";
+  const isCameraStarting = cameraStatus === "starting";
+
   // Initialize everything ONCE - never re-run
   useEffect(() => {
-    if (isInitializedRef.current) return;
+    if (isInitializedRef.current || cameraStatus !== "available") return;
 
     const videoElement = videoRef.current;
     if (!videoElement) return;
@@ -494,6 +547,8 @@ export default function HandGestureDetector() {
       }
     });
 
+    let cancelled = false;
+
     // Initialize camera - ONCE
     try {
       const camera = new Camera(videoElement, {
@@ -504,18 +559,36 @@ export default function HandGestureDetector() {
         height: 480,
       });
 
-      camera.start();
+      isInitializedRef.current = true;
+      setCameraStatus("starting");
+
+      camera
+        .start()
+        .then(() => {
+          if (cancelled) return;
+          setCameraStatus("ready");
+        })
+        .catch((error: unknown) => {
+          if (cancelled) return;
+          console.error("Failed to start camera stream:", error);
+          setCameraStatus("error");
+          setCameraError(error instanceof Error ? error.message : String(error));
+          isInitializedRef.current = false;
+        });
 
       // Store references
       handsRef.current = hands;
       cameraRef.current = camera;
-      isInitializedRef.current = true;
     } catch (error) {
       console.error("Failed to initialize camera:", error);
+      setCameraStatus("error");
+      setCameraError(error instanceof Error ? error.message : String(error));
+      isInitializedRef.current = false;
     }
 
     // Cleanup function
     return () => {
+      cancelled = true;
       gestureEngineRef.current?.cleanup();
 
       if (cameraRef.current) {
@@ -529,11 +602,11 @@ export default function HandGestureDetector() {
       isInitializedRef.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [handleGestureDetected, updateHandDistance]); // GestureEngine is class defined above
+  }, [handleGestureDetected, updateHandDistance, cameraStatus]); // GestureEngine is class defined above
 
   // Gesture display component
   const GestureDisplay = ({ gesture }: { gesture: string }) => {
-    if (!gesture) return null;
+    if (!gesture || !isCameraReady) return null;
 
     const getGestureIcon = () => {
       switch (gesture) {
@@ -578,7 +651,11 @@ export default function HandGestureDetector() {
   };
 
   return (
-    <div className="tv-gesture-control">
+    <div
+      className={`tv-gesture-control ${
+        isCameraUnavailable ? "camera-disabled" : ""
+      }`}
+    >
       <div className="header">
         <h2 className="title">
           <span className="icon">📺</span>
@@ -587,11 +664,34 @@ export default function HandGestureDetector() {
         <button
           type="button"
           className="debug-toggle"
+          disabled={!isCameraReady}
           onClick={() => setDebugMode(!debugMode)}
         >
           {debugMode ? "Hide Debug" : "Show Debug"}
         </button>
       </div>
+
+      {(cameraStatus === "checking" || isCameraStarting || isCameraUnavailable) && (
+        <div
+          className={`camera-status ${
+            isCameraUnavailable ? "camera-status--error" : ""
+          }`}
+        >
+          <span className="status-icon">
+            {cameraStatus === "checking" || isCameraStarting ? "⏳" : "🚫"}
+          </span>
+          <span>
+            {cameraStatus === "checking" && "Checking for an available camera..."}
+            {isCameraStarting && "Camera detected. Starting live preview..."}
+            {cameraStatus === "unavailable" &&
+              "No camera detected. Gesture control is disabled."}
+            {cameraStatus === "error" &&
+              `Camera error. Gesture control is disabled${
+                cameraError ? `: ${cameraError}` : "."
+              }`}
+          </span>
+        </div>
+      )}
 
       {debugMode && (
         <div className="debug-panel">
@@ -601,8 +701,37 @@ export default function HandGestureDetector() {
       )}
 
       <div className="main-content">
-        <div className="video-section">
-          <video ref={videoRef} className="video-feed" playsInline muted />
+        <div className={`video-section ${!isCameraReady ? "disabled" : ""}`}>
+          <video
+            ref={videoRef}
+            className="video-feed"
+            playsInline
+            muted
+            style={{ opacity: isCameraReady ? 1 : 0 }}
+          />
+
+          {!isCameraReady && (
+            <div
+              className={`camera-placeholder ${
+                isCameraUnavailable ? "camera-placeholder--error" : ""
+              }`}
+            >
+              <span className="camera-placeholder-icon">
+                {cameraStatus === "checking" || isCameraStarting ? "📡" : "📷"}
+              </span>
+              <p className="camera-placeholder-text">
+                {cameraStatus === "checking" && "Looking for a camera..."}
+                {isCameraStarting && "Camera found. Preparing video feed..."}
+                {cameraStatus === "unavailable" &&
+                  "No camera detected on this device. Gesture control is unavailable."}
+                {cameraStatus === "error" &&
+                  "Unable to access the camera. Gesture control is disabled."}
+              </p>
+              {cameraError && cameraStatus === "error" && (
+                <p className="error-details">{cameraError}</p>
+              )}
+            </div>
+          )}
 
           <div className="gesture-overlay">
             <GestureDisplay gesture={currentGesture} />
@@ -682,6 +811,31 @@ export default function HandGestureDetector() {
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }
         
+        .tv-gesture-control.camera-disabled {
+          opacity: 0.9;
+        }
+        
+        .camera-status {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 16px;
+          padding: 12px 16px;
+          background: #edf2f7;
+          border-radius: 12px;
+          color: #2d3748;
+          font-size: 14px;
+        }
+        
+        .camera-status--error {
+          background: #fee2e2;
+          color: #b91c1c;
+        }
+        
+        .status-icon {
+          font-size: 18px;
+        }
+        
         .header {
           display: flex;
           justify-content: space-between;
@@ -713,6 +867,15 @@ export default function HandGestureDetector() {
           background: #cbd5e0;
         }
         
+        .debug-toggle:disabled {
+          cursor: not-allowed;
+          opacity: 0.5;
+        }
+        
+        .debug-toggle:disabled:hover {
+          background: #e2e8f0;
+        }
+        
         .debug-panel {
           background: #fef3c7;
           border: 1px solid #f59e0b;
@@ -741,12 +904,53 @@ export default function HandGestureDetector() {
           position: relative;
         }
         
+        .video-section.disabled .video-feed {
+          opacity: 0.2;
+        }
+        
         .video-feed {
           width: 100%;
           height: auto;
           border-radius: 12px;
           box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
           transform: scaleX(-1);
+        }
+        
+        .camera-placeholder {
+          position: absolute;
+          inset: 0;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          border-radius: 12px;
+          background: rgba(241, 245, 249, 0.92);
+          text-align: center;
+          padding: 24px;
+          color: #475569;
+        }
+        
+        .camera-placeholder--error {
+          background: rgba(254, 226, 226, 0.95);
+          color: #b91c1c;
+        }
+        
+        .camera-placeholder-icon {
+          font-size: 36px;
+        }
+        
+        .camera-placeholder-text {
+          font-size: 14px;
+          font-weight: 500;
+        }
+        
+        .error-details {
+          font-size: 12px;
+          max-width: 320px;
+          color: inherit;
+          opacity: 0.8;
+          word-break: break-word;
         }
         
         .gesture-overlay {
