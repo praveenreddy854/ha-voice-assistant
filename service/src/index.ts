@@ -13,6 +13,7 @@ import {
 import { getHACommandBody } from "./ha";
 import { classifyIntent } from "./intent";
 import { processReminderRequest } from "./reminder";
+import { startDeviceStateLogging } from "./deviceStateLogger";
 
 // Global declaration for announcement storage
 declare global {
@@ -38,6 +39,8 @@ if (!fs.existsSync(DATA_DIR)) {
 // Middleware to parse JSON bodies
 app.use(express.json());
 app.use(cors());
+
+startDeviceStateLogging();
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.get("/", (req, res, next) => {

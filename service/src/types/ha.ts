@@ -6,6 +6,14 @@ export interface HassState {
     description?: string;
     [key: string]: any;
   };
+  last_changed?: string;
+  last_updated?: string;
+  context?: {
+    id?: string;
+    parent_id?: string | null;
+    user_id?: string | null;
+    [key: string]: any;
+  };
 }
 
 export interface HassServiceCommandBody {
