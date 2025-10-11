@@ -54,10 +54,7 @@ async function getHAPrompt(command: string) {
   return cachedPrompt;
 }
 
-async function getDeviceStates(
-  devicesEntities?: string[]
-): Promise<Record<string, HassState[]>> {
-  // Replace placeholders in the prompt with actual values
+export async function fetchAllStates(): Promise<HassState[]> {
   const response = await axios.get(`${HOME_ASSISTANT_URL}/api/states`, {
     headers: {
       Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
@@ -69,7 +66,13 @@ async function getDeviceStates(
     throw new Error(`Failed to fetch devices: ${response.statusText}`);
   }
 
-  const states = response.data as HassState[];
+  return response.data as HassState[];
+}
+
+async function getDeviceStates(
+  devicesEntities?: string[]
+): Promise<Record<string, HassState[]>> {
+  const states = await fetchAllStates();
 
   // Create devices object to devices.json
   // const devicesFilePath = path.join(__dirname, "devices.json");
@@ -82,9 +85,9 @@ async function getDeviceStates(
 
   // Group devices by domain
   states.forEach((state) => {
-    const [_, device] = state.entity_id.split(".");
+    const [_, device = ""] = state.entity_id.split(".");
 
-    if (knownDevices.includes(device)) {
+    if (matchesKnownDevice(device, knownDevices, state.entity_id)) {
       if (!devices[device]) {
         devices[device] = [];
       }
@@ -105,5 +108,32 @@ async function getDeviceStates(
 
 export const getKnownDevices = async (): Promise<string[]> => {
   const devices = process.env.HOME_ASSISTANT_DEVICES;
-  return devices ? devices.split(",") : [];
+  return devices
+    ? devices
+        .split(",")
+        .map((device) => device.trim())
+        .filter(Boolean)
+    : [];
+};
+
+export const matchesKnownDevice = (
+  entityFragment: string,
+  knownDevices: string[],
+  fullEntityId?: string
+): boolean => {
+  if (!entityFragment) {
+    return false;
+  }
+
+  const normalizedFragment = entityFragment.toLowerCase();
+  const normalizedFullEntity = (fullEntityId ?? entityFragment).toLowerCase();
+
+  return knownDevices.some((knownDeviceRaw) => {
+    const knownDevice = knownDeviceRaw.toLowerCase();
+
+    return (
+      normalizedFragment.startsWith(knownDevice) ||
+      normalizedFullEntity.startsWith(knownDevice)
+    );
+  });
 };

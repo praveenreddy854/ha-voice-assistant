@@ -28,3 +28,10 @@ export const HOME_ASSISTANT_URL =
 export const HOME_ASSISTANT_TOKEN = process.env.HOME_ASSISTANT_TOKEN;
 
 export const VACUUM_CLEANER_ENTITY_ID = process.env.VACUUM_CLEANER_ENTITY_ID;
+
+export const AZURE_COSMOS_ENDPOINT = process.env.AZURE_COSMOS_ENDPOINT;
+export const AZURE_COSMOS_KEY = process.env.AZURE_COSMOS_KEY;
+export const AZURE_COSMOS_DATABASE = process.env.AZURE_COSMOS_DATABASE;
+export const AZURE_COSMOS_CONTAINER = process.env.AZURE_COSMOS_CONTAINER;
+export const DEVICE_STATE_LOG_CRON =
+  process.env.DEVICE_STATE_LOG_CRON || "0 * * * *"; // Top of every hour

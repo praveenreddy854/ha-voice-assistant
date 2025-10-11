@@ -17,6 +17,7 @@ A modern voice-controlled smart home assistant that integrates with Home Assista
 - **Node.js** with Express and TypeScript
 - **Azure OpenAI** for natural language processing
 - **Home Assistant REST API** integration
+- **Azure Cosmos DB** (optional) for historical device state archiving
 - **CORS** enabled for cross-origin requests
 
 ## 🚀 Getting Started
@@ -50,7 +51,20 @@ API_KEY=your_openai_or_azure_openai_key
 OPEN_AI_BASE_URL=your_azure_openai_endpoint
 AZURE_OPENAI_API_DEPLOYMENT_NAME=your_deployment_name
 OPENAI_RESPONSES_API_VERSION=2024-02-15-preview
+
+# Optional: enable Azure Cosmos DB logging of device states every hour
+AZURE_COSMOS_ENDPOINT=https://your-cosmos-account.documents.azure.com:443/
+AZURE_COSMOS_KEY=your_cosmos_key
+AZURE_COSMOS_DATABASE=your_database_name
+AZURE_COSMOS_CONTAINER=your_container_name
+# Optional: override the hourly schedule (defaults to top of every hour)
+DEVICE_STATE_LOG_CRON=0 * * * *
 ```
+
+With the Cosmos DB values populated, the service captures Home Assistant
+device states on startup and then on the defined schedule (hourly by default).
+Captured records include the entity ID, friendly name, state, timestamps, and
+full attribute payload to support future AI-driven reminders.
 
 ### Installation & Setup
 
