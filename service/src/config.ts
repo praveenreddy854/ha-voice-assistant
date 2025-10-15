@@ -29,6 +29,17 @@ export const HOME_ASSISTANT_TOKEN = process.env.HOME_ASSISTANT_TOKEN;
 
 export const VACUUM_CLEANER_ENTITY_ID = process.env.VACUUM_CLEANER_ENTITY_ID;
 
+export const TV_REMOTE_ENTITY_ID = process.env.TV_REMOTE_ENTITY_ID;
+export const TV_DEFAULT_WAIT_MS = Number.parseInt(
+  process.env.TV_DEFAULT_WAIT_MS || "1500",
+  10
+);
+
+export const AZURE_AI_AGENT_ENDPOINT = process.env.AZURE_AI_AGENT_ENDPOINT;
+export const AZURE_AI_AGENT_KEY = process.env.AZURE_AI_AGENT_KEY;
+export const AZURE_AI_AGENT_MODEL =
+  process.env.AZURE_AI_AGENT_MODEL || process.env.HA_COMMAND_PROCESS_MODEL;
+
 export const AZURE_COSMOS_ENDPOINT = process.env.AZURE_COSMOS_ENDPOINT;
 export const AZURE_COSMOS_KEY = process.env.AZURE_COSMOS_KEY;
 export const AZURE_COSMOS_DATABASE = process.env.AZURE_COSMOS_DATABASE;

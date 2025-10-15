@@ -14,6 +14,7 @@ import { getHACommandBody } from "./ha";
 import { classifyIntent } from "./intent";
 import { processReminderRequest } from "./reminder";
 import { startDeviceStateLogging } from "./deviceStateLogger";
+import { runTvAgenticFlow } from "./tvAgent";
 
 // Global declaration for announcement storage
 declare global {
@@ -62,6 +63,49 @@ app.post("/api/classifyIntent", (req, res, next) => {
       console.error("Error classifying intent:", err);
       res.status(500).json({
         error: "Error classifying intent",
+        message: err.message,
+        stack: err.stack,
+      });
+    }
+  })();
+});
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.post("/api/runTvAgenticFlow", (req, res, next) => {
+  (async () => {
+    try {
+      const {
+        userPrompt,
+        messageHistory,
+        maxSteps,
+        sessionId,
+        screenshotDataUrl,
+        screenshotBase64,
+        screenshotContentType,
+        screenshotError,
+      } = req.body;
+
+      if (!sessionId && !userPrompt) {
+        return res.status(400).json({ error: "User prompt is required to start a new session" });
+      }
+
+      const result = await runTvAgenticFlow({
+        userPrompt,
+        maxSteps,
+        messageHistory,
+        sessionId,
+        screenshotDataUrl,
+        screenshotBase64,
+        screenshotContentType,
+        screenshotError,
+      });
+
+      res.json(result);
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error executing TV agentic flow:", err);
+      res.status(500).json({
+        error: "Error executing TV agentic flow",
         message: err.message,
         stack: err.stack,
       });

@@ -1,6 +1,7 @@
 import { getIntent, Intent, processReminder } from "./intent";
 import { postHaCommand } from "./ha";
 import { Message } from "../types/chat";
+import { runAgenticFlow } from "./agentic";
 
 export const processRecognizedText = async (
   text: string,
@@ -45,6 +46,31 @@ export const processRecognizedText = async (
           sender: "assistant",
           text: `Failed to process reminder: ${reminderResult.errorMessage}`,
           messageToAnnounce: `Sorry, I couldn't process that reminder request. ${reminderResult.errorMessage}`,
+        });
+      }
+    } else if (intent === Intent.AgenticFlow) {
+      const agenticResult = await runAgenticFlow(text);
+      if (agenticResult.success && agenticResult.data) {
+        const { message, steps, finalCommand } = agenticResult.data;
+        handleRecognizedText({
+          sender: "assistant",
+          text:
+            message ||
+            "Completed the requested TV task using the on-screen agent.",
+          messageToAnnounce:
+            message ||
+            "I completed the requested TV interaction.",
+          agenticSteps: steps,
+          finalCommand,
+        });
+      } else {
+        const errorMessage =
+          agenticResult.errorMessage ||
+          "I couldn't complete that TV task right now.";
+        handleRecognizedText({
+          sender: "assistant",
+          text: errorMessage,
+          messageToAnnounce: errorMessage,
         });
       }
     } else if (intent === Intent.Chat) {

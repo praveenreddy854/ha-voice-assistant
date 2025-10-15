@@ -5,6 +5,7 @@ export enum Intent {
   HACommand = "HACommand",
   Chat = "Chat",
   Reminder = "Reminder",
+  AgenticFlow = "AgenticFlow",
 }
 
 export const getIntent = async (text: string): Promise<Response<Intent>> => {
