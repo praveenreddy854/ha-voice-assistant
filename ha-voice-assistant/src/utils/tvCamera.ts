@@ -62,7 +62,11 @@ class TvCameraController {
       const onError = (event: Event) => {
         video.removeEventListener("loadeddata", onLoaded);
         video.removeEventListener("error", onError);
-        reject(event instanceof Error ? event : new Error("Failed to load camera stream."));
+        reject(
+          event instanceof Error
+            ? event
+            : new Error("Failed to load camera stream.")
+        );
       };
       video.addEventListener("loadeddata", onLoaded);
       video.addEventListener("error", onError);
@@ -71,7 +75,10 @@ class TvCameraController {
     try {
       await video.play();
     } catch (error) {
-      console.warn("[TV Agentic Flow] Unable to autoplay the camera stream.", error);
+      console.warn(
+        "[TV Agentic Flow] Unable to autoplay the camera stream.",
+        error
+      );
     }
 
     const canvas = document.createElement("canvas");
@@ -82,7 +89,9 @@ class TvCameraController {
     this.videoElement = video;
     this.canvasElement = canvas;
 
-    console.info("[TV Agentic Flow] Camera ready. Captures will run in the background.");
+    console.info(
+      "[TV Agentic Flow] Camera ready. Captures will run in the background."
+    );
   }
 
   async ensureCamera(): Promise<void> {
@@ -109,7 +118,9 @@ class TvCameraController {
         error instanceof Error
           ? error.message
           : "Unable to initialize the camera for screenshot capture.";
-      console.error(`[TV Agentic Flow] Camera initialization failed: ${message}`);
+      console.error(
+        `[TV Agentic Flow] Camera initialization failed: ${message}`
+      );
       return { error: message };
     }
 
@@ -117,7 +128,9 @@ class TvCameraController {
     const canvas = this.canvasElement;
 
     if (!video || !canvas) {
-      return { error: "Camera stream is not available for capturing screenshots." };
+      return {
+        error: "Camera stream is not available for capturing screenshots.",
+      };
     }
 
     if (video.readyState < 2) {
@@ -140,7 +153,9 @@ class TvCameraController {
 
     const context = canvas.getContext("2d");
     if (!context) {
-      return { error: "Unable to access the canvas context for screenshot capture." };
+      return {
+        error: "Unable to access the canvas context for screenshot capture.",
+      };
     }
 
     context.drawImage(video, 0, 0, width, height);
@@ -151,7 +166,10 @@ class TvCameraController {
       if (!base64) {
         throw new Error("Failed to encode the captured frame.");
       }
-      console.info(`[TV Agentic Flow] Captured screenshot for step ${stepIndex}.`);
+      console.info(
+        `[TV Agentic Flow] Captured screenshot for step ${stepIndex}. Screenshot will be saved on server.`
+      );
+
       return {
         dataUrl,
         base64,
@@ -194,6 +212,8 @@ class TvCameraController {
 
 export const tvCameraController = new TvCameraController();
 
-export async function captureTvScreenshot(stepIndex: number): Promise<ScreenshotCapture> {
+export async function captureTvScreenshot(
+  stepIndex: number
+): Promise<ScreenshotCapture> {
   return tvCameraController.capture(stepIndex);
 }

@@ -50,7 +50,10 @@ function buildRequestBody(
   return body;
 }
 
-function logStepDelta(previousSteps: AgenticStep[], nextSteps: AgenticStep[]): void {
+function logStepDelta(
+  previousSteps: AgenticStep[],
+  nextSteps: AgenticStep[]
+): void {
   if (nextSteps.length <= previousSteps.length) {
     return;
   }
@@ -102,7 +105,11 @@ export async function runAgenticFlow(
       );
 
       if (!response?.data) {
-        throw new Error(response?.message || "Agentic flow did not return a response.");
+        throw new Error(
+          response?.data?.message ||
+            response?.statusText ||
+            "Agentic flow did not return a response."
+        );
       }
 
       latestResponse = response.data;
@@ -116,7 +123,8 @@ export async function runAgenticFlow(
 
       if (status === "awaiting_screenshot") {
         const pendingStep =
-          latestResponse.pendingStep || latestResponse.steps?.[latestResponse.steps.length - 1];
+          latestResponse.pendingStep ||
+          latestResponse.steps?.[latestResponse.steps.length - 1];
         if (!pendingStep) {
           console.warn(
             "[TV Agentic Flow] Awaiting screenshot but no pending step was provided by the service."
@@ -163,13 +171,16 @@ export async function runAgenticFlow(
 
     return {
       success: false,
-      errorMessage: "Agentic flow exceeded the maximum number of client-side iterations.",
+      errorMessage:
+        "Agentic flow exceeded the maximum number of client-side iterations.",
     };
   } catch (error) {
     console.error("Error running agentic flow:", error);
 
     const message =
-      error instanceof Error ? error.message : "Failed to execute agentic TV flow.";
+      error instanceof Error
+        ? error.message
+        : "Failed to execute agentic TV flow.";
 
     return {
       success: false,

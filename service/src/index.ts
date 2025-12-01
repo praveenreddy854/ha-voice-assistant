@@ -1,4 +1,14 @@
+// Initialize tracing first
+import { initializeTracing, shutdownTracing } from "./tracing";
+initializeTracing();
+
 import express from "express";
+import type {
+  ErrorRequestHandler,
+  NextFunction,
+  Request,
+  Response,
+} from "express";
 import axios from "axios";
 import cors from "cors";
 import fs from "fs";
@@ -10,7 +20,7 @@ import {
   SPEECH_REGION,
   VACUUM_CLEANER_ENTITY_ID,
 } from "./config";
-import { getHACommandBody } from "./ha";
+import { fetchAllStates, getHACommandBody } from "./ha";
 import { classifyIntent } from "./intent";
 import { processReminderRequest } from "./reminder";
 import { startDeviceStateLogging } from "./deviceStateLogger";
@@ -23,6 +33,7 @@ declare global {
 
 const app = express();
 const port = process.env.PORT || 3005;
+const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || "15mb";
 
 // File paths for storage
 const REMINDERS_FILE = path.join(__dirname, "../generated_data/reminders.json");
@@ -38,8 +49,28 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 
 // Middleware to parse JSON bodies
-app.use(express.json());
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
+app.use(express.urlencoded({ extended: true, limit: JSON_BODY_LIMIT }));
 app.use(cors());
+
+// Handle payload-too-large errors gracefully
+const payloadTooLargeHandler: ErrorRequestHandler = (
+  err: Error & { type?: string },
+  _req: Request,
+  res: Response,
+  next: NextFunction
+): void => {
+  if (err?.type === "entity.too.large") {
+    res.status(413).json({
+      error: "Payload too large",
+      message: `Submitted payload exceeds the limit of ${JSON_BODY_LIMIT}.`,
+    });
+    return;
+  }
+  next(err);
+};
+
+app.use(payloadTooLargeHandler);
 
 startDeviceStateLogging();
 
@@ -86,7 +117,9 @@ app.post("/api/runTvAgenticFlow", (req, res, next) => {
       } = req.body;
 
       if (!sessionId && !userPrompt) {
-        return res.status(400).json({ error: "User prompt is required to start a new session" });
+        return res
+          .status(400)
+          .json({ error: "User prompt is required to start a new session" });
       }
 
       const result = await runTvAgenticFlow({
@@ -177,6 +210,23 @@ app.post("/api/postHACommand", (req, res, next) => {
       console.error("Error posting command to Home Assistant:", err);
       res.status(500).json({
         error: "Error posting command to Home Assistant",
+        message: err.message,
+        stack: err.stack,
+      });
+    }
+  })();
+});
+
+app.get("/api/fetchAllDeviceStates", (req, res, next) => {
+  (async () => {
+    try {
+      const states = await fetchAllStates();
+      res.json(states);
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error fetching all device states:", err);
+      res.status(500).json({
+        error: "Error fetching all device states",
         message: err.message,
         stack: err.stack,
       });
@@ -420,7 +470,11 @@ app.post("/api/processReminder", (req, res, next) => {
         return res.status(400).json({ error: "Reminders array is required" });
       }
 
-      const reminderData = await processReminderRequest(userPrompt, reminders, messageHistory);
+      const reminderData = await processReminderRequest(
+        userPrompt,
+        reminders,
+        messageHistory
+      );
 
       if (reminderData.action === "CREATE") {
         // Handle reminder creation
@@ -741,4 +795,17 @@ app.post("/api/processed-reminders", (req, res, next) => {
 app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
   console.log(`Visit http://localhost:${port} to access the application`);
+});
+
+// Graceful shutdown
+process.on("SIGTERM", async () => {
+  console.log("SIGTERM received, shutting down gracefully...");
+  await shutdownTracing();
+  process.exit(0);
+});
+
+process.on("SIGINT", async () => {
+  console.log("SIGINT received, shutting down gracefully...");
+  await shutdownTracing();
+  process.exit(0);
 });

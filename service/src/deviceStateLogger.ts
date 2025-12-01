@@ -1,6 +1,6 @@
 import cron from "node-cron";
 import { DEVICE_STATE_LOG_CRON } from "./config";
-import { fetchAllStates, getKnownDevices, matchesKnownDevice } from "./ha";
+import { getKnownDeviceStates } from "./ha";
 import {
   DeviceStateRecord,
   isCosmosConfigured,
@@ -17,41 +17,30 @@ const buildRecordId = (entityId: string, capturedAtIso: string): string => {
 const mapStatesToRecords = (
   capturedAt: Date,
   captureReason: string,
-  knownDevices: string[],
-  states: Awaited<ReturnType<typeof fetchAllStates>>
+  states: Awaited<ReturnType<typeof getKnownDeviceStates>>
 ): DeviceStateRecord[] => {
   const capturedAtIso = capturedAt.toISOString();
-  const shouldFilter = knownDevices.length > 0;
 
-  return states
-    .filter((state) => {
-      if (!shouldFilter) {
-        return true;
-      }
+  return states.map((state) => {
+    const [domain] = state.entity_id.split(".");
 
-      const [, entity = ""] = state.entity_id.split(".");
-      return matchesKnownDevice(entity, knownDevices, state.entity_id);
-    })
-    .map((state) => {
-      const [domain] = state.entity_id.split(".");
-
-      return {
-        id: buildRecordId(state.entity_id, capturedAtIso),
-        entityId: state.entity_id,
-        domain,
-        friendlyName: state.attributes?.friendly_name ?? state.entity_id,
-        state: state.state,
-        attributes: { ...(state.attributes ?? {}) },
-        lastChanged: state.last_changed,
-        lastUpdated: state.last_updated,
-        context: state.context || null,
-        capturedAt: capturedAtIso,
-        additional: {
-          captureReason,
-          source: "home-assistant",
-        },
-      } satisfies DeviceStateRecord;
-    });
+    return {
+      id: buildRecordId(state.entity_id, capturedAtIso),
+      entityId: state.entity_id,
+      domain,
+      friendlyName: state.attributes?.friendly_name ?? state.entity_id,
+      state: state.state,
+      attributes: { ...(state.attributes ?? {}) },
+      lastChanged: state.last_changed,
+      lastUpdated: state.last_updated,
+      context: state.context || null,
+      capturedAt: capturedAtIso,
+      additional: {
+        captureReason,
+        source: "home-assistant",
+      },
+    } satisfies DeviceStateRecord;
+  });
 };
 
 const captureAndPersistStates = async (reason: string): Promise<void> => {
@@ -63,18 +52,10 @@ const captureAndPersistStates = async (reason: string): Promise<void> => {
   }
 
   try {
-    const [states, knownDevices] = await Promise.all([
-      fetchAllStates(),
-      getKnownDevices(),
-    ]);
+    const states = await getKnownDeviceStates();
 
     const capturedAt = new Date();
-    const records = mapStatesToRecords(
-      capturedAt,
-      reason,
-      knownDevices,
-      states
-    );
+    const records = mapStatesToRecords(capturedAt, reason, states);
 
     if (records.length === 0) {
       console.info(

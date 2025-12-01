@@ -35,11 +35,32 @@ export const TV_DEFAULT_WAIT_MS = Number.parseInt(
   10
 );
 
-export const AZURE_AI_AGENT_ENDPOINT = process.env.AZURE_AI_AGENT_ENDPOINT;
+export const AZURE_AI_PROJECT_ENDPOINT = process.env.AZURE_AI_PROJECT_ENDPOINT;
 export const AZURE_AI_AGENT_KEY = process.env.AZURE_AI_AGENT_KEY;
 export const AZURE_AI_AGENT_MODEL =
   process.env.AZURE_AI_AGENT_MODEL || process.env.HA_COMMAND_PROCESS_MODEL;
+export const AZURE_AI_AGENT_KEY_HEADER_NAME =
+  process.env.AZURE_AI_AGENT_KEY_HEADER_NAME || "api-key";
 
+// Azure AI Agents retry configuration
+export const AZURE_AGENTS_MAX_RETRIES = Number.parseInt(
+  process.env.AZURE_AGENTS_MAX_RETRIES || "3",
+  10
+);
+export const AZURE_AGENTS_BASE_RETRY_DELAY = Number.parseInt(
+  process.env.AZURE_AGENTS_BASE_RETRY_DELAY || "1000",
+  10
+);
+export const AZURE_AGENTS_RETRY_ENABLED =
+  process.env.AZURE_AGENTS_RETRY_ENABLED !== "false"; // Enabled by default
+export const AZURE_AGENTS_TIMEOUT_MS = Number.parseInt(
+  process.env.AZURE_AGENTS_TIMEOUT_MS || "30000", // 30 seconds default
+  10
+);
+
+export const TV_AGENT_DEVICES = process.env.TV_AGENT_DEVICES
+  ? process.env.TV_AGENT_DEVICES.split(",").map((d) => d.trim())
+  : [];
 export const AZURE_COSMOS_ENDPOINT = process.env.AZURE_COSMOS_ENDPOINT;
 export const AZURE_COSMOS_KEY = process.env.AZURE_COSMOS_KEY;
 export const AZURE_COSMOS_DATABASE = process.env.AZURE_COSMOS_DATABASE;

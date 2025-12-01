@@ -17,11 +17,11 @@ import { LaundryMonitor, VacuumMonitor, ReminderManager } from "./skills";
 import SkillToggles from "./components/SkillToggles";
 import SkillWrapper from "./components/SkillWrapper";
 import HandGestureDetector from "./skills/gestures/HandGestureDetector";
-import { 
-  SkillToggleState, 
-  loadSkillToggleState, 
-  saveSkillToggleState, 
-  isSkillEnabled 
+import {
+  SkillToggleState,
+  loadSkillToggleState,
+  saveSkillToggleState,
+  isSkillEnabled,
 } from "./utils/skillToggle";
 
 declare global {
@@ -36,7 +36,10 @@ function App() {
   const [isWakeWordMode, setIsWakeWordMode] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [allReminders, setAllReminders] = useState<any[]>([]);
-  const [skillState, setSkillState] = useState<SkillToggleState>(loadSkillToggleState());
+  const [skillState, setSkillState] = useState<SkillToggleState>(
+    loadSkillToggleState()
+  );
+  const [isGestureCameraActive, setIsGestureCameraActive] = useState(false);
   const isListeningForWakeWord = useRef(false);
 
   const { finalTranscript, resetTranscript } = useSpeechRecognition();
@@ -46,12 +49,18 @@ function App() {
   }, [skillState]);
 
   const handleToggleGlobal = useCallback((enabled: boolean) => {
-    setSkillState(prev => ({ ...prev, globalEnabled: enabled }));
+    setSkillState((prev) => ({ ...prev, globalEnabled: enabled }));
   }, []);
 
-  const handleToggleSkill = useCallback((skill: keyof Omit<SkillToggleState, 'globalEnabled'>, enabled: boolean) => {
-    setSkillState(prev => ({ ...prev, [skill]: enabled }));
-  }, []);
+  const handleToggleSkill = useCallback(
+    (
+      skill: keyof Omit<SkillToggleState, "globalEnabled">,
+      enabled: boolean
+    ) => {
+      setSkillState((prev) => ({ ...prev, [skill]: enabled }));
+    },
+    []
+  );
 
   const handleRecognizedText = useCallback(async (message: Message) => {
     setMessages((prevMessages) => [...prevMessages, message]);
@@ -115,6 +124,7 @@ function App() {
   const startWakeWordListening = useCallback(() => {
     console.log("Starting wake word listening...");
     resetTranscript(); // Clear any existing transcript
+    setIsGestureCameraActive(false);
     SpeechRecognition.startListening({
       continuous: true,
       language: "en-US",
@@ -131,6 +141,7 @@ function App() {
     // Auto-stop after 30 seconds when listening for commands (not wake words)
     if (isListening && !isListeningForWakeWord.current) {
       setCountdown(30);
+      setIsGestureCameraActive(true);
 
       // Update countdown every second
       const countdownInterval = setInterval(() => {
@@ -157,6 +168,7 @@ function App() {
               setIsListening,
               isListeningForWakeWord,
               processRecognizedText: processRecognizedTextCallback,
+              onSessionStopped: () => setIsGestureCameraActive(false),
             },
             () => {
               // Callback executed after Azure SDK is properly stopped
@@ -171,6 +183,7 @@ function App() {
             );
             setIsListening(false);
             isListeningForWakeWord.current = true;
+            setIsGestureCameraActive(false);
             handleRecognizedText({
               sender: "assistant",
               text: "Auto stopped listening for commands",
@@ -219,6 +232,7 @@ function App() {
         isListeningForWakeWord.current = false;
         setIsWakeWordMode(false);
         setIsListening(true);
+        setIsGestureCameraActive(true);
 
         // Immediately start Azure speech recognition for command listening
         if (USE_AZURE_SPEECH) {
@@ -231,6 +245,8 @@ function App() {
               setRecognizedText: handleRecognizedText,
               isListeningForWakeWord,
               processRecognizedText: processRecognizedTextCallback,
+              onSessionStarted: () => setIsGestureCameraActive(true),
+              onSessionStopped: () => setIsGestureCameraActive(false),
             });
           });
         }
@@ -274,6 +290,7 @@ function App() {
             isListeningForWakeWord,
             setRecognizedText: handleRecognizedText,
             processRecognizedText: processRecognizedTextCallback,
+            onSessionStopped: () => setIsGestureCameraActive(false),
           });
         }}
         disabled={!isListening && !isListeningForWakeWord.current}
@@ -286,22 +303,24 @@ function App() {
           : "Stop Voice Assistant"}
       </button>
       {countdown !== null && (
-        <div style={{ 
-          marginBottom: 20,
-          padding: '12px 24px',
-          background: 'linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)',
-          border: '2px solid rgba(245, 158, 11, 0.3)',
-          borderRadius: '16px',
-          fontSize: 16,
-          fontWeight: 600,
-          color: '#92400e',
-          boxShadow: '0 4px 12px rgba(245, 158, 11, 0.2)',
-          animation: 'pulse 1s ease-in-out infinite',
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: '8px'
-        }}>
-          <span style={{ fontSize: '18px' }}>⏱️</span>
+        <div
+          style={{
+            marginBottom: 20,
+            padding: "12px 24px",
+            background: "linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)",
+            border: "2px solid rgba(245, 158, 11, 0.3)",
+            borderRadius: "16px",
+            fontSize: 16,
+            fontWeight: 600,
+            color: "#92400e",
+            boxShadow: "0 4px 12px rgba(245, 158, 11, 0.2)",
+            animation: "pulse 1s ease-in-out infinite",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "8px",
+          }}
+        >
+          <span style={{ fontSize: "18px" }}>⏱️</span>
           Auto-stop in: {countdown}s
         </div>
       )}
@@ -313,73 +332,89 @@ function App() {
           borderTop: "2px solid #e0e0e0",
           paddingTop: "20px",
           width: "100%",
-          maxWidth: "1200px"
+          maxWidth: "1200px",
         }}
       >
-        <h2 style={{ 
-          marginBottom: "30px", 
-          color: "#1e293b", 
-          fontSize: "28px",
-          fontWeight: "700",
-          textAlign: "center",
-          background: "linear-gradient(135deg, #334155 0%, #64748b 100%)",
-          WebkitBackgroundClip: "text",
-          WebkitTextFillColor: "transparent",
-          backgroundClip: "text"
-        }}>
+        <h2
+          style={{
+            marginBottom: "30px",
+            color: "#1e293b",
+            fontSize: "28px",
+            fontWeight: "700",
+            textAlign: "center",
+            background: "linear-gradient(135deg, #334155 0%, #64748b 100%)",
+            WebkitBackgroundClip: "text",
+            WebkitTextFillColor: "transparent",
+            backgroundClip: "text",
+          }}
+        >
           🏠 Smart Home Dashboard
         </h2>
-        
+
         <SkillToggles
           skillState={skillState}
           onToggleGlobal={handleToggleGlobal}
           onToggleSkill={handleToggleSkill}
         />
-        
+
         <div
           className="dashboard-grid"
           style={{
             animation: "fadeIn 0.8s ease-out",
-            justifyItems: "stretch"
+            justifyItems: "stretch",
           }}
         >
           <SkillWrapper
             skillName="Laundry Monitor"
             enabled={skillState.laundryMonitor}
             globalEnabled={skillState.globalEnabled}
-            onToggle={(enabled) => handleToggleSkill('laundryMonitor', enabled)}
+            onToggle={(enabled) => handleToggleSkill("laundryMonitor", enabled)}
             description="Monitors laundry machine status"
           >
-            <LaundryMonitor 
-              onAnnouncement={isSkillEnabled('laundryMonitor', skillState) ? handleAnnouncement : undefined}
-              enabled={isSkillEnabled('laundryMonitor', skillState)}
+            <LaundryMonitor
+              onAnnouncement={
+                isSkillEnabled("laundryMonitor", skillState)
+                  ? handleAnnouncement
+                  : undefined
+              }
+              enabled={isSkillEnabled("laundryMonitor", skillState)}
             />
           </SkillWrapper>
-          
+
           <SkillWrapper
             skillName="Vacuum Monitor"
             enabled={skillState.vacuumMonitor}
             globalEnabled={skillState.globalEnabled}
-            onToggle={(enabled) => handleToggleSkill('vacuumMonitor', enabled)}
+            onToggle={(enabled) => handleToggleSkill("vacuumMonitor", enabled)}
             description="Monitors vacuum cleaner status"
           >
-            <VacuumMonitor 
-              onAnnouncement={isSkillEnabled('vacuumMonitor', skillState) ? handleAnnouncement : undefined}
-              enabled={isSkillEnabled('vacuumMonitor', skillState)}
+            <VacuumMonitor
+              onAnnouncement={
+                isSkillEnabled("vacuumMonitor", skillState)
+                  ? handleAnnouncement
+                  : undefined
+              }
+              enabled={isSkillEnabled("vacuumMonitor", skillState)}
             />
           </SkillWrapper>
-          
+
           <SkillWrapper
             skillName="Voice Reminders"
             enabled={skillState.reminderManager}
             globalEnabled={skillState.globalEnabled}
-            onToggle={(enabled) => handleToggleSkill('reminderManager', enabled)}
+            onToggle={(enabled) =>
+              handleToggleSkill("reminderManager", enabled)
+            }
             description="Voice-controlled reminder system"
           >
             <ReminderManager
-              onAnnouncement={isSkillEnabled('reminderManager', skillState) ? handleAnnouncement : undefined}
+              onAnnouncement={
+                isSkillEnabled("reminderManager", skillState)
+                  ? handleAnnouncement
+                  : undefined
+              }
               onRemindersChange={handleRemindersChange}
-              enabled={isSkillEnabled('reminderManager', skillState)}
+              enabled={isSkillEnabled("reminderManager", skillState)}
             />
           </SkillWrapper>
         </div>
@@ -392,24 +427,26 @@ function App() {
           borderTop: "2px solid #e0e0e0",
           paddingTop: "30px",
           width: "100%",
-          maxWidth: "1200px"
+          maxWidth: "1200px",
         }}
       >
-        <h2 style={{ 
-          marginBottom: "30px", 
-          color: "#1e293b", 
-          fontSize: "28px",
-          fontWeight: "700",
-          textAlign: "center",
-          background: "linear-gradient(135deg, #7c3aed 0%, #a855f7 100%)",
-          WebkitBackgroundClip: "text",
-          WebkitTextFillColor: "transparent",
-          backgroundClip: "text"
-        }}>
+        <h2
+          style={{
+            marginBottom: "30px",
+            color: "#1e293b",
+            fontSize: "28px",
+            fontWeight: "700",
+            textAlign: "center",
+            background: "linear-gradient(135deg, #7c3aed 0%, #a855f7 100%)",
+            WebkitBackgroundClip: "text",
+            WebkitTextFillColor: "transparent",
+            backgroundClip: "text",
+          }}
+        >
           🤲 Gesture Control
         </h2>
-        
-        <HandGestureDetector />
+
+        <HandGestureDetector active={isGestureCameraActive} />
       </div>
     </div>
   );

@@ -10,25 +10,25 @@ Home Assistant REST API calls.
 
 [
 {
-"entity_id": "media_player.appletv",
+"entity*id": "media_player.appletv",
 "state": "playing",
 "attributes": {
 "friendly_name": "Apple TV",
 description: "";
-/* … */
+/* … _/
 }
-/* … */
+/_ … \_/
 }
- 
+
 {
-"entity_id": "media_player.samsung_tv",
+"entity*id": "media_player.samsung_tv",
 "state": "off",
 "attributes": {
 "friendly_name": "Samsung TV",
 description: "";
-/* … */
+/* … _/
 }
-/* … */
+/_ … \_/
 }
 ]
 
@@ -72,6 +72,8 @@ description: "";
      • volume_down – Decrease volume
      • mute – Mute audio
      • unmute – Unmute audio
+     • wakeup – To turn on the device
+     • suspend – To turn off / sleep the device
 
    - For opening apps (e.g. "Open YouTube", "Open Netflix", "Open Spotify"), use `media_player` service.
    - Extract the app name from the command (e.g. "YouTube", "Netflix", "Spotify")
@@ -102,10 +104,10 @@ All keys are lowercase, all strings are double-quoted.
 
 **User:** _Turn on the Apple TV_  
 **Assistant:**  
-{ "url_path": "media_player/turn_on", "entity_id": "media_player.appletv" }
+{ "url_path": "remote/send_command", "entity_id": "remote.appletv", "command": "wakeup" }
 
 **User:** _Turn off Apple TV_  
-{ "url_path": "media_player/turn_off", "entity_id": "media_player.appletv" }
+{ "url_path": "remote/send_command", "entity_id": "remote.appletv", "command": "suspend" }
 
 **User:** _Mute Apple TV_  
 { "url_path": "remote/send_command", "entity_id": "remote.appletv", "service_data": { "command": "mute" } }

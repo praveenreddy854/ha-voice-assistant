@@ -8,7 +8,11 @@ interface GestureEvent {
   timestamp: number;
 }
 
-export default function HandGestureDetector() {
+interface HandGestureDetectorProps {
+  active: boolean;
+}
+
+export default function HandGestureDetector({ active }: HandGestureDetectorProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
 
   // ONLY UI state - minimize re-renders
@@ -16,16 +20,47 @@ export default function HandGestureDetector() {
   const [recentGestures, setRecentGestures] = useState<GestureEvent[]>([]);
   const [debugMode, setDebugMode] = useState(false);
   const [handDistance, setHandDistance] = useState("Unknown");
-  const [cameraStatus, setCameraStatus] = useState<
-    "checking" | "unavailable" | "available" | "starting" | "ready" | "error"
-  >("checking");
-  const [cameraError, setCameraError] = useState<string | null>(null);
 
   // ALL internal state as refs - NO re-renders
   const handsRef = useRef<Hands | null>(null);
   const cameraRef = useRef<any>(null);
   const gestureEngineRef = useRef<GestureEngine | null>(null);
   const isInitializedRef = useRef(false);
+
+  const cleanupResources = useCallback(() => {
+    gestureEngineRef.current?.cleanup();
+    gestureEngineRef.current = null;
+
+    const cameraInstance = cameraRef.current;
+    cameraRef.current = null;
+    if (cameraInstance) {
+      try {
+        cameraInstance.stop();
+      } catch (error) {
+        console.warn("Camera cleanup error:", error);
+      }
+    }
+
+    const handsInstance = handsRef.current;
+    handsRef.current = null;
+    if (handsInstance) {
+      try {
+        const maybePromise = handsInstance.close();
+        if (
+          maybePromise &&
+          typeof (maybePromise as Promise<void>).catch === "function"
+        ) {
+          (maybePromise as Promise<void>).catch((error) => {
+            console.warn("Hands cleanup error:", error);
+          });
+        }
+      } catch (error) {
+        console.warn("Hands cleanup error:", error);
+      }
+    }
+
+    isInitializedRef.current = false;
+  }, []);
 
   // TV Remote Gesture Engine - Simple and Reliable
   class GestureEngine {
@@ -48,10 +83,6 @@ export default function HandGestureDetector() {
     // Distance and sensitivity
     private currentHandSize: number = 0;
     private adaptiveThreshold: number = 0;
-
-    // Fist (Select) hold detection state
-    private fistStartTime: number = 0;
-    private fistAnchor: { x: number; y: number; scale: number } | null = null;
 
     // Compute a stable hand centroid for motion (less jitter than a single landmark)
     private computeCentroid(landmarks: any[]): { x: number; y: number } {
@@ -95,46 +126,11 @@ export default function HandGestureDetector() {
       // Need minimum history for stable detection
       if (this.handHistory.length < 4) return;
 
-      // Check for fist/select gesture first (must be held stationary for >= 1s)
-      const fistConfidence = this.detectFistGesture(landmarks);
-      if (fistConfidence) {
-        // Initialize hold tracking if needed
-        if (!this.fistAnchor || this.fistStartTime === 0) {
-          this.fistAnchor = { x: centroid.x, y: centroid.y, scale };
-          this.fistStartTime = now;
-        } else {
-          // Measure normalized displacement from anchor (in hand widths)
-          const meanScale = Math.max(0.02, (this.fistAnchor.scale + scale) / 2);
-          const ndx = (centroid.x - this.fistAnchor.x) / meanScale;
-          const ndy = (centroid.y - this.fistAnchor.y) / meanScale;
-          const displacementN = Math.hypot(ndx, ndy);
-
-          const heldMs = now - this.fistStartTime;
-          const stationaryThresholdN = 0.12; // must stay within ~0.12 hand widths
-
-          // If moved too much, restart the hold window
-          if (displacementN > stationaryThresholdN) {
-            this.fistAnchor = { x: centroid.x, y: centroid.y, scale };
-            this.fistStartTime = now;
-          } else if (heldMs >= 1000) {
-            // Check cooldown and trigger Select
-            if (now - this.lastGestureTime >= this.GESTURE_COOLDOWN) {
-              this.onGestureDetected("Select", Math.min(1, fistConfidence));
-              this.lastGesture = "Select";
-              this.lastGestureTime = now;
-            }
-            // Reset fist tracking after trigger
-            this.fistAnchor = null;
-            this.fistStartTime = 0;
-            this.resetGestureTracking();
-          }
-        }
-        // While fist is present, do not consider swipe gestures
+      // Check for fist/select gesture first (stationary gesture)
+      const fistGesture = this.detectFistGesture(landmarks);
+      if (fistGesture) {
+        this.handleGestureDetection("Select", fistGesture, now);
         return;
-      } else {
-        // Not a fist — clear any ongoing hold state
-        this.fistAnchor = null;
-        this.fistStartTime = 0;
       }
 
       // Check for swipe gestures (movement-based)
@@ -396,8 +392,6 @@ export default function HandGestureDetector() {
       this.handHistory = [];
       this.currentHandSize = 0;
       this.adaptiveThreshold = 0;
-      this.fistAnchor = null;
-      this.fistStartTime = 0;
     }
 
     cleanup() {
@@ -457,65 +451,28 @@ export default function HandGestureDetector() {
   }, []);
 
   useEffect(() => {
-    if (typeof navigator === "undefined") {
-      setCameraStatus("unavailable");
-      return;
-    }
-
-    const checkCameraAvailability = async () => {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
-        setCameraStatus("unavailable");
-        return;
-      }
-
-      try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const hasVideoInput = devices.some(
-          (device) => device.kind === "videoinput"
-        );
-
-        if (!hasVideoInput) {
-          setCameraStatus("unavailable");
-        } else {
-          setCameraStatus("available");
-          setCameraError(null);
-        }
-      } catch (error) {
-        console.error("Failed to enumerate media devices:", error);
-        setCameraStatus("error");
-        setCameraError(
-          error instanceof Error ? error.message : String(error)
-        );
-      }
-    };
-
-    checkCameraAvailability();
-  }, []);
-
-  useEffect(() => {
-    if (cameraStatus === "ready") return;
-    if (cameraStatus === "unavailable" || cameraStatus === "error") {
+    if (!active) {
       setCurrentGesture("");
       setRecentGestures([]);
+      setHandDistance("Unknown");
     }
-  }, [cameraStatus]);
+  }, [active]);
 
-  const isCameraUnavailable =
-    cameraStatus === "unavailable" || cameraStatus === "error";
-  const isCameraReady = cameraStatus === "ready";
-  const isCameraStarting = cameraStatus === "starting";
-
-  // Initialize everything ONCE - never re-run
   useEffect(() => {
-    if (isInitializedRef.current || cameraStatus !== "available") return;
+    if (!active) {
+      if (isInitializedRef.current) {
+        cleanupResources();
+      }
+      return;
+    }
 
     const videoElement = videoRef.current;
     if (!videoElement) return;
 
-    // Initialize gesture engine
+    let cancelled = false;
+
     gestureEngineRef.current = new GestureEngine(handleGestureDetected);
 
-    // Initialize MediaPipe
     const hands = new Hands({
       locateFile: (file) =>
         `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
@@ -528,85 +485,62 @@ export default function HandGestureDetector() {
       minTrackingConfidence: 0.6,
     });
 
-    // Process results - completely independent of React
     hands.onResults((results) => {
+      if (cancelled) {
+        return;
+      }
       if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
         const landmarks = results.multiHandLandmarks[0];
-
-        // Process gesture
         gestureEngineRef.current?.processHand(landmarks);
-
-        // Update distance (throttled)
         if (Math.random() < 0.1) {
-          // Only update 10% of the time
           updateHandDistance(landmarks);
         }
       } else {
-        // No hand detected - mark absence but don't be too aggressive
         gestureEngineRef.current?.processNoHand();
       }
     });
 
-    let cancelled = false;
-
-    // Initialize camera - ONCE
     try {
       const camera = new Camera(videoElement, {
         onFrame: async () => {
-          await hands.send({ image: videoElement });
+          if (cancelled) {
+            return;
+          }
+          const handsInstance = handsRef.current;
+          if (!handsInstance) {
+            return;
+          }
+          try {
+            await handsInstance.send({ image: videoElement });
+          } catch (error) {
+            if (!cancelled) {
+              console.error("Failed to process gesture frame:", error);
+            }
+          }
         },
         width: 640,
         height: 480,
       });
 
-      isInitializedRef.current = true;
-      setCameraStatus("starting");
-
-      camera
-        .start()
-        .then(() => {
-          if (cancelled) return;
-          setCameraStatus("ready");
-        })
-        .catch((error: unknown) => {
-          if (cancelled) return;
-          console.error("Failed to start camera stream:", error);
-          setCameraStatus("error");
-          setCameraError(error instanceof Error ? error.message : String(error));
-          isInitializedRef.current = false;
-        });
-
-      // Store references
-      handsRef.current = hands;
       cameraRef.current = camera;
+      handsRef.current = hands;
+      camera.start();
+      isInitializedRef.current = true;
     } catch (error) {
       console.error("Failed to initialize camera:", error);
-      setCameraStatus("error");
-      setCameraError(error instanceof Error ? error.message : String(error));
-      isInitializedRef.current = false;
+      cancelled = true;
+      cleanupResources();
     }
 
-    // Cleanup function
     return () => {
       cancelled = true;
-      gestureEngineRef.current?.cleanup();
-
-      if (cameraRef.current) {
-        try {
-          cameraRef.current.stop();
-        } catch (e) {
-          console.warn("Camera cleanup error:", e);
-        }
-      }
-
-      isInitializedRef.current = false;
+      cleanupResources();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [handleGestureDetected, updateHandDistance, cameraStatus]); // GestureEngine is class defined above
+  }, [active, cleanupResources, handleGestureDetected, updateHandDistance]);
 
   // Gesture display component
   const GestureDisplay = ({ gesture }: { gesture: string }) => {
-    if (!gesture || !isCameraReady) return null;
+    if (!gesture) return null;
 
     const getGestureIcon = () => {
       switch (gesture) {
@@ -651,11 +585,7 @@ export default function HandGestureDetector() {
   };
 
   return (
-    <div
-      className={`tv-gesture-control ${
-        isCameraUnavailable ? "camera-disabled" : ""
-      }`}
-    >
+    <div className="tv-gesture-control">
       <div className="header">
         <h2 className="title">
           <span className="icon">📺</span>
@@ -664,34 +594,11 @@ export default function HandGestureDetector() {
         <button
           type="button"
           className="debug-toggle"
-          disabled={!isCameraReady}
           onClick={() => setDebugMode(!debugMode)}
         >
           {debugMode ? "Hide Debug" : "Show Debug"}
         </button>
       </div>
-
-      {(cameraStatus === "checking" || isCameraStarting || isCameraUnavailable) && (
-        <div
-          className={`camera-status ${
-            isCameraUnavailable ? "camera-status--error" : ""
-          }`}
-        >
-          <span className="status-icon">
-            {cameraStatus === "checking" || isCameraStarting ? "⏳" : "🚫"}
-          </span>
-          <span>
-            {cameraStatus === "checking" && "Checking for an available camera..."}
-            {isCameraStarting && "Camera detected. Starting live preview..."}
-            {cameraStatus === "unavailable" &&
-              "No camera detected. Gesture control is disabled."}
-            {cameraStatus === "error" &&
-              `Camera error. Gesture control is disabled${
-                cameraError ? `: ${cameraError}` : "."
-              }`}
-          </span>
-        </div>
-      )}
 
       {debugMode && (
         <div className="debug-panel">
@@ -701,40 +608,27 @@ export default function HandGestureDetector() {
       )}
 
       <div className="main-content">
-        <div className={`video-section ${!isCameraReady ? "disabled" : ""}`}>
+        <div className="video-section">
           <video
             ref={videoRef}
-            className="video-feed"
+            className={`video-feed${active ? "" : " inactive"}`}
             playsInline
             muted
-            style={{ opacity: isCameraReady ? 1 : 0 }}
           />
-
-          {!isCameraReady && (
-            <div
-              className={`camera-placeholder ${
-                isCameraUnavailable ? "camera-placeholder--error" : ""
-              }`}
-            >
-              <span className="camera-placeholder-icon">
-                {cameraStatus === "checking" || isCameraStarting ? "📡" : "📷"}
+          {!active && (
+            <div className="camera-disabled">
+              <span
+                className="camera-icon"
+                role="img"
+                aria-label="assistant asleep"
+              >
+                😴
               </span>
-              <p className="camera-placeholder-text">
-                {cameraStatus === "checking" && "Looking for a camera..."}
-                {isCameraStarting && "Camera found. Preparing video feed..."}
-                {cameraStatus === "unavailable" &&
-                  "No camera detected on this device. Gesture control is unavailable."}
-                {cameraStatus === "error" &&
-                  "Unable to access the camera. Gesture control is disabled."}
-              </p>
-              {cameraError && cameraStatus === "error" && (
-                <p className="error-details">{cameraError}</p>
-              )}
+              <p>Say "Hey Assistant" to enable gesture camera.</p>
             </div>
           )}
-
           <div className="gesture-overlay">
-            <GestureDisplay gesture={currentGesture} />
+            <GestureDisplay gesture={active ? currentGesture : ""} />
           </div>
         </div>
 
@@ -811,31 +705,6 @@ export default function HandGestureDetector() {
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }
         
-        .tv-gesture-control.camera-disabled {
-          opacity: 0.9;
-        }
-        
-        .camera-status {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          margin-bottom: 16px;
-          padding: 12px 16px;
-          background: #edf2f7;
-          border-radius: 12px;
-          color: #2d3748;
-          font-size: 14px;
-        }
-        
-        .camera-status--error {
-          background: #fee2e2;
-          color: #b91c1c;
-        }
-        
-        .status-icon {
-          font-size: 18px;
-        }
-        
         .header {
           display: flex;
           justify-content: space-between;
@@ -867,15 +736,6 @@ export default function HandGestureDetector() {
           background: #cbd5e0;
         }
         
-        .debug-toggle:disabled {
-          cursor: not-allowed;
-          opacity: 0.5;
-        }
-        
-        .debug-toggle:disabled:hover {
-          background: #e2e8f0;
-        }
-        
         .debug-panel {
           background: #fef3c7;
           border: 1px solid #f59e0b;
@@ -904,10 +764,6 @@ export default function HandGestureDetector() {
           position: relative;
         }
         
-        .video-section.disabled .video-feed {
-          opacity: 0.2;
-        }
-        
         .video-feed {
           width: 100%;
           height: auto;
@@ -915,42 +771,32 @@ export default function HandGestureDetector() {
           box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
           transform: scaleX(-1);
         }
-        
-        .camera-placeholder {
+
+        .video-feed.inactive {
+          filter: grayscale(1);
+          opacity: 0.4;
+        }
+
+        .camera-disabled {
           position: absolute;
-          inset: 0;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          gap: 8px;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          background: rgba(255, 255, 255, 0.92);
           border-radius: 12px;
-          background: rgba(241, 245, 249, 0.92);
+          padding: 20px;
           text-align: center;
-          padding: 24px;
-          color: #475569;
+          box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+          pointer-events: none;
+          max-width: 240px;
+          font-size: 15px;
+          color: #1e293b;
         }
-        
-        .camera-placeholder--error {
-          background: rgba(254, 226, 226, 0.95);
-          color: #b91c1c;
-        }
-        
-        .camera-placeholder-icon {
+
+        .camera-disabled .camera-icon {
+          display: block;
           font-size: 36px;
-        }
-        
-        .camera-placeholder-text {
-          font-size: 14px;
-          font-weight: 500;
-        }
-        
-        .error-details {
-          font-size: 12px;
-          max-width: 320px;
-          color: inherit;
-          opacity: 0.8;
-          word-break: break-word;
+          margin-bottom: 10px;
         }
         
         .gesture-overlay {

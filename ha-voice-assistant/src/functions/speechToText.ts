@@ -12,6 +12,8 @@ interface SpeechRecognize {
   setIsListening: React.Dispatch<React.SetStateAction<boolean>>;
   isListeningForWakeWord: React.RefObject<boolean>;
   processRecognizedText: (text: string) => void;
+  onSessionStarted?: () => void;
+  onSessionStopped?: () => void;
 }
 
 let recognizer: SpeechRecognizer | undefined;
@@ -39,8 +41,12 @@ export const startAzureSpeechRecognition = async (props: SpeechRecognize) => {
   const audioConfig = AudioConfig.fromDefaultMicrophoneInput();
   recognizer = new SpeechRecognizer(speechConfig, audioConfig);
 
-  setIsListening(true);
-  isListeningForWakeWord.current = false;
+  recognizer.sessionStarted = () => {
+    console.log("Azure Speech session started");
+    setIsListening(true);
+    isListeningForWakeWord.current = false;
+    props.onSessionStarted?.();
+  };
 
   recognizer.recognized = async (_, e) => {
     try {
@@ -62,7 +68,22 @@ export const startAzureSpeechRecognition = async (props: SpeechRecognize) => {
     stopRecognition(props);
   };
 
-  recognizer.startContinuousRecognitionAsync();
+  recognizer.startContinuousRecognitionAsync(
+    undefined,
+    (err) => {
+      console.error("Failed to start Azure speech recognition:", err);
+      setRecognizedText({
+        sender: "assistant",
+        text:
+          "Unable to access the microphone for Azure speech recognition. Please check microphone permissions and try again.",
+      });
+      recognizer?.close();
+      recognizer = undefined;
+      setIsListening(false);
+      isListeningForWakeWord.current = true;
+      props.onSessionStopped?.();
+    }
+  );
 };
 
 export const stopRecognition = (
@@ -76,6 +97,7 @@ export const stopRecognition = (
   });
   setIsListening(false);
   isListeningForWakeWord.current = true;
+  props.onSessionStopped?.();
 
   recognizer?.stopContinuousRecognitionAsync(
     () => {
