@@ -39,6 +39,11 @@ export const AZURE_AI_PROJECT_ENDPOINT = process.env.AZURE_AI_PROJECT_ENDPOINT;
 export const AZURE_AI_AGENT_KEY = process.env.AZURE_AI_AGENT_KEY;
 export const AZURE_AI_AGENT_MODEL =
   process.env.AZURE_AI_AGENT_MODEL || process.env.HA_COMMAND_PROCESS_MODEL;
+export const AZURE_AI_TV_AGENT_FT_MODEL = process.env.AZURE_AI_TV_AGENT_FT_MODEL || AZURE_AI_AGENT_MODEL;
+
+export const AZURE_OPENAI_MODEL_ADVANCED =
+  process.env.AZURE_OPENAI_MODEL_ADVANCED || process.env.HA_COMMAND_PROCESS_MODEL;
+
 export const AZURE_AI_AGENT_KEY_HEADER_NAME =
   process.env.AZURE_AI_AGENT_KEY_HEADER_NAME || "api-key";
 

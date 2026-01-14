@@ -6,7 +6,7 @@ const promptCache = new Map();
 const intentCacheKey = "INTENT";
 
 export interface IntentClassificationResponse {
-  intent: "HACommand" | "Reminder" | "Chat" | "AgenticFlow";
+  intent: "HACommand" | "Reminder" | "Chat" | "AgenticFlow" | "TeachingMode";
 }
 export interface IntentErrorResponse {
   error: "no_match";

@@ -25,6 +25,27 @@ import { classifyIntent } from "./intent";
 import { processReminderRequest } from "./reminder";
 import { startDeviceStateLogging } from "./deviceStateLogger";
 import { runTvAgenticFlow } from "./tvAgent";
+// Teaching mode imports - for recording manual steps and fine-tuning data
+import {
+  startTeachingSession,
+  recordStep,
+  addScreenshotCapture,
+  completeTeachingSession,
+  cancelTeachingSession,
+  getTeachingSession,
+  getActiveSessions,
+  hasActiveSession,
+  cleanupExpiredSessions,
+  findGuidanceForTask,
+  listAllRecordings,
+  loadRecording,
+  deleteRecording,
+  TEACHING_TRIGGERS,
+  analyzeScreenshot,
+  TEACHING_DIR,
+  uploadScreenshotToBlob,
+  isBlobStorageAvailable,
+} from "./agents/tv/teaching";
 
 // Global declaration for announcement storage
 declare global {
@@ -36,10 +57,11 @@ const port = process.env.PORT || 3005;
 const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || "15mb";
 
 // File paths for storage
-const REMINDERS_FILE = path.join(__dirname, "../generated_data/reminders.json");
+const GENERATED_DATA_DIR = path.join(__dirname, "../generated_data");
+const REMINDERS_FILE = path.join(GENERATED_DATA_DIR, "reminders.json");
 const PROCESSED_REMINDERS_FILE = path.join(
-  __dirname,
-  "../generated_data/processed_reminders.json"
+  GENERATED_DATA_DIR,
+  "processed_reminders.json"
 );
 
 // Ensure data directory exists
@@ -152,6 +174,71 @@ app.post("/api/postHACommand", (req, res, next) => {
     try {
       const { command, messageHistory } = req.body;
       const haBody = await getHACommandBody(command, messageHistory);
+      
+      // Handle array of commands (multi-step operations)
+      if (Array.isArray(haBody)) {
+        const results: any[] = [];
+        const errors: string[] = [];
+        
+        for (let i = 0; i < haBody.length; i++) {
+          const cmd = haBody[i];
+          let urlPath = cmd.url_path;
+          const entityId = cmd.entity_id;
+          
+          if (!urlPath || urlPath.split("/").length !== 2) {
+            errors.push(`Step ${i + 1}: Invalid url_path`);
+            continue;
+          }
+          
+          if (!entityId) {
+            errors.push(`Step ${i + 1}: Missing entity_id`);
+            continue;
+          }
+          
+          if (urlPath.startsWith("/")) {
+            urlPath = urlPath.substring(1);
+          }
+          
+          const requestBody: any = { entity_id: cmd.entity_id };
+          if (cmd.service_data) {
+            Object.assign(requestBody, cmd.service_data);
+          }
+          
+          try {
+            const haResponse = await axios.post(
+              `${HOME_ASSISTANT_URL}/api/services/${urlPath}`,
+              requestBody,
+              {
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
+                },
+              }
+            );
+            results.push(haResponse.data);
+            console.log(`Step ${i + 1} executed:`, cmd);
+          } catch (stepError) {
+            errors.push(`Step ${i + 1}: ${stepError instanceof Error ? stepError.message : 'Unknown error'}`);
+          }
+          
+          // Add delay between commands
+          if (i < haBody.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 300));
+          }
+        }
+        
+        res.json({
+          success: errors.length === 0,
+          message: errors.length === 0 
+            ? `All ${haBody.length} commands executed successfully`
+            : `${haBody.length - errors.length}/${haBody.length} commands succeeded. Errors: ${errors.join('; ')}`,
+          data: results,
+        });
+        console.log(`Received multi-command: ${command}; Steps: ${haBody.length}`);
+        return;
+      }
+      
+      // Handle single command (original logic)
       let urlPath = haBody.url_path;
       const entityId = haBody.entity_id;
 
@@ -739,6 +826,10 @@ app.post("/api/reminders", (req, res, next) => {
         return res.status(400).json({ error: "Reminders must be an array" });
       }
 
+      if (!fs.existsSync(GENERATED_DATA_DIR)) {
+          fs.mkdirSync(GENERATED_DATA_DIR, { recursive: true });
+    }
+
       fs.writeFileSync(REMINDERS_FILE, JSON.stringify(reminders, null, 2));
       res.json({ success: true, message: "Reminders saved successfully" });
     } catch (error) {
@@ -788,6 +879,679 @@ app.post("/api/processed-reminders", (req, res, next) => {
     } catch (error) {
       console.error("Error writing processed reminders:", error);
       res.status(500).json({ error: "Failed to save processed reminders" });
+    }
+  })();
+});
+
+// ============================================================================
+// Teaching Mode API Endpoints
+// Recording-based flow: User manually performs steps while system records
+// ============================================================================
+
+// Check if a prompt triggers teaching mode
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.post("/api/checkTeachingTrigger", (req, res, next) => {
+  (async () => {
+    try {
+      const { userPrompt } = req.body;
+      if (!userPrompt) {
+        return res.status(400).json({ error: "User prompt is required" });
+      }
+
+      const lowerPrompt = userPrompt.toLowerCase();
+      const isTeachingTrigger = TEACHING_TRIGGERS.some(trigger => 
+        lowerPrompt.includes(trigger.toLowerCase())
+      );
+
+      res.json({
+        isTeachingTrigger,
+        triggers: TEACHING_TRIGGERS,
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error checking teaching trigger:", err);
+      res.status(500).json({
+        error: "Error checking teaching trigger",
+        message: err.message,
+      });
+    }
+  })();
+});
+
+// Start a new teaching session (after user provides task name)
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.post("/api/teaching/start", (req, res, next) => {
+  (async () => {
+    try {
+      const { taskName } = req.body;
+      if (!taskName) {
+        return res.status(400).json({ error: "Task name is required" });
+      }
+
+      const session = await startTeachingSession(taskName);
+      res.json({
+        success: true,
+        session: {
+          sessionId: session.sessionId,
+          taskName: session.taskName,
+          status: session.status,
+        },
+        message: `Teaching session started for "${taskName}". Perform steps on your TV and call /api/teaching/step to record each action.`,
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error starting teaching session:", err);
+      res.status(500).json({
+        error: "Error starting teaching session",
+        message: err.message,
+      });
+    }
+  })();
+});
+
+// Record a step in the active teaching session (manual mode)
+// User describes what they did, optionally with a screenshot
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.post("/api/teaching/step", (req, res, next) => {
+  (async () => {
+    try {
+      const { sessionId, action, screenshotBase64, contentType } = req.body;
+      if (!sessionId) {
+        return res.status(400).json({ error: "Session ID is required" });
+      }
+      if (!action) {
+        return res.status(400).json({ error: "Action description is required" });
+      }
+
+      const step = await recordStep(
+        sessionId,
+        action,
+        screenshotBase64,
+        contentType || "image/jpeg"
+      );
+
+      if (!step) {
+        return res.status(404).json({ error: "Teaching session not found or not in recording state" });
+      }
+
+      res.json({
+        success: true,
+        step: {
+          stepNumber: step.stepNumber,
+          action: step.action,
+          description: step.description,
+        },
+        message: `Step ${step.stepNumber} recorded: ${step.action}`,
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error recording teaching step:", err);
+      res.status(500).json({
+        error: "Error recording teaching step",
+        message: err.message,
+      });
+    }
+  })();
+});
+
+// Analyze a screenshot and return AI description
+// Supports both:
+//   1. Old format: { screenshotBase64, contentType, context } - for automatic capture
+//   2. New UI format: { screenshotBase64, contentType, taskName, stepTitle, stepDescription, previousSteps } - for manual UI
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.post("/api/teaching/analyze-screenshot", (req, res, next) => {
+  (async () => {
+    try {
+      const { 
+        screenshotBase64, 
+        contentType, 
+        context,
+        // New UI format fields
+        taskName,
+        stepTitle,
+        stepDescription,
+        previousSteps 
+      } = req.body;
+      
+      if (!screenshotBase64) {
+        return res.status(400).json({ error: "Screenshot base64 data is required" });
+      }
+
+      // Convert previousSteps from UI format to PreviousStepContext format
+      const previousStepsContext = (previousSteps || []).map((step: {
+        stepNumber: number;
+        title: string;
+        description: string;
+        aiAnalysis?: {
+          description?: string;
+          focusedElement?: string;
+          inferredAction?: string;
+        };
+      }) => ({
+        stepNumber: step.stepNumber,
+        description: step.aiAnalysis?.description || step.description || step.title,
+        focusedElement: step.aiAnalysis?.focusedElement,
+        inferredAction: step.aiAnalysis?.inferredAction,
+      }));
+
+      // Use taskName from UI or fall back to context
+      const task = taskName || context || "Unknown task";
+
+      const analysis = await analyzeScreenshot(
+        screenshotBase64,
+        contentType || "image/png",
+        task,
+        previousStepsContext
+      );
+
+      res.json({
+        success: true,
+        description: analysis.description,
+        focusedElement: analysis.focusedElement,
+        inferredAction: analysis.inferredAction,
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error analyzing screenshot:", err);
+      res.status(500).json({
+        success: false,
+        error: "Error analyzing screenshot",
+        message: err.message,
+      });
+    }
+  })();
+});
+
+// Add a screenshot capture to a teaching session (for automatic capture mode)
+// Client captures screenshots every 1 second and sends them here for AI analysis
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.post("/api/teaching/capture", (req, res, next) => {
+  (async () => {
+    try {
+      const { sessionId, screenshotBase64, contentType, captureIndex } = req.body;
+      if (!sessionId) {
+        return res.status(400).json({ error: "Session ID is required" });
+      }
+      if (!screenshotBase64) {
+        return res.status(400).json({ error: "Screenshot base64 data is required" });
+      }
+
+      const step = await addScreenshotCapture(
+        sessionId,
+        screenshotBase64,
+        contentType || "image/png",
+        captureIndex || 0
+      );
+
+      if (!step) {
+        return res.status(404).json({ error: "Teaching session not found or not in recording state" });
+      }
+
+      res.json({
+        success: true,
+        step: {
+          stepNumber: step.stepNumber,
+          action: step.action,
+          description: step.description,
+        },
+        message: `Screenshot capture ${captureIndex || 0} added as step ${step.stepNumber}`,
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error adding screenshot capture:", err);
+      res.status(500).json({
+        error: "Error adding screenshot capture",
+        message: err.message,
+      });
+    }
+  })();
+});
+
+// Complete a teaching session and save the recording
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.post("/api/teaching/complete", (req, res, next) => {
+  (async () => {
+    try {
+      const { sessionId } = req.body;
+      if (!sessionId) {
+        return res.status(400).json({ error: "Session ID is required" });
+      }
+
+      const recording = await completeTeachingSession(sessionId);
+      if (!recording) {
+        return res.status(404).json({ error: "Teaching session not found or has no steps" });
+      }
+
+      res.json({
+        success: true,
+        recording: {
+          id: recording.id,
+          taskName: recording.taskName,
+          totalSteps: recording.totalSteps,
+          isComplete: recording.isComplete,
+        },
+        message: `Teaching complete! Recorded ${recording.totalSteps} steps for "${recording.taskName}"`,
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error completing teaching session:", err);
+      res.status(500).json({
+        error: "Error completing teaching session",
+        message: err.message,
+      });
+    }
+  })();
+});
+
+// Cancel a teaching session
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.post("/api/teaching/cancel", (req, res, next) => {
+  (async () => {
+    try {
+      const { sessionId } = req.body;
+      if (!sessionId) {
+        return res.status(400).json({ error: "Session ID is required" });
+      }
+
+      const cancelled = cancelTeachingSession(sessionId);
+      if (!cancelled) {
+        return res.status(404).json({ error: "Teaching session not found" });
+      }
+
+      res.json({
+        success: true,
+        message: "Teaching session cancelled",
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error cancelling teaching session:", err);
+      res.status(500).json({
+        error: "Error cancelling teaching session",
+        message: err.message,
+      });
+    }
+  })();
+});
+
+// Get current teaching session state
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.get("/api/teaching/session/:sessionId", (req, res, next) => {
+  (async () => {
+    try {
+      const { sessionId } = req.params;
+      const session = getTeachingSession(sessionId);
+      
+      if (!session) {
+        return res.status(404).json({ error: "Teaching session not found" });
+      }
+
+      res.json({
+        success: true,
+        session: {
+          sessionId: session.sessionId,
+          taskName: session.taskName,
+          status: session.status,
+          currentStepIndex: session.currentStepIndex,
+          stepsRecorded: session.recording.steps.length,
+        },
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error getting teaching session:", err);
+      res.status(500).json({
+        error: "Error getting teaching session",
+        message: err.message,
+      });
+    }
+  })();
+});
+
+// Get all active teaching sessions
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.get("/api/teaching/sessions", (req, res, next) => {
+  (async () => {
+    try {
+      const sessions = getActiveSessions();
+      res.json({
+        success: true,
+        sessions: sessions.map(s => ({
+          sessionId: s.sessionId,
+          taskName: s.taskName,
+          status: s.status,
+          stepsRecorded: s.recording.steps.length,
+        })),
+        count: sessions.length,
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error listing teaching sessions:", err);
+      res.status(500).json({
+        error: "Error listing teaching sessions",
+        message: err.message,
+      });
+    }
+  })();
+});
+
+// Find guidance for a task (used by TV agent to follow learned steps)
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.post("/api/teaching/guidance", (req, res, next) => {
+  (async () => {
+    try {
+      const { taskDescription, similarityThreshold } = req.body;
+      if (!taskDescription) {
+        return res.status(400).json({ error: "Task description is required" });
+      }
+
+      const guidance = await findGuidanceForTask(taskDescription, similarityThreshold);
+      
+      if (!guidance) {
+        return res.json({
+          success: true,
+          hasGuidance: false,
+          message: "No similar recordings found",
+        });
+      }
+
+      res.json({
+        success: true,
+        hasGuidance: true,
+        guidance: {
+          matchedTaskName: guidance.matchedTaskName,
+          confidence: guidance.confidence,
+          totalSteps: guidance.totalSteps,
+          steps: guidance.steps,
+        },
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error finding guidance:", err);
+      res.status(500).json({
+        error: "Error finding guidance",
+        message: err.message,
+      });
+    }
+  })();
+});
+
+// List all saved recordings
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.get("/api/teaching/recordings", (req, res, next) => {
+  (async () => {
+    try {
+      const recordings = await listAllRecordings();
+      res.json({
+        success: true,
+        recordings: recordings.map(r => ({
+          id: r.id,
+          taskName: r.taskName,
+          totalSteps: r.totalSteps,
+          isComplete: r.isComplete,
+          createdAt: r.createdAt,
+        })),
+        count: recordings.length,
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error listing recordings:", err);
+      res.status(500).json({
+        error: "Error listing recordings",
+        message: err.message,
+      });
+    }
+  })();
+});
+
+// Get a specific recording by ID
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.get("/api/teaching/recordings/:id", (req, res, next) => {
+  (async () => {
+    try {
+      const { id } = req.params;
+      const recording = await loadRecording(id);
+      
+      if (!recording) {
+        return res.status(404).json({ error: "Recording not found" });
+      }
+
+      res.json({
+        success: true,
+        recording,
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error loading recording:", err);
+      res.status(500).json({
+        error: "Error loading recording",
+        message: err.message,
+      });
+    }
+  })();
+});
+
+// Delete a recording by ID
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.delete("/api/teaching/recordings/:id", (req, res, next) => {
+  (async () => {
+    try {
+      const { id } = req.params;
+      const deleted = await deleteRecording(id);
+      
+      if (!deleted) {
+        return res.status(404).json({ error: "Recording not found" });
+      }
+
+      res.json({
+        success: true,
+        message: "Recording deleted successfully",
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error deleting recording:", err);
+      res.status(500).json({
+        error: "Error deleting recording",
+        message: err.message,
+      });
+    }
+  })();
+});
+
+// Save teaching data as JSONL for OpenAI fine-tuning with function calling format
+// Each step creates a training example with:
+// - User message: the task/request + optional screenshot (uploaded to blob storage)
+// - Assistant message: tool_calls array with function name and arguments
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.post("/api/teaching/save-finetune", (req, res, next) => {
+  (async () => {
+    try {
+      const { taskName, steps } = req.body;
+
+      if (!taskName || typeof taskName !== "string" || !taskName.trim()) {
+        return res.status(400).json({ 
+          success: false,
+          error: "Task name is required" 
+        });
+      }
+
+      if (!steps || !Array.isArray(steps) || steps.length === 0) {
+        return res.status(400).json({ 
+          success: false,
+          error: "At least one step is required" 
+        });
+      }
+
+      console.log(`[Teaching Fine-tune] Creating JSONL for task: "${taskName}" with ${steps.length} steps`);
+      
+      // Check if blob storage is available for screenshots
+      const useBlobStorage = isBlobStorageAvailable();
+      if (useBlobStorage) {
+        console.log(`[Teaching Fine-tune] Blob storage available - screenshots will be uploaded to Azure`);
+      } else {
+        console.log(`[Teaching Fine-tune] Blob storage NOT configured - screenshots will use base64 (not recommended for fine-tuning)`);
+      }
+
+      // Ensure teaching directory exists
+      const finetuneDir = path.join(TEACHING_DIR, "finetune");
+      if (!fs.existsSync(finetuneDir)) {
+        fs.mkdirSync(finetuneDir, { recursive: true });
+      }
+
+      // JSONL file path - append to a single file for all training data
+      const jsonlPath = path.join(finetuneDir, "tv-agent-training.jsonl");
+
+      // Build JSONL entries - one per step
+      // Format follows OpenAI fine-tuning format with function calling
+      const jsonlLines: string[] = [];
+
+      for (const step of steps as Array<{
+        stepNumber: number;
+        action: string;
+        toolName?: string;
+        toolArgs?: Record<string, unknown>;
+        screenshotBase64?: string;
+      }>) {
+        // Create a training example for this step
+        // The model learns: given this screen state + task, what tool to call
+        const userContent: Array<{ type: string; text?: string; image_url?: { url: string; detail?: string } }> = [
+          {
+            type: "text",
+            text: `Task: ${taskName.trim()}\n\nStep ${step.stepNumber} of ${steps.length}.\n\nLooking at the current TV screen, what action should be taken next?`,
+          },
+        ];
+
+        // Add screenshot as image if available
+        // Upload to blob storage if available, otherwise use base64 (not recommended)
+        if (step.screenshotBase64) {
+          let imageUrl: string;
+          
+          if (useBlobStorage) {
+            // Upload to Azure Blob Storage and use the URL
+            const blobUrl = await uploadScreenshotToBlob(
+              step.screenshotBase64,
+              "image/jpeg",
+              taskName.trim(),
+              step.stepNumber
+            );
+            
+            if (blobUrl) {
+              imageUrl = blobUrl;
+              console.log(`[Teaching Fine-tune] Step ${step.stepNumber}: Uploaded screenshot to ${blobUrl}`);
+            } else {
+              // Fallback to base64 if blob upload fails
+              imageUrl = `data:image/jpeg;base64,${step.screenshotBase64}`;
+              console.warn(`[Teaching Fine-tune] Step ${step.stepNumber}: Blob upload failed, using base64 fallback`);
+            }
+          } else {
+            // No blob storage configured - use base64
+            imageUrl = `data:image/jpeg;base64,${step.screenshotBase64}`;
+          }
+          
+          userContent.push({
+            type: "image_url",
+            image_url: {
+              url: imageUrl,
+              detail: "auto",
+            },
+          });
+        }
+
+        // Build assistant message with tool_calls if tool info provided
+        let assistantMessage: Record<string, unknown>;
+        
+        if (step.toolName && step.toolArgs) {
+          // Function calling format - do NOT include content field when using tool_calls
+          assistantMessage = {
+            role: "assistant",
+            tool_calls: [
+              {
+                id: `call_${String(step.stepNumber).padStart(3, '0')}`,
+                type: "function",
+                function: {
+                  name: step.toolName,
+                  arguments: JSON.stringify(step.toolArgs),
+                },
+              },
+            ],
+          };
+        } else {
+          // Fallback to plain text (for backward compatibility)
+          assistantMessage = {
+            role: "assistant",
+            content: step.action,
+          };
+        }
+
+        const trainingExample = {
+          messages: [
+            {
+              role: "system",
+              content: `You are a TV navigation assistant that controls smart TVs through function calls. You have access to these tools:
+- click_power_button: Turn TV on/off
+- media_control: Play, pause, volume, etc.
+- click_select_button: Press SELECT/OK to confirm
+- open_menu: Open menus
+- delegate_to_typing: Type text into input fields via specialized typing agent
+- request_screenshot: Get visual feedback
+- get_device_state: Check device status
+- launch_app: Open apps like YouTube, Netflix
+- delegate_to_navigation: Navigate with directional buttons, go home, go back
+
+Given a task and screen state, call the appropriate tool with correct arguments.`,
+            },
+            {
+              role: "user",
+              content: userContent,
+            },
+            assistantMessage,
+          ],
+        };
+
+        jsonlLines.push(JSON.stringify(trainingExample));
+      }
+
+      // Append to JSONL file
+      const jsonlContent = jsonlLines.join("\n") + "\n";
+      fs.appendFileSync(jsonlPath, jsonlContent, "utf-8");
+
+      console.log(`[Teaching Fine-tune] Appended ${jsonlLines.length} training examples to: ${jsonlPath}`);
+
+      res.json({
+        success: true,
+        message: `Added ${jsonlLines.length} training examples for task "${taskName}"`,
+        filePath: jsonlPath,
+        linesWritten: jsonlLines.length,
+        blobStorageUsed: useBlobStorage,
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("[Teaching Fine-tune] Error saving JSONL:", err);
+      res.status(500).json({
+        success: false,
+        error: "Error saving fine-tuning data",
+        message: err.message,
+      });
+    }
+  })();
+});
+
+// Cleanup expired teaching sessions
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.post("/api/teaching/cleanup", (req, res, next) => {
+  (async () => {
+    try {
+      const cleanedCount = cleanupExpiredSessions();
+      res.json({
+        success: true,
+        message: `Cleaned up ${cleanedCount} expired sessions`,
+        cleanedCount,
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error cleaning up sessions:", err);
+      res.status(500).json({
+        error: "Error cleaning up sessions",
+        message: err.message,
+      });
     }
   })();
 });

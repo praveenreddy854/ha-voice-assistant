@@ -50,6 +50,21 @@ function buildRequestBody(
   return body;
 }
 
+function formatToolArgs(toolArgs: AgenticStep["toolArguments"]): string {
+  const { actionType, button, direction, count, text, holdMs, waitMs, reason } = toolArgs;
+  const parts: string[] = [`actionType: "${actionType}"`];
+  
+  if (button !== undefined) parts.push(`button: "${button}"`);
+  if (direction !== undefined) parts.push(`direction: "${direction}"`);
+  if (count !== undefined) parts.push(`count: ${count}`);
+  if (text !== undefined) parts.push(`text: "${text}"`);
+  if (holdMs !== undefined) parts.push(`holdMs: ${holdMs}`);
+  if (waitMs !== undefined) parts.push(`waitMs: ${waitMs}`);
+  if (reason !== undefined) parts.push(`reason: "${reason}"`);
+  
+  return `{ ${parts.join(", ")} }`;
+}
+
 function logStepDelta(
   previousSteps: AgenticStep[],
   nextSteps: AgenticStep[]
@@ -60,8 +75,13 @@ function logStepDelta(
 
   const newSteps = nextSteps.slice(previousSteps.length);
   newSteps.forEach((step) => {
+    const toolArgsStr = step.toolArguments ? formatToolArgs(step.toolArguments) : "N/A";
     console.info(
-      `[TV Agentic Flow] Recorded step ${step.index}: ${step.actionSummary}. Observation: ${step.observation}`
+      `[TV Agentic Flow] Step ${step.index}: ${step.actionSummary}\n` +
+      `  Tool: appletv_remote\n` +
+      `  Args: ${toolArgsStr}\n` +
+      `  Reason: ${step.reasoning}\n` +
+      `  Observation: ${step.observation}`
     );
   });
 }

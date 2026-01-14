@@ -36,12 +36,18 @@ export interface WaitArgs {
   reason: string;
 }
 
+export interface ClickSelectButtonArgs {
+  remote_entity_id: string;
+  reason: string;
+}
+
 // Union type of all navigation tool names
 export type NavToolName =
   | "go_home"
   | "go_back"
   | "navigate"
   | "find_search"
+  | "click_select_button"
   | "request_screenshot"
   | "wait";
 
@@ -51,6 +57,7 @@ export type NavToolArguments =
   | GoBackArgs
   | NavigateArgs
   | FindSearchArgs
+  | ClickSelectButtonArgs
   | RequestScreenshotArgs
   | WaitArgs;
 

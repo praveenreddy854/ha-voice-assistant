@@ -8,6 +8,7 @@ import {
   GoBackArgs,
   NavigateArgs,
   FindSearchArgs,
+  ClickSelectButtonArgs,
   RequestScreenshotArgs,
   WaitArgs,
   ToolExecutionContext,
@@ -26,22 +27,24 @@ export async function executeGoHome(
   context: ToolExecutionContext
 ): Promise<ToolExecutionResult> {
   const defaultWait = Number.isFinite(TV_DEFAULT_WAIT_MS)
-    ? Math.max(250, TV_DEFAULT_WAIT_MS)
+    ? Math.max(500, TV_DEFAULT_WAIT_MS)
     : 1500;
 
   const deviceName = args.remote_entity_id.replace("remote.", "");
   const plainCommand = `Go home on ${deviceName}`;
 
+  console.log(`[Nav Agent] Executing go_home: ${plainCommand}`);
+
   const result = await executeHACommand(plainCommand);
 
   if (!result.success) {
-    const observation = `❌ Failed to go home: ${result.message}`;
+    const observation = `❌ Failed to go home: ${result.message}. Try again or use an alternative approach.`;
     return { observation, needsScreenshot: false };
   }
 
   await delay(defaultWait);
-  const observation = `✅ Successfully navigated to home screen. ${args.reason}`;
-  return { observation, needsScreenshot: true }; // Request screenshot to verify home screen
+  const observation = `✅ Successfully pressed HOME button on ${deviceName}.\n📍 Reason: ${args.reason}\n➡️ The TV should now show the home screen. Analyze the next screenshot to confirm.`;
+  return { observation, needsScreenshot: true };
 }
 
 export async function executeGoBack(
@@ -49,22 +52,24 @@ export async function executeGoBack(
   context: ToolExecutionContext
 ): Promise<ToolExecutionResult> {
   const defaultWait = Number.isFinite(TV_DEFAULT_WAIT_MS)
-    ? Math.max(250, TV_DEFAULT_WAIT_MS)
+    ? Math.max(500, TV_DEFAULT_WAIT_MS)
     : 1500;
 
   const deviceName = args.remote_entity_id.replace("remote.", "");
   const plainCommand = `Go back on ${deviceName}`;
 
+  console.log(`[Nav Agent] Executing go_back: ${plainCommand}`);
+
   const result = await executeHACommand(plainCommand);
 
   if (!result.success) {
-    const observation = `❌ Failed to go back: ${result.message}`;
+    const observation = `❌ Failed to go back: ${result.message}. Try again or use go_home to reset.`;
     return { observation, needsScreenshot: false };
   }
 
   await delay(defaultWait);
-  const observation = `✅ Successfully went back. ${args.reason}`;
-  return { observation, needsScreenshot: true }; // Request screenshot to verify previous screen
+  const observation = `✅ Successfully pressed BACK button on ${deviceName}.\n📍 Reason: ${args.reason}\n➡️ The TV should now show the previous screen. Analyze the next screenshot to see current state.`;
+  return { observation, needsScreenshot: true };
 }
 
 export async function executeNavigate(
@@ -72,29 +77,74 @@ export async function executeNavigate(
   context: ToolExecutionContext
 ): Promise<ToolExecutionResult> {
   const defaultWait = Number.isFinite(TV_DEFAULT_WAIT_MS)
-    ? Math.max(250, TV_DEFAULT_WAIT_MS)
-    : 1500;
+    ? Math.max(300, TV_DEFAULT_WAIT_MS)
+    : 1000;
   const count = Math.min(Math.max(args.count, 1), 10);
 
   const deviceName = args.remote_entity_id.replace("remote.", "");
-  let plainCommand = "";
+  
+  console.log(`[Nav Agent] Executing navigate: ${args.direction} x${count} on ${deviceName}`);
 
-  if (count === 1) {
-    plainCommand = `Scroll ${args.direction} on ${deviceName}`;
-  } else {
-    plainCommand = `Scroll ${args.direction} ${count} times on ${deviceName}`;
+  // Execute navigation commands one at a time for reliability
+  let successCount = 0;
+  let lastError = "";
+
+  for (let i = 0; i < count; i++) {
+    const plainCommand = `Scroll ${args.direction} on ${deviceName}`;
+    const result = await executeHACommand(plainCommand);
+    
+    if (result.success) {
+      successCount++;
+      // Small delay between presses for UI to update
+      if (i < count - 1) {
+        await delay(200);
+      }
+    } else {
+      lastError = result.message;
+      console.warn(`[Nav Agent] Navigation press ${i + 1}/${count} failed: ${lastError}`);
+    }
   }
+
+  // Wait for final UI update
+  await delay(defaultWait);
+
+  if (successCount === 0) {
+    const observation = `❌ Failed to navigate ${args.direction}: ${lastError}. The UI may be unresponsive or the remote entity may be incorrect.`;
+    return { observation, needsScreenshot: true };
+  }
+
+  if (successCount < count) {
+    const observation = `⚠️ Partial navigation: Pressed ${args.direction.toUpperCase()} ${successCount}/${count} times on ${deviceName}.\n📍 Reason: ${args.reason}\n⚠️ Some commands failed, verify position in screenshot.`;
+    return { observation, needsScreenshot: true };
+  }
+
+  const observation = `✅ Successfully navigated ${args.direction.toUpperCase()} ${count}x on ${deviceName}.\n📍 Reason: ${args.reason}\n➡️ Selection should have moved ${count} position(s) ${args.direction}. Check screenshot to verify new position.`;
+  return { observation, needsScreenshot: true };
+}
+
+export async function executeClickSelectButton(
+  args: ClickSelectButtonArgs,
+  context: ToolExecutionContext
+): Promise<ToolExecutionResult> {
+  const defaultWait = Number.isFinite(TV_DEFAULT_WAIT_MS)
+    ? Math.max(500, TV_DEFAULT_WAIT_MS)
+    : 1500;
+
+  const deviceName = args.remote_entity_id.replace("remote.", "");
+  const plainCommand = `Select on ${deviceName}`;
+
+  console.log(`[Nav Agent] Executing click_select: ${plainCommand}`);
 
   const result = await executeHACommand(plainCommand);
 
   if (!result.success) {
-    const observation = `❌ Failed to navigate ${args.direction}: ${result.message}`;
+    const observation = `❌ Failed to click select: ${result.message}. Try again or verify navigation position first.`;
     return { observation, needsScreenshot: true };
   }
 
   await delay(defaultWait);
-  const observation = `✅ Successfully navigated ${args.direction} ${count}x. ${args.reason}`;
-  return { observation, needsScreenshot: true }; // Always request screenshot after navigation
+  const observation = `✅ Successfully pressed SELECT/OK button on ${deviceName}.\n📍 Reason: ${args.reason}\n➡️ The highlighted item should now be activated. Check screenshot for result.`;
+  return { observation, needsScreenshot: true };
 }
 
 export async function executeFindSearch(
@@ -106,7 +156,9 @@ export async function executeFindSearch(
   if (!screenshotBase64) {
     return {
       observation:
-        "⚠️ No screenshot available. Please call request_screenshot first to capture the current TV screen, then call find_search again.",
+        "⚠️ No screenshot available for visual analysis. I need a screenshot to locate the search icon.\n" +
+        "➡️ Use the navigate tool to move UP to reach the top menu bar (search is usually there), then verify with a screenshot.\n" +
+        "💡 Common pattern: Search icon is typically in the top-left corner of streaming apps.",
       needsScreenshot: true,
     };
   }
@@ -121,10 +173,19 @@ export async function executeFindSearch(
       AZURE_AI_AGENT_MODEL,
     } = await import("../../config");
 
-    const visionModel = AZURE_AI_AGENT_MODEL || "gpt-5-mini";
-    console.log(
-      `[Nav Agent] Analyzing screenshot to find search icon using ${visionModel}...`
-    );
+    if (!OPEN_AI_BASE_URL || !API_KEY) {
+      return {
+        observation:
+          "⚠️ Vision API not configured. Use manual navigation instead:\n" +
+          "1. Navigate UP to reach the top menu bar\n" +
+          "2. Navigate LEFT to reach the search icon (usually leftmost item)\n" +
+          "3. Press SELECT to activate search",
+        needsScreenshot: false,
+      };
+    }
+
+    const visionModel = AZURE_AI_AGENT_MODEL || "gpt-4o";
+    console.log(`[Nav Agent] Analyzing screenshot to find search icon using ${visionModel}...`);
 
     const client = new AzureOpenAI({
       baseURL: OPEN_AI_BASE_URL,
@@ -132,47 +193,76 @@ export async function executeFindSearch(
       apiVersion: OPENAI_RESPONSES_API_VERSION,
     });
 
-    const messages = [
-      {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: `Analyze this TV/streaming app screenshot and locate the search icon, search button, or search field.
+    const analysisPrompt = `You are analyzing an image captured by a camera pointed at a smart TV. The image contains the TV screen along with surrounding room elements (walls, furniture, etc.).
 
-IMPORTANT CONTEXT:
-- YouTube: Search icon (magnifying glass) is typically in the TOP-LEFT corner of the screen
-- Netflix: Search icon is usually in the TOP navigation bar
-- Apple TV: Search is often in the TOP row of apps or in the TOP menu
-- Most apps: Search is in the TOP-LEFT or TOP-RIGHT area
+CRITICAL: Focus ONLY on the TV screen content. Ignore everything outside the TV (room, furniture, reflections, etc.).
 
-Analyze the current cursor/selection position (look for highlighted items, borders, or different colors).
+FIRST: Determine if content is currently playing on the TV:
+- If you see a fullscreen video, movie, show, or video player UI -> content IS playing
+- If you see a browse interface, menu, app home screen -> content is NOT playing
 
-Return a JSON object with precise navigation instructions:
+TASK: Locate the search icon/button and provide precise navigation instructions.
+
+ANALYSIS STEPS:
+1. Identify the TV screen boundaries in the image
+2. Check if content/video is currently playing (fullscreen video, player controls visible, no navigation menu)
+3. If content is playing, recommend pressing BACK first before navigation can work
+4. Identify the current cursor/selection position (look for highlighted items with borders, different colors, or glow effects)
+5. Locate the search icon (usually a magnifying glass 🔍) - typically in top-left corner or top navigation bar
+6. Calculate exact navigation path from current position to search
+
+COMMON APP LAYOUTS:
+- YouTube: Search icon in top-left, navigation bar at top
+- Netflix: Search in top navigation bar
+- Prime Video: Search icon in top-left area
+- Disney+: Search in top navigation
+- Hulu: Search in top-left
+
+OUTPUT FORMAT (JSON only):
 {
-  "found": true/false,
-  "location": "exact description (e.g., 'top-left corner, first icon', 'top row, third item from left')",
-  "current_position": "where the cursor/selection currently is",
-  "navigation": {
-    "up": <number 0-10> (how many times to press UP to reach search),
-    "down": <number 0-10> (DOWN presses needed),
-    "left": <number 0-10> (LEFT presses needed),
-    "right": <number 0-10> (RIGHT presses needed)
+  "content_playing": true/false,
+  "content_playing_details": "what video/content appears to be playing, or 'none' if browse UI visible",
+  "must_go_back_first": true/false,
+  "search_found": true/false,
+  "current_position": {
+    "description": "what is currently highlighted",
+    "row": "top/middle/bottom or specific row name",
+    "estimated_column": number (0-based from left)
+  },
+  "search_position": {
+    "description": "where search icon is located",
+    "row": "top/middle/bottom or specific row name", 
+    "estimated_column": number (0-based from left)
+  },
+  "navigation_required": {
+    "up": number (0-10),
+    "down": number (0-10),
+    "left": number (0-10),
+    "right": number (0-10),
+    "reasoning": "step by step explanation"
   },
   "confidence": "high/medium/low",
-  "reasoning": "explain the navigation path"
+  "app_detected": "app name if identifiable",
+  "alternative_suggestion": "what to do if search not visible or content is playing"
 }
 
-If search is not visible:
-{
-  "found": false,
-  "suggestion": "specific action to take (e.g., 'go home first', 'scroll up to top bar', 'try going left')"
-}`,
-          },
+IMPORTANT: 
+- If content is playing, set must_go_back_first=true and provide guidance to exit player first
+- Focus ONLY on the TV screen, ignore room elements
+- Be conservative with navigation counts - better to under-navigate and verify
+- If search is not visible, suggest how to get there (e.g., "go home first", "press back to exit player")
+- Only return the JSON object, no additional text`;
+
+    const messages = [
+      {
+        role: "user" as const,
+        content: [
+          { type: "text" as const, text: analysisPrompt },
           {
-            type: "image_url",
+            type: "image_url" as const,
             image_url: {
               url: `data:${screenshotContentType};base64,${screenshotBase64}`,
+              detail: "high" as const,
             },
           },
         ],
@@ -183,26 +273,27 @@ If search is not visible:
       model: visionModel,
       input: JSON.stringify({
         messages,
-        max_tokens: 300,
+        max_tokens: 500,
         temperature: 0.1,
       }),
     });
 
     // Poll until response is complete
-    while (response.status === "queued" || response.status === "in_progress") {
-      await delay(50);
+    let pollCount = 0;
+    while ((response.status === "queued" || response.status === "in_progress") && pollCount < 60) {
+      await delay(100);
       response = await client.responses.retrieve(response.id);
+      pollCount++;
     }
 
     if (response.status === "failed") {
-      console.error(
-        `[Nav Agent] Search icon detection failed: ${
-          response.error || "Unknown error"
-        }`
-      );
+      console.error(`[Nav Agent] Vision analysis failed: ${response.error || "Unknown error"}`);
       return {
         observation:
-          "❌ Failed to analyze screenshot for search icon. Please try manual navigation with the navigate tool.",
+          "❌ Vision analysis failed. Use manual navigation:\n" +
+          "1. Press UP multiple times to reach the top menu bar\n" +
+          "2. Press LEFT to move towards the search icon\n" +
+          "3. Press SELECT when search is highlighted",
         needsScreenshot: false,
       };
     }
@@ -211,113 +302,127 @@ If search is not visible:
     if (!content) {
       return {
         observation:
-          "❌ No response from vision model. Please try manual navigation.",
+          "❌ No response from vision analysis. Try manual navigation to search.",
         needsScreenshot: false,
       };
     }
 
-    console.log(`[Nav Agent] Search icon analysis response:`, content);
+    console.log(`[Nav Agent] Vision analysis response:`, content);
 
     // Parse the JSON response
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       return {
-        observation: `Vision model response: ${content}. Try manual navigation with the navigate tool.`,
+        observation: `Vision analysis result: ${content}\n\n➡️ If search is visible, use navigate tool to reach it manually.`,
         needsScreenshot: false,
       };
     }
 
-    const result = JSON.parse(jsonMatch[0]);
-
-    if (!result.found) {
-      const observation =
-        `❌ Search icon not found in current view.\n` +
-        `💡 Suggestion: ${
-          result.suggestion ||
-          "Try using go_home first, then call find_search again."
-        }`;
-
+    let analysisResult;
+    try {
+      analysisResult = JSON.parse(jsonMatch[0]);
+    } catch (parseError) {
       return {
-        observation,
+        observation: `Could not parse vision analysis. Raw response: ${content}\n\n➡️ Try manual navigation to search.`,
         needsScreenshot: false,
       };
     }
 
-    // Search icon found - now navigate to it
-    console.log(
-      `[Nav Agent] Search icon found at ${result.location}, navigating...`
-    );
-
-    const navigation = result.navigation || {};
-    let navigationSteps: string[] = [];
-    const defaultWait = Number.isFinite(TV_DEFAULT_WAIT_MS)
-      ? Math.max(250, TV_DEFAULT_WAIT_MS)
-      : 1500;
-
-    // Execute navigation commands
-    if (navigation.up && navigation.up > 0) {
-      const upCommand = `Scroll up ${
-        navigation.up
-      } times on ${args.remote_entity_id.replace("remote.", "")}`;
-      await executeHACommand(upCommand);
-      navigationSteps.push(`up ${navigation.up}x`);
-      await delay(defaultWait);
+    // Check if content is playing and we need to go back first
+    if (analysisResult.content_playing || analysisResult.must_go_back_first) {
+      const contentDetails = analysisResult.content_playing_details || "video/content";
+      return {
+        observation:
+          `🎬 Content is currently playing on the TV: ${contentDetails}\n` +
+          `⚠️ Navigation will NOT work while content is playing!\n` +
+          `📍 App detected: ${analysisResult.app_detected || "unknown"}\n` +
+          `\n🔧 ACTION REQUIRED: Press BACK button first to exit the player, then retry find_search.\n` +
+          `💡 Use go_back tool with reason "to exit playing content before navigation"`,
+        needsScreenshot: false,
+      };
     }
 
-    if (navigation.down && navigation.down > 0) {
-      const downCommand = `Scroll down ${
-        navigation.down
-      } times on ${args.remote_entity_id.replace("remote.", "")}`;
-      await executeHACommand(downCommand);
-      navigationSteps.push(`down ${navigation.down}x`);
-      await delay(defaultWait);
+    if (!analysisResult.search_found) {
+      const suggestion = analysisResult.alternative_suggestion || "Try pressing HOME to get to main screen, then look for search.";
+      return {
+        observation:
+          `❌ Search icon not found in current view.\n` +
+          `📍 Current position: ${analysisResult.current_position?.description || "unknown"}\n` +
+          `🎯 App detected: ${analysisResult.app_detected || "unknown"}\n` +
+          `💡 Suggestion: ${suggestion}`,
+        needsScreenshot: false,
+      };
     }
 
-    if (navigation.left && navigation.left > 0) {
-      const leftCommand = `Scroll left ${
-        navigation.left
-      } times on ${args.remote_entity_id.replace("remote.", "")}`;
-      await executeHACommand(leftCommand);
-      navigationSteps.push(`left ${navigation.left}x`);
-      await delay(defaultWait);
+    // Search found - execute navigation
+    const nav = analysisResult.navigation_required || {};
+    const defaultWait = Number.isFinite(TV_DEFAULT_WAIT_MS) ? Math.max(300, TV_DEFAULT_WAIT_MS) : 800;
+    const deviceName = args.remote_entity_id.replace("remote.", "");
+    const navigationSteps: string[] = [];
+    let navigationSuccess = true;
+
+    console.log(`[Nav Agent] Executing navigation to search: up=${nav.up || 0}, down=${nav.down || 0}, left=${nav.left || 0}, right=${nav.right || 0}`);
+
+    // Execute navigation in order: up/down first (to reach correct row), then left/right
+    const directions: Array<{ dir: string; count: number }> = [
+      { dir: "up", count: nav.up || 0 },
+      { dir: "down", count: nav.down || 0 },
+      { dir: "left", count: nav.left || 0 },
+      { dir: "right", count: nav.right || 0 },
+    ];
+
+    for (const { dir, count } of directions) {
+      if (count > 0) {
+        for (let i = 0; i < count; i++) {
+          const navCommand = `Scroll ${dir} on ${deviceName}`;
+          const navResult = await executeHACommand(navCommand);
+          if (!navResult.success) {
+            console.warn(`[Nav Agent] Navigation ${dir} failed: ${navResult.message}`);
+            navigationSuccess = false;
+          }
+          await delay(200);
+        }
+        navigationSteps.push(`${dir.toUpperCase()} x${count}`);
+        await delay(defaultWait);
+      }
     }
 
-    if (navigation.right && navigation.right > 0) {
-      const rightCommand = `Scroll right ${
-        navigation.right
-      } times on ${args.remote_entity_id.replace("remote.", "")}`;
-      await executeHACommand(rightCommand);
-      navigationSteps.push(`right ${navigation.right}x`);
-      await delay(defaultWait);
+    // Press SELECT to activate search
+    const selectCommand = `Select on ${deviceName}`;
+    const selectResult = await executeHACommand(selectCommand);
+    
+    if (!selectResult.success) {
+      return {
+        observation:
+          `⚠️ Navigation completed but failed to press SELECT.\n` +
+          `🧭 Navigation path: ${navigationSteps.join(" → ") || "none needed"}\n` +
+          `📍 Current position should be at search icon.\n` +
+          `➡️ Try using click_select_button manually.`,
+        needsScreenshot: true,
+      };
     }
 
-    // Activate the search field by pressing select
-    const selectCommand = `Select on ${args.remote_entity_id.replace(
-      "remote.",
-      ""
-    )}`;
-    await executeHACommand(selectCommand);
+    await delay(defaultWait);
 
     const observation =
-      `✅ Successfully navigated to and activated search!\n` +
-      `📍 Location: ${result.location}\n` +
-      `🧭 Navigation: ${navigationSteps.join(" → ") || "already focused"}\n` +
-      `⌨️ Search field is now active and ready for text input.\n` +
-      `➡️ Task complete - search is ready to use.`;
+      `✅ Navigation to search completed!\n` +
+      `🎯 App: ${analysisResult.app_detected || "detected app"}\n` +
+      `🧭 Navigation: ${navigationSteps.join(" → ") || "already at search"} → SELECT\n` +
+      `📍 From: ${analysisResult.current_position?.description || "previous position"}\n` +
+      `📍 To: ${analysisResult.search_position?.description || "search icon"}\n` +
+      `🔍 Confidence: ${analysisResult.confidence || "medium"}\n` +
+      `⌨️ Search field should now be active and ready for text input.\n` +
+      `➡️ Verify with screenshot that keyboard/search input is visible.`;
 
     return {
       observation,
-      needsScreenshot: true, // Request screenshot to verify search field is active
+      needsScreenshot: true,
     };
   } catch (error) {
-    console.error(
-      "[Nav Agent] Error finding and navigating to search icon:",
-      error
-    );
+    console.error("[Nav Agent] Error in find_search:", error);
     return {
-      observation: `❌ Error: ${
-        error instanceof Error ? error.message : "Unknown error"
-      }. Try manual navigation with the navigate tool.`,
+      observation: `❌ Error during search navigation: ${error instanceof Error ? error.message : "Unknown error"}\n` +
+        `➡️ Use manual navigation: UP to top menu, LEFT towards search icon, SELECT to activate.`,
       needsScreenshot: false,
     };
   }
@@ -327,12 +432,12 @@ export async function executeRequestScreenshot(
   args: RequestScreenshotArgs,
   context: ToolExecutionContext
 ): Promise<ToolExecutionResult> {
-  // Navigation agent screenshot handling
+  // Navigation agent signals it needs a screenshot
+  // The parent TV agent or client will need to provide one
   const observation =
-    `📸 Screenshot requested for ${args.media_player_entity_id}.\n` +
-    `📍 Reason: ${args.reason}\n` +
-    `🎯 Context: Navigation Agent (currently executing navigation task)\n` +
-    `➡️ The screenshot will be used for navigation decisions.`;
+    `📸 Screenshot requested for: ${args.reason}\n` +
+    `🎯 Media player: ${args.media_player_entity_id}\n` +
+    `➡️ Waiting for fresh screenshot to analyze current TV state.`;
 
   return { observation, needsScreenshot: true };
 }
@@ -340,9 +445,11 @@ export async function executeRequestScreenshot(
 export async function executeWait(
   args: WaitArgs
 ): Promise<ToolExecutionResult> {
-  const duration = args.duration_ms ?? 1500;
+  const duration = Math.min(Math.max(args.duration_ms ?? 1000, 100), 10000);
+  
+  console.log(`[Nav Agent] Waiting ${duration}ms: ${args.reason}`);
   await delay(duration);
 
-  const observation = `⏱️ Waited ${duration}ms. ${args.reason}`;
+  const observation = `⏱️ Waited ${duration}ms.\n📍 Reason: ${args.reason}\n➡️ Continue with next action.`;
   return { observation, needsScreenshot: false };
 }

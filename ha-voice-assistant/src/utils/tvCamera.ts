@@ -110,7 +110,7 @@ class TvCameraController {
     await this.initPromise;
   }
 
-  async capture(stepIndex: number): Promise<ScreenshotCapture> {
+  async capture(stepIndex: number, compress: boolean = true): Promise<ScreenshotCapture> {
     try {
       await this.ensureCamera();
     } catch (error) {
@@ -143,13 +143,35 @@ class TvCameraController {
       });
     }
 
-    const width = video.videoWidth || 1280;
-    const height = video.videoHeight || 720;
+    const videoWidth = video.videoWidth || 1280;
+    const videoHeight = video.videoHeight || 720;
 
-    if (canvas.width !== width || canvas.height !== height) {
-      canvas.width = width;
-      canvas.height = height;
+    // For compressed mode, resize to smaller dimensions (512px width max)
+    // This reduces token usage from ~20K to ~2-3K per image
+    let targetWidth: number;
+    let targetHeight: number;
+    let jpegQuality: number;
+
+    if (compress) {
+      // Resize to max 512px width while maintaining aspect ratio
+      const maxWidth = 512;
+      if (videoWidth > maxWidth) {
+        targetWidth = maxWidth;
+        targetHeight = Math.round((videoHeight / videoWidth) * maxWidth);
+      } else {
+        targetWidth = videoWidth;
+        targetHeight = videoHeight;
+      }
+      jpegQuality = 0.6; // Lower quality for smaller size
+    } else {
+      targetWidth = videoWidth;
+      targetHeight = videoHeight;
+      jpegQuality = 0.9;
     }
+
+    // Resize canvas to target dimensions
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
 
     const context = canvas.getContext("2d");
     if (!context) {
@@ -158,16 +180,19 @@ class TvCameraController {
       };
     }
 
-    context.drawImage(video, 0, 0, width, height);
+    // Draw video frame scaled to target size
+    context.drawImage(video, 0, 0, targetWidth, targetHeight);
 
     try {
-      const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+      const dataUrl = canvas.toDataURL("image/jpeg", jpegQuality);
       const [, base64] = dataUrl.split(",");
       if (!base64) {
         throw new Error("Failed to encode the captured frame.");
       }
+      
+      const sizeKB = Math.round((base64.length * 3) / 4 / 1024);
       console.info(
-        `[TV Agentic Flow] Captured screenshot for step ${stepIndex}. Screenshot will be saved on server.`
+        `[TV Agentic Flow] Captured screenshot for step ${stepIndex} (${targetWidth}x${targetHeight}, ~${sizeKB}KB${compress ? ', compressed' : ''})`
       );
 
       return {
@@ -212,8 +237,15 @@ class TvCameraController {
 
 export const tvCameraController = new TvCameraController();
 
+/**
+ * Capture a TV screenshot
+ * @param stepIndex - The step index for logging
+ * @param compress - Whether to compress the image (default: true for teaching mode)
+ *                   Compression reduces from ~20K tokens to ~2-3K tokens per image
+ */
 export async function captureTvScreenshot(
-  stepIndex: number
+  stepIndex: number,
+  compress: boolean = true
 ): Promise<ScreenshotCapture> {
-  return tvCameraController.capture(stepIndex);
+  return tvCameraController.capture(stepIndex, compress);
 }

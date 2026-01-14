@@ -1,7 +1,7 @@
 import { HOME_ASSISTANT_URL, HOME_ASSISTANT_TOKEN } from "./config";
 import fs from "fs";
 import path from "path";
-import { HassServiceCommandBody, HassState } from "./types/ha";
+import { HassServiceCommandBody, HassServiceCommand, HassState } from "./types/ha";
 import { openAIService } from "./openai";
 import axios from "axios";
 
@@ -165,6 +165,7 @@ export const getKnownDeviceStates = async (): Promise<HassState[]> => {
 /**
  * Execute a plain English Home Assistant command by converting it to the appropriate API call.
  * This function wraps the logic from /api/postHACommand endpoint for use within the TV agent tools.
+ * Supports both single commands and arrays of commands (for multi-step operations like navigate + select).
  *
  * @param command - Plain English command like "Turn on Apple TV" or "Scroll right 3 times on apple tv"
  * @param messageHistory - Optional message history for context
@@ -177,64 +178,14 @@ export async function executeHACommand(
   try {
     // Get the HA command body using the existing LLM function
     const haBody = await getHACommandBody(command, messageHistory);
-    let urlPath = haBody.url_path;
-    const entityId = haBody.entity_id;
-
-    if (!urlPath || urlPath.split("/").length !== 2) {
-      return {
-        success: false,
-        message:
-          "Invalid services home assistant path. Command body must contain a valid 'url_path' in the format '<domain>/<service>'",
-      };
+    
+    // Handle array of commands (multi-step operations)
+    if (Array.isArray(haBody)) {
+      return await executeMultipleHACommands(haBody, command);
     }
-
-    if (!entityId) {
-      return {
-        success: false,
-        message: "Missing entity_id. Command body must contain 'entity_id'",
-      };
-    }
-
-    // Remove leading and trailing slashes from the URL path
-    if (urlPath.startsWith("/")) {
-      urlPath = urlPath.substring(1);
-    }
-
-    // Prepare the request body
-    const requestBody: any = { entity_id: haBody.entity_id };
-
-    // Add service_data if present (for play_media and other services that need additional data)
-    if (haBody.service_data) {
-      // For Home Assistant API, merge service_data fields directly at the top level
-      Object.assign(requestBody, haBody.service_data);
-    }
-
-    const haResponse = await axios.post(
-      `${HOME_ASSISTANT_URL}/api/services/${urlPath}`,
-      requestBody,
-      {
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
-        },
-      }
-    );
-
-    if (haResponse.status < 200 || haResponse.status >= 300) {
-      console.error("Home Assistant error response:", haResponse.data);
-      return {
-        success: false,
-        message: `Home Assistant API returned status ${haResponse.status}`,
-        data: haResponse.data,
-      };
-    }
-
-    console.log(`HA Command executed: ${command}; Response:`, haResponse.data);
-    return {
-      success: true,
-      message: `Command "${command}" sent successfully`,
-      data: haResponse.data,
-    };
+    
+    // Handle single command
+    return await executeSingleHACommand(haBody, command);
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     console.error("Error executing HA command:", err);
@@ -243,4 +194,120 @@ export async function executeHACommand(
       message: `Error executing command: ${err.message}`,
     };
   }
+}
+
+/**
+ * Execute a single Home Assistant command
+ */
+async function executeSingleHACommand(
+  haBody: HassServiceCommand,
+  originalCommand: string
+): Promise<{ success: boolean; message: string; data?: any }> {
+  let urlPath = haBody.url_path;
+  const entityId = haBody.entity_id;
+
+  if (!urlPath || urlPath.split("/").length !== 2) {
+    return {
+      success: false,
+      message:
+        "Invalid services home assistant path. Command body must contain a valid 'url_path' in the format '<domain>/<service>'",
+    };
+  }
+
+  if (!entityId) {
+    return {
+      success: false,
+      message: "Missing entity_id. Command body must contain 'entity_id'",
+    };
+  }
+
+  // Remove leading and trailing slashes from the URL path
+  if (urlPath.startsWith("/")) {
+    urlPath = urlPath.substring(1);
+  }
+
+  // Prepare the request body
+  const requestBody: any = { entity_id: haBody.entity_id };
+
+  // Add service_data if present (for play_media and other services that need additional data)
+  if (haBody.service_data) {
+    // For Home Assistant API, merge service_data fields directly at the top level
+    Object.assign(requestBody, haBody.service_data);
+  }
+
+  const haResponse = await axios.post(
+    `${HOME_ASSISTANT_URL}/api/services/${urlPath}`,
+    requestBody,
+    {
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
+      },
+    }
+  );
+
+  if (haResponse.status < 200 || haResponse.status >= 300) {
+    console.error("Home Assistant error response:", haResponse.data);
+    return {
+      success: false,
+      message: `Home Assistant API returned status ${haResponse.status}`,
+      data: haResponse.data,
+    };
+  }
+
+  console.log(`HA Command executed: ${originalCommand}; Response:`, haResponse.data);
+  return {
+    success: true,
+    message: `Command "${originalCommand}" sent successfully`,
+    data: haResponse.data,
+  };
+}
+
+/**
+ * Execute multiple Home Assistant commands in sequence
+ * Used for multi-step operations like "scroll left 3 times then click select"
+ */
+async function executeMultipleHACommands(
+  commands: HassServiceCommand[],
+  originalCommand: string
+): Promise<{ success: boolean; message: string; data?: any }> {
+  console.log(`Executing ${commands.length} HA commands in sequence for: ${originalCommand}`);
+  
+  const results: any[] = [];
+  const errors: string[] = [];
+  
+  for (let i = 0; i < commands.length; i++) {
+    const cmd = commands[i];
+    console.log(`Executing command ${i + 1}/${commands.length}:`, cmd);
+    
+    const result = await executeSingleHACommand(cmd, `Step ${i + 1}: ${cmd.url_path}`);
+    results.push(result.data);
+    
+    if (!result.success) {
+      errors.push(`Step ${i + 1} failed: ${result.message}`);
+      // Continue executing remaining commands even if one fails
+      console.warn(`Command ${i + 1} failed, continuing with remaining commands...`);
+    }
+    
+    // Add a small delay between commands to allow the device to process
+    if (i < commands.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
+  }
+  
+  if (errors.length > 0) {
+    return {
+      success: errors.length < commands.length, // Partial success if some commands succeeded
+      message: errors.length === commands.length 
+        ? `All ${commands.length} commands failed: ${errors.join('; ')}`
+        : `${commands.length - errors.length}/${commands.length} commands succeeded. Errors: ${errors.join('; ')}`,
+      data: results,
+    };
+  }
+  
+  return {
+    success: true,
+    message: `All ${commands.length} commands executed successfully for "${originalCommand}"`,
+    data: results,
+  };
 }

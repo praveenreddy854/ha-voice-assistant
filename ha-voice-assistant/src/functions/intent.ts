@@ -6,6 +6,7 @@ export enum Intent {
   Chat = "Chat",
   Reminder = "Reminder",
   AgenticFlow = "AgenticFlow",
+  TeachingMode = "TeachingMode",
 }
 
 export const getIntent = async (text: string): Promise<Response<Intent>> => {

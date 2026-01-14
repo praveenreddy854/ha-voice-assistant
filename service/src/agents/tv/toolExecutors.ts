@@ -8,7 +8,7 @@ import {
   MediaControlArgs,
   ClickSelectButtonArgs,
   OpenMenuArgs,
-  TypeTextArgs,
+  DelegateToTypingArgs,
   RequestScreenshotArgs,
   GetDeviceStateArgs,
   LaunchAppArgs,
@@ -26,6 +26,7 @@ import {
   runNavigationAgent,
   getSessionState as getNavSessionState,
 } from "../navigation";
+import { runTypingAgent } from "../typing";
 
 // ============================================================================
 // Plain English Command Processing
@@ -215,30 +216,59 @@ export async function executeOpenMenu(
   return { observation, needsScreenshot: false };
 }
 
-export async function executeTypeText(
-  args: TypeTextArgs,
+export async function executeDelegateToTyping(
+  args: DelegateToTypingArgs,
   context: ToolExecutionContext
 ): Promise<ToolExecutionResult> {
-  const defaultWait = Number.isFinite(TV_DEFAULT_WAIT_MS)
-    ? Math.max(250, TV_DEFAULT_WAIT_MS)
-    : 1500;
+  console.log(
+    `[TV Agent] Delegating to Typing Agent: "${args.text_to_type}"`
+  );
 
-  // Create a simple, natural plain English command
-  const deviceName = args.remote_entity_id.replace("remote.", "");
-  const plainCommand = `Type "${args.text}" on ${deviceName}`;
+  try {
+    // Delegate to Typing Agent's full agentic flow
+    // Pass screenshot data if available for visual context
+    const result = await runTypingAgent({
+      userMessage: `Type the text "${args.text_to_type}" into the focused input field. ${args.reason}`,
+      textToType: args.text_to_type,
+      deviceConfig: {
+        remoteEntityId: args.remote_entity_id,
+        mediaPlayerEntityId: args.media_player_entity_id,
+      },
+      screenshotBase64: context.screenshotBase64,
+      screenshotContentType: context.screenshotContentType,
+      maxIterations: 15, // Text input may need more iterations for longer text
+    });
 
-  // Execute the command using the HA command processor
-  const result = await executeHACommand(plainCommand);
+    if (!result.success) {
+      return {
+        observation: `❌ Typing Agent failed: ${result.message}\nTarget text: "${args.text_to_type}"`,
+        needsScreenshot: true, // May need screenshot to understand what went wrong
+      };
+    }
 
-  if (!result.success) {
-    const observation = `Failed to execute "${plainCommand}": ${result.message}`;
-    return { observation, needsScreenshot: true };
+    // Extract last step observation or use final message
+    const lastStep = result.steps[result.steps.length - 1];
+    const stepObservation = lastStep?.observation || result.message;
+
+    const observation =
+      `⌨️ Typing Agent completed:\n` +
+      `📝 Text typed: "${args.text_to_type}"\n` +
+      `${stepObservation}\n` +
+      `${args.reason}`;
+
+    return {
+      observation,
+      needsScreenshot: true, // Always verify text input with screenshot
+    };
+  } catch (error) {
+    console.error("[TV Agent] Typing delegation error:", error);
+    return {
+      observation: `❌ Typing delegation failed: ${
+        error instanceof Error ? error.message : "Unknown error"
+      }\nTarget text: "${args.text_to_type}"`,
+      needsScreenshot: false,
+    };
   }
-
-  await delay(defaultWait);
-
-  const observation = `Successfully executed "${plainCommand}". Screenshot required to verify input.`;
-  return { observation, needsScreenshot: true };
 }
 
 export async function executeRequestScreenshot(
@@ -428,9 +458,11 @@ export async function executeDelegateToNavigation(
   console.log(
     `[TV Agent] Delegating to Navigation Agent: ${args.task_description}`
   );
+  console.log(`[TV Agent] Screenshot available: ${!!context.screenshotBase64}`);
 
   try {
     // Delegate to Navigation Agent's full agentic flow
+    // The navigation agent has comprehensive instructions to handle any task
     // Pass screenshot data if available for visual context
     const result = await runNavigationAgent({
       userMessage: args.task_description,
@@ -440,43 +472,56 @@ export async function executeDelegateToNavigation(
       },
       screenshotBase64: context.screenshotBase64,
       screenshotContentType: context.screenshotContentType,
-      maxIterations: 5, // Limit iterations for navigation subtasks
+      maxIterations: 10, // Increase iterations for complex navigation
     });
 
+    console.log(`[TV Agent] Navigation Agent result: success=${result.success}, steps=${result.steps.length}`);
+
     if (!result.success) {
+      // Provide detailed failure information
+      const stepSummary = result.steps
+        .map((s, i) => `  ${i + 1}. ${s.toolName}: ${s.observation?.substring(0, 100)}...`)
+        .join("\n");
+      
       return {
-        observation: `❌ Navigation Agent failed: ${result.message}\n${args.reason}`,
-        needsScreenshot: true, // May need screenshot to understand what went wrong
+        observation: 
+          `❌ Navigation Agent failed after ${result.steps.length} steps.\n` +
+          `📋 Task: ${args.task_description}\n` +
+          `❗ Error: ${result.message}\n` +
+          `📝 Steps attempted:\n${stepSummary}\n` +
+          `💡 Suggestion: Try a different approach or request a screenshot to assess the current state.`,
+        needsScreenshot: true,
       };
     }
 
-    // Extract last step observation or use final message
-    const lastStep = result.steps[result.steps.length - 1];
-    const stepObservation = lastStep?.observation || result.message;
+    // Extract useful information from all steps
+    const stepSummary = result.steps
+      .filter(s => s.observation && !s.observation.startsWith("⏱️"))
+      .map(s => `• ${s.toolName}: ${s.observation?.split("\n")[0] || "completed"}`)
+      .slice(-3) // Last 3 meaningful steps
+      .join("\n");
 
     const observation =
-      `🤝 Navigation Agent completed:\n` +
-      `${stepObservation}\n` +
-      `${args.reason}`;
-
-    // Check if any step requested a screenshot
-    const needsScreenshot = result.steps.some(
-      (step) =>
-        step.observation?.includes("📸") ||
-        step.observation?.includes("screenshot")
-    );
+      `✅ Navigation Agent completed successfully!\n` +
+      `📋 Task: ${args.task_description}\n` +
+      `📍 Reason: ${args.reason}\n` +
+      `🔄 Steps completed: ${result.steps.length}\n` +
+      `📝 Recent actions:\n${stepSummary}\n` +
+      `🎯 Result: ${result.message}`;
 
     return {
       observation,
-      needsScreenshot,
+      needsScreenshot: true, // Always verify navigation results with screenshot
     };
   } catch (error) {
     console.error("[TV Agent] Navigation delegation error:", error);
     return {
-      observation: `❌ Navigation delegation failed: ${
-        error instanceof Error ? error.message : "Unknown error"
-      }`,
-      needsScreenshot: false,
+      observation: 
+        `❌ Navigation delegation failed with error.\n` +
+        `📋 Task: ${args.task_description}\n` +
+        `❗ Error: ${error instanceof Error ? error.message : "Unknown error"}\n` +
+        `💡 Try using direct navigation tools or request a screenshot first.`,
+      needsScreenshot: true,
     };
   }
 }
@@ -526,18 +571,37 @@ export async function executeAnalyzeScreenshot(
       apiVersion: OPENAI_RESPONSES_API_VERSION,
     });
 
-    const analysisPrompt = `Analyze this TV screenshot and answer the following query: "${args.query}"
+    const analysisPrompt = `You are analyzing an image captured by a camera pointed at a smart TV. The image contains the TV screen along with surrounding room elements (walls, furniture, ambient lighting, etc.).
 
-Provide a detailed analysis in JSON format with:
+CRITICAL: Focus ONLY on the content displayed on the TV screen. Completely ignore everything outside the TV boundaries (room, furniture, reflections, decorations, etc.).
+
+USER QUERY: "${args.query}"
+
+FIRST - Detect if content is actively playing:
+- Fullscreen video/movie/show playing = content IS playing
+- Browse UI, menus, app home screens = content NOT playing
+- Video player controls visible (play/pause, progress bar) = content IS playing
+
+Provide a detailed analysis in JSON format:
 {
+  "tv_screen_identified": true/false,
+  "content_playing": true/false,
+  "content_playing_type": "video/movie/show/music/none",
+  "must_exit_player_first": true/false,
   "current_app": "name of the app currently displayed (YouTube, Netflix, Home Screen, etc.)",
-  "screen_type": "type of screen (home, search, video player, menu, etc.)",
-  "ui_elements": ["list of visible UI elements like search icons, buttons, menus, text fields"],
+  "screen_type": "type of screen (home, search, video_player, browse, menu, etc.)",
+  "ui_elements": ["list of visible UI elements like search icons, buttons, menus, text fields - ONLY from TV screen"],
   "selected_item": "description of currently highlighted/selected item if any",
+  "keyboard_visible": true/false,
   "answer": "direct answer to the query",
   "suggested_actions": ["list of suggested next actions based on current state"],
   "navigation_hints": "hints for navigating to desired elements"
-}`;
+}
+
+IMPORTANT:
+- If content is playing, recommend pressing BACK before attempting navigation
+- Only analyze what's ON the TV screen
+- Ignore any room elements, reflections, or items outside the TV`;
 
     const messages = [
       {
@@ -660,16 +724,30 @@ export async function executeVerifyUIState(
       apiVersion: OPENAI_RESPONSES_API_VERSION,
     });
 
-    const verificationPrompt = `Analyze this TV screenshot and verify if the following state is true: "${args.expected_state}"
+    const verificationPrompt = `You are analyzing an image captured by a camera pointed at a smart TV. The image contains the TV screen along with surrounding room elements.
+
+CRITICAL: Focus ONLY on the content displayed on the TV screen. Completely ignore everything outside the TV (room, furniture, reflections, etc.).
+
+VERIFY THIS STATE: "${args.expected_state}"
+
+FIRST - Check if content is actively playing on the TV:
+- If video/movie/show is playing fullscreen -> navigation commands won't work, need to press BACK first
+- If browse UI or menu is visible -> navigation is possible
 
 Return a JSON object with:
 {
+  "tv_screen_identified": true/false,
+  "content_playing": true/false,
+  "must_exit_player_first": true/false,
   "verified": true/false,
   "confidence": "high/medium/low",
-  "current_state": "description of what is actually visible",
+  "current_state": "description of what is actually visible ON THE TV SCREEN ONLY",
   "match_details": "explanation of why it matches or doesn't match",
-  "recommendations": "if not verified, what needs to happen to reach expected state"
-}`;
+  "keyboard_visible": true/false,
+  "recommendations": "if not verified, what needs to happen to reach expected state (include 'press back to exit player' if content is playing)"
+}
+
+IMPORTANT: Base your verification ONLY on what's displayed on the TV screen, not room elements.`;
 
     const messages = [
       {
@@ -781,8 +859,8 @@ export async function executeTool(
       );
     case "open_menu":
       return await executeOpenMenu(args as OpenMenuArgs, context);
-    case "type_text":
-      return await executeTypeText(args as TypeTextArgs, context);
+    case "delegate_to_typing":
+      return await executeDelegateToTyping(args as DelegateToTypingArgs, context);
     case "request_screenshot":
       return await executeRequestScreenshot(
         args as RequestScreenshotArgs,

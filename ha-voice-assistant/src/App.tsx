@@ -16,6 +16,7 @@ import { playChime } from "./functions/chime";
 import { LaundryMonitor, VacuumMonitor, ReminderManager } from "./skills";
 import SkillToggles from "./components/SkillToggles";
 import SkillWrapper from "./components/SkillWrapper";
+import TeachingModeUI from "./components/TeachingModeUI";
 import HandGestureDetector from "./skills/gestures/HandGestureDetector";
 import {
   SkillToggleState,
@@ -23,6 +24,10 @@ import {
   saveSkillToggleState,
   isSkillEnabled,
 } from "./utils/skillToggle";
+import {
+  hasActiveTeachingSession,
+  isAwaitingTeachingTask,
+} from "./functions/teaching";
 
 declare global {
   interface Window {
@@ -40,6 +45,7 @@ function App() {
     loadSkillToggleState()
   );
   const [isGestureCameraActive, setIsGestureCameraActive] = useState(false);
+  const [showTeachingUI, setShowTeachingUI] = useState(false);
   const isListeningForWakeWord = useRef(false);
 
   const { finalTranscript, resetTranscript } = useSpeechRecognition();
@@ -109,6 +115,15 @@ function App() {
     setAllReminders(reminders);
   }, []);
 
+  // Handle successful teaching recording save
+  const handleTeachingSaveComplete = useCallback((taskName: string, stepCount: number) => {
+    const message: Message = {
+      sender: "assistant",
+      text: `✅ Fine-tuning data saved: "${taskName}" with ${stepCount} training examples added to JSONL.`,
+    };
+    setMessages((prev) => [...prev, message]);
+  }, []);
+
   const processRecognizedTextCallback = useCallback(
     async (text: string) => {
       await processRecognizedText(
@@ -138,9 +153,16 @@ function App() {
   }, [resetTranscript]);
 
   React.useEffect(() => {
-    // Auto-stop after 30 seconds when listening for commands (not wake words)
+    // Check if we're in teaching mode (active session or awaiting task)
+    const isInTeachingMode = hasActiveTeachingSession() || isAwaitingTeachingTask();
+    
+    // Use 5 minutes (300 seconds) for teaching mode, 30 seconds otherwise
+    const timeoutDuration = isInTeachingMode ? 300000 : 30000; // 5 min or 30 sec
+    const countdownStart = isInTeachingMode ? 300 : 30;
+    
+    // Auto-stop after timeout when listening for commands (not wake words)
     if (isListening && !isListeningForWakeWord.current) {
-      setCountdown(30);
+      setCountdown(countdownStart);
       setIsGestureCameraActive(true);
 
       // Update countdown every second
@@ -155,11 +177,12 @@ function App() {
 
       // Auto-stop timer
       const timer = setTimeout(() => {
-        console.log("Auto stopping after 30 seconds of continuous listening");
+        const modeLabel = isInTeachingMode ? "teaching mode (5 minutes)" : "30 seconds";
+        console.log(`Auto stopping after ${modeLabel} of continuous listening`);
         setCountdown(null);
         handleRecognizedText({
           sender: "assistant",
-          text: "Auto stopping after 30 seconds of continuous listening",
+          text: `Auto stopping after ${modeLabel} of continuous listening`,
         });
         if (USE_AZURE_SPEECH) {
           stopRecognition(
@@ -192,7 +215,7 @@ function App() {
             startWakeWordListening();
           });
         }
-      }, 30000); // 30 seconds
+      }, timeoutDuration); // 5 min for teaching mode, 30 sec otherwise
 
       return () => {
         clearTimeout(timer);
@@ -240,6 +263,8 @@ function App() {
             console.log(
               "SpeechRecognition aborted, starting Azure speech recognition..."
             );
+            // Check if we're in teaching mode for extended silence timeout
+            const isInTeachingMode = hasActiveTeachingSession() || isAwaitingTeachingTask();
             startAzureSpeechRecognition({
               setIsListening,
               setRecognizedText: handleRecognizedText,
@@ -247,6 +272,7 @@ function App() {
               processRecognizedText: processRecognizedTextCallback,
               onSessionStarted: () => setIsGestureCameraActive(true),
               onSessionStopped: () => setIsGestureCameraActive(false),
+              extendedSilenceTimeout: isInTeachingMode,
             });
           });
         }
@@ -351,6 +377,42 @@ function App() {
           🏠 Smart Home Dashboard
         </h2>
 
+        {/* Teaching Mode Button */}
+        <div style={{ 
+          display: "flex", 
+          justifyContent: "center", 
+          marginBottom: "20px" 
+        }}>
+          <button
+            onClick={() => setShowTeachingUI(true)}
+            style={{
+              padding: "12px 24px",
+              backgroundColor: "#8b5cf6",
+              border: "none",
+              borderRadius: "12px",
+              color: "white",
+              fontSize: "16px",
+              fontWeight: "600",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              boxShadow: "0 4px 12px rgba(139, 92, 246, 0.3)",
+              transition: "all 0.2s ease",
+            }}
+            onMouseOver={(e) => {
+              e.currentTarget.style.backgroundColor = "#7c3aed";
+              e.currentTarget.style.transform = "translateY(-2px)";
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.backgroundColor = "#8b5cf6";
+              e.currentTarget.style.transform = "translateY(0)";
+            }}
+          >
+            📚 Open Teaching Mode
+          </button>
+        </div>
+
         <SkillToggles
           skillState={skillState}
           onToggleGlobal={handleToggleGlobal}
@@ -448,6 +510,14 @@ function App() {
 
         <HandGestureDetector active={isGestureCameraActive} />
       </div>
+
+      {/* Teaching Mode UI Modal */}
+      {showTeachingUI && (
+        <TeachingModeUI
+          onClose={() => setShowTeachingUI(false)}
+          onSaveComplete={handleTeachingSaveComplete}
+        />
+      )}
     </div>
   );
 }

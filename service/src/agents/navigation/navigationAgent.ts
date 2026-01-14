@@ -1,28 +1,16 @@
 /**
  * TV Navigation Agent Core Logic
- * Specialized agent for TV navigation operations using Azure AI Agents
+ * Specialized agent for TV navigation operations using Custom Agent Loop
  */
 
-import { DefaultAzureCredential } from "@azure/identity";
-import {
-  AgentsClient,
-  RequiredFunctionToolCall,
-  SubmitToolOutputsAction,
-  ThreadRun,
-} from "@azure/ai-agents";
 import { randomUUID } from "crypto";
 import {
-  AZURE_AI_PROJECT_ENDPOINT,
-  AZURE_AI_AGENT_MODEL,
   HOME_ASSISTANT_TOKEN,
   HOME_ASSISTANT_URL,
 } from "../../config";
 import {
-  NAV_AGENT_NAME,
-  NAV_AGENT_DESCRIPTION,
   NAV_AGENT_INSTRUCTIONS,
   NAV_AGENT_MAX_ITERATIONS_CAP,
-  MIN_RUN_CREATION_INTERVAL_MS,
   NAV_TOOLS,
 } from "./constants";
 import {
@@ -30,14 +18,13 @@ import {
   NavAgenticFlowResult,
   RunNavAgenticFlowOptions,
   NavAgentSessionState,
-  ScreenshotPayload,
-  ToolOutputPayload,
   NavToolName,
   NavToolArguments,
   GoHomeArgs,
   GoBackArgs,
   NavigateArgs,
   FindSearchArgs,
+  ClickSelectButtonArgs,
   RequestScreenshotArgs,
   WaitArgs,
   ToolExecutionContext,
@@ -48,68 +35,37 @@ import {
   executeGoBack,
   executeNavigate,
   executeFindSearch,
+  executeClickSelectButton,
   executeRequestScreenshot,
   executeWait,
 } from "./toolExecutors";
-import { delay } from "../common/utils";
+import {
+  CustomAgentLoop,
+  createAgentLoop,
+  AgentToolCall,
+  ToolExecutionResult as AgentToolResult,
+} from "../tv/customAgentLoop";
 
 // ============================================================================
 // Session Management
 // ============================================================================
 
-let cachedClient: AgentsClient | undefined;
 const sessionStore = new Map<string, NavAgentSessionState>();
+let navAgentLoop: CustomAgentLoop | null = null;
 
 // ============================================================================
-// Azure Client Management
+// Agent Loop Management
 // ============================================================================
 
-function loadAzureClient(): AgentsClient {
-  if (cachedClient) {
-    return cachedClient;
+function getOrCreateNavAgentLoop(): CustomAgentLoop {
+  if (!navAgentLoop) {
+    navAgentLoop = createAgentLoop({
+      systemPrompt: NAV_AGENT_INSTRUCTIONS,
+      tools: NAV_TOOLS,
+      maxIterations: NAV_AGENT_MAX_ITERATIONS_CAP,
+    });
   }
-
-  if (!AZURE_AI_PROJECT_ENDPOINT) {
-    throw new Error(
-      "Azure AI Project endpoint missing. Please configure AZURE_AI_PROJECT_ENDPOINT."
-    );
-  }
-
-  const credential = new DefaultAzureCredential();
-  cachedClient = new AgentsClient(AZURE_AI_PROJECT_ENDPOINT, credential);
-  return cachedClient;
-}
-
-// ============================================================================
-// Agent Management
-// ============================================================================
-
-let cachedAgentId: string | undefined;
-
-async function getOrCreateAgent(): Promise<string> {
-  if (cachedAgentId) {
-    return cachedAgentId;
-  }
-
-  const client = loadAzureClient();
-  const model = AZURE_AI_AGENT_MODEL || "gpt-5-mini";
-
-  // Create new agent
-  console.log(`[Nav Agent] Creating new agent: ${NAV_AGENT_NAME}`);
-  const agent = await client.createAgent?.(model, {
-    name: NAV_AGENT_NAME,
-    description: NAV_AGENT_DESCRIPTION,
-    instructions: NAV_AGENT_INSTRUCTIONS,
-    tools: NAV_TOOLS,
-  });
-
-  if (!agent?.id) {
-    throw new Error("Failed to create navigation agent");
-  }
-
-  console.log(`[Nav Agent] Created new agent with ID: ${agent.id}`);
-  cachedAgentId = agent.id;
-  return agent.id;
+  return navAgentLoop;
 }
 
 // ============================================================================
@@ -132,6 +88,8 @@ async function executeTool(
       return executeNavigate(args as NavigateArgs, context);
     case "find_search":
       return executeFindSearch(args as FindSearchArgs, context);
+    case "click_select_button":
+      return executeClickSelectButton(args as ClickSelectButtonArgs, context);
     case "request_screenshot":
       return executeRequestScreenshot(args as RequestScreenshotArgs, context);
     case "wait":
@@ -151,53 +109,75 @@ async function executeTool(
 export async function runNavigationAgent(
   options: RunNavAgenticFlowOptions
 ): Promise<NavAgenticFlowResult> {
-  const sessionId = options.existingThreadId || randomUUID();
+  const sessionId = randomUUID();
   const maxIterations = options.maxIterations || NAV_AGENT_MAX_ITERATIONS_CAP;
 
   console.log(`[Nav Agent] Starting navigation flow:`, {
     sessionId,
     userMessage: options.userMessage,
     maxIterations,
+    hasScreenshot: !!options.screenshotBase64,
   });
 
-  const client = loadAzureClient();
-  const agentId = await getOrCreateAgent();
+  const loop = getOrCreateNavAgentLoop();
 
-  // Create or get thread
-  let threadId: string;
-  if (options.existingThreadId) {
-    threadId = options.existingThreadId;
-    console.log(`[Nav Agent] Using existing thread: ${threadId}`);
+  // Build initial message with device configuration context
+  let initialMessage = `## Navigation Task\n${options.userMessage}\n\n`;
+  initialMessage += `## Device Configuration\n`;
+  initialMessage += `- Remote Entity ID: ${options.deviceConfig.remoteEntityId}\n`;
+  initialMessage += `- Media Player Entity ID: ${options.deviceConfig.mediaPlayerEntityId}\n\n`;
+
+  // Add screenshot instruction
+  if (options.screenshotBase64) {
+    initialMessage += `## Current Screen State\n`;
+    initialMessage += `📸 A screenshot of the current TV screen is attached. Analyze it to understand the current UI state and determine your navigation strategy.\n`;
+    initialMessage += `Look for:\n`;
+    initialMessage += `- Currently highlighted/selected item (usually has a border or different color)\n`;
+    initialMessage += `- Target element location relative to current position\n`;
+    initialMessage += `- Navigation path needed (up/down/left/right presses)\n\n`;
   } else {
-    const thread = await client.threads.create?.();
-    if (!thread?.id) {
-      throw new Error("Failed to create thread");
-    }
-    threadId = thread.id;
-    console.log(`[Nav Agent] Created new thread: ${threadId}`);
+    initialMessage += `⚠️ No screenshot available. Request a screenshot first to see the current TV state.\n\n`;
   }
 
-  // Session state
+  initialMessage += `## Instructions\n`;
+  initialMessage += `Complete the navigation task efficiently. After each navigation action, analyze the result and adjust as needed.`;
+
+  // Create session in the custom agent loop
+  const loopSession = loop.createSession(initialMessage);
+
+  // If we have an initial screenshot, inject it as context
+  if (options.screenshotBase64 && options.screenshotContentType) {
+    // Add the screenshot as a follow-up user message with image
+    const screenshotMessage = {
+      role: "user" as const,
+      content: [
+        { type: "text" as const, text: "Here is the current TV screen:" },
+        {
+          type: "image_url" as const,
+          image_url: {
+            url: `data:${options.screenshotContentType};base64,${options.screenshotBase64}`,
+            detail: "high" as const,
+          },
+        },
+      ],
+    };
+    
+    // Manually add to session messages (accessing internal structure)
+    const sessionMessages = loop.getMessages(loopSession.id);
+    if (sessionMessages.length > 0) {
+      loop.addMessage(loopSession.id, "user", JSON.stringify(screenshotMessage.content));
+    }
+  }
+
+  // Session state - track current screenshot for tool execution
   const sessionState: NavAgentSessionState = {
-    threadId,
+    threadId: loopSession.id,
     steps: [],
     isComplete: false,
+    lastScreenshotBase64: options.screenshotBase64,
+    lastScreenshotContentType: options.screenshotContentType,
   };
   sessionStore.set(sessionId, sessionState);
-
-  // Add user message to thread with device configuration context
-  let messageWithContext =
-    `${options.userMessage}\n\n` +
-    `Device Configuration:\n` +
-    `- Remote Entity ID: ${options.deviceConfig.remoteEntityId}\n` +
-    `- Media Player Entity ID: ${options.deviceConfig.mediaPlayerEntityId}`;
-
-  // Add screenshot context if provided
-  if (options.screenshotBase64) {
-    messageWithContext += `\n\n📸 Screenshot provided for visual context`;
-  }
-
-  await client.messages.create?.(threadId, "user", messageWithContext);
 
   // Create tool execution context with screenshot data
   const toolContext: ToolExecutionContext = {
@@ -210,41 +190,72 @@ export async function runNavigationAgent(
 
   try {
     let iteration = 0;
-    let run = await client.runs.create?.(threadId, agentId);
-
-    if (!run?.id) {
-      throw new Error("Failed to create run");
-    }
 
     while (iteration < maxIterations) {
       iteration++;
       console.log(`[Nav Agent] Iteration ${iteration}/${maxIterations}`);
 
-      // Poll run status
-      while (run.status === "queued" || run.status === "in_progress") {
-        await delay(500);
-        const updatedRun = await client.runs.get?.(threadId, run.id);
-        if (updatedRun) {
-          run = updatedRun;
-        }
+      // Run a step in the agent loop
+      const stepResult = await loop.runStep(loopSession.id);
+      console.log(`[Nav Agent] Step result type: ${stepResult.type}`);
+
+      if (stepResult.type === "error") {
+        console.error(`[Nav Agent] Agent loop error: ${stepResult.error}`);
+        sessionState.isComplete = true;
+        sessionState.completionReason = "error";
+        sessionState.finalMessage = stepResult.error || "Unknown error";
+
+        return {
+          success: false,
+          message: sessionState.finalMessage,
+          steps: sessionState.steps,
+          sessionState,
+          error: stepResult.error,
+        };
       }
 
-      console.log(`[Nav Agent] Run status: ${run.status}`);
+      if (stepResult.type === "complete") {
+        console.log(`[Nav Agent] Agent loop completed: ${stepResult.message}`);
+        sessionState.isComplete = true;
+        sessionState.completionReason = "success";
+        sessionState.finalMessage = stepResult.message || "Navigation task completed.";
 
-      if (run.status === "requires_action") {
-        const action = run.requiredAction as SubmitToolOutputsAction;
-        const toolCalls = action.submitToolOutputs
-          .toolCalls as RequiredFunctionToolCall[];
+        return {
+          success: true,
+          message: sessionState.finalMessage,
+          steps: sessionState.steps,
+          sessionState,
+        };
+      }
 
-        const toolOutputs = [];
+      if (stepResult.type === "tool_calls" && stepResult.toolCalls) {
+        console.log(`[Nav Agent] Processing ${stepResult.toolCalls.length} tool calls`);
 
-        for (const toolCall of toolCalls) {
+        const toolResults: AgentToolResult[] = [];
+
+        for (const toolCall of stepResult.toolCalls) {
           const toolName = toolCall.function.name as NavToolName;
-          const args = JSON.parse(
-            toolCall.function.arguments
-          ) as NavToolArguments;
+          let args: NavToolArguments;
+
+          try {
+            args = JSON.parse(toolCall.function.arguments) as NavToolArguments;
+          } catch (parseError) {
+            console.error(`[Nav Agent] Failed to parse tool arguments:`, parseError);
+            toolResults.push({
+              toolCallId: toolCall.id,
+              result: JSON.stringify({
+                success: false,
+                error: "Failed to parse tool arguments",
+              }),
+            });
+            continue;
+          }
 
           console.log(`[Nav Agent] Tool call:`, { toolName, args });
+
+          // Update tool context with latest screenshot
+          toolContext.screenshotBase64 = sessionState.lastScreenshotBase64;
+          toolContext.screenshotContentType = sessionState.lastScreenshotContentType;
 
           // Execute the tool
           const result = await executeTool(toolName, args, toolContext);
@@ -256,91 +267,72 @@ export async function runNavigationAgent(
             toolArgs: args as unknown as Record<string, unknown>,
             observation: result.observation,
             timestamp: new Date(),
-            runId: run.id,
-            threadId,
+            runId: loopSession.id,
+            threadId: loopSession.id,
           };
           sessionState.steps.push(step);
 
-          // Handle screenshot requests
-          if (result.needsScreenshot) {
-            console.log(`[Nav Agent] Tool requires screenshot`);
+          // Build tool result - include screenshot if tool needs it and we have one
+          const toolResult: AgentToolResult = {
+            toolCallId: toolCall.id,
+            result: result.observation,
+          };
 
-            toolOutputs.push({
-              toolCallId: toolCall.id,
-              output: JSON.stringify({
-                observation:
-                  result.observation +
-                  "\n📸 Screenshot recommended for verification.",
-                needsScreenshot: true,
-              }),
-            });
-          } else {
-            toolOutputs.push({
-              toolCallId: toolCall.id,
-              output: JSON.stringify({
-                observation: result.observation,
-                needsScreenshot: false,
-              }),
-            });
+          // If tool needs screenshot feedback and we have a screenshot, include it
+          if (result.needsScreenshot && sessionState.lastScreenshotBase64 && sessionState.lastScreenshotContentType) {
+            toolResult.imageBase64 = sessionState.lastScreenshotBase64;
+            toolResult.imageContentType = sessionState.lastScreenshotContentType;
+            console.log(`[Nav Agent] Including screenshot in tool result for ${toolName}`);
           }
+
+          toolResults.push(toolResult);
         }
 
-        // Submit tool outputs
-        run = await client.runs.submitToolOutputs?.(
-          threadId,
-          run.id,
-          toolOutputs
-        );
-        if (!run) {
-          throw new Error("Failed to submit tool outputs");
-        }
-      } else if (run.status === "completed") {
-        console.log(`[Nav Agent] Run completed successfully`);
+        // Submit tool results and continue
+        const nextResult = await loop.submitToolResults(loopSession.id, toolResults);
 
-        // Get final message
-        const messagesIterator = client.messages.list?.(threadId);
-        let finalMessage = "Navigation task completed.";
+        // Handle the result from submitting tool outputs
+        if (nextResult.type === "error") {
+          console.error(`[Nav Agent] Error after tool submission: ${nextResult.error}`);
+          sessionState.isComplete = true;
+          sessionState.completionReason = "error";
+          sessionState.finalMessage = nextResult.error || "Unknown error";
 
-        if (messagesIterator) {
-          for await (const message of messagesIterator) {
-            if (message.role === "assistant") {
-              const textContent = message.content.find(
-                (c: any) => c.type === "text"
-              );
-              if (textContent && "text" in textContent) {
-                finalMessage = (textContent as any).text.value;
-                break;
-              }
-            }
-          }
+          return {
+            success: false,
+            message: sessionState.finalMessage,
+            steps: sessionState.steps,
+            sessionState,
+            error: nextResult.error,
+          };
         }
 
-        sessionState.isComplete = true;
-        sessionState.completionReason = "success";
-        sessionState.finalMessage = finalMessage;
+        if (nextResult.type === "complete") {
+          console.log(`[Nav Agent] Completed after tool submission: ${nextResult.message}`);
+          sessionState.isComplete = true;
+          sessionState.completionReason = "success";
+          sessionState.finalMessage = nextResult.message || "Navigation task completed.";
 
-        return {
-          success: true,
-          message: finalMessage,
-          steps: sessionState.steps,
-          sessionState,
-        };
-      } else if (run.status === "failed" || run.status === "cancelled") {
-        console.error(`[Nav Agent] Run ${run.status}:`, run.lastError);
+          return {
+            success: true,
+            message: sessionState.finalMessage,
+            steps: sessionState.steps,
+            sessionState,
+          };
+        }
 
-        sessionState.isComplete = true;
-        sessionState.completionReason = "error";
-        sessionState.finalMessage = `Navigation failed: ${
-          run.lastError?.message || "Unknown error"
-        }`;
+        // If more tool calls, continue the loop
+        if (nextResult.type === "tool_calls" && nextResult.toolCalls) {
+          // Process in next iteration
+          continue;
+        }
+      }
 
-        return {
-          success: false,
-          message: sessionState.finalMessage,
-          steps: sessionState.steps,
-          sessionState,
-          error: run.lastError?.message,
-        };
+      // Regular message - continue processing
+      if (stepResult.type === "message") {
+        console.log(`[Nav Agent] Received message: ${stepResult.message}`);
+        // Continue processing
+        continue;
       }
     }
 
@@ -348,7 +340,7 @@ export async function runNavigationAgent(
     console.log(`[Nav Agent] Max iterations (${maxIterations}) reached`);
     sessionState.isComplete = true;
     sessionState.completionReason = "max_iterations";
-    sessionState.finalMessage = `Navigation incomplete: Maximum iterations (${maxIterations}) reached.`;
+    sessionState.finalMessage = `Navigation incomplete: Maximum iterations (${maxIterations}) reached. Last state: ${sessionState.steps[sessionState.steps.length - 1]?.observation || "unknown"}`;
 
     return {
       success: false,
@@ -373,6 +365,8 @@ export async function runNavigationAgent(
       error: sessionState.finalMessage,
     };
   } finally {
+    // Clean up
+    loop.deleteSession(loopSession.id);
     sessionStore.delete(sessionId);
   }
 }
@@ -389,4 +383,22 @@ export function getSessionState(
 
 export function clearSession(sessionId: string): void {
   sessionStore.delete(sessionId);
+}
+
+/**
+ * Update the current screenshot for an active navigation session
+ * This allows the parent agent to inject new screenshots during delegation
+ */
+export function updateSessionScreenshot(
+  sessionId: string,
+  screenshotBase64: string,
+  screenshotContentType: string
+): boolean {
+  const session = sessionStore.get(sessionId);
+  if (!session) {
+    return false;
+  }
+  session.lastScreenshotBase64 = screenshotBase64;
+  session.lastScreenshotContentType = screenshotContentType;
+  return true;
 }

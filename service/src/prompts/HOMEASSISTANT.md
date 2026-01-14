@@ -118,6 +118,13 @@ All keys are lowercase, all strings are double-quoted.
 **User:** _Click on Apple TV_  
 { "url_path": "remote/send_command", "entity_id": "remote.appletv", "service_data": { "command": "select" } }
 
+**User:** _Scroll left 3 times and then click select. Scroll right 8 times and the click select_  
+[{ "url_path": "remote/send_command", "entity_id": "remote.appletv", "service_data": { "command": "left",num_repeats": 3 } },
+{ "url_path": "remote/send_command", "entity_id": "remote.appletv", "service_data": { "command": "select"} },
+{ "url_path": "remote/send_command", "entity_id": "remote.appletv", "service_data": { "command": "right"num_repeats": 8} },
+{ "url_path": "remote/send_command", "entity_id": "remote.appletv", "service_data": { "command": "select"} }
+]
+
 **User:** _Forward 30 seconds_  
 { "url_path": "remote/send_command", "entity_id": "remote.appletv", "service_data": { "command": "skip_forward", "num_repeats": 3 } }
 
@@ -147,6 +154,9 @@ All keys are lowercase, all strings are double-quoted.
 
 **User:** _Turn on living-room lights_ _(no matching entity)_
 { "error": "no_match" }
+
+**User:** _Type play latest telugu songs on apple tv"
+{"url_path": "remote/send_command","entity_id":"remote.appletv", "command":["text:hello world"]}
 
 ### User
 

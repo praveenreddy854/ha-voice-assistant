@@ -38,9 +38,10 @@ export interface OpenMenuArgs {
   reason: string;
 }
 
-export interface TypeTextArgs {
-  text: string;
+export interface DelegateToTypingArgs {
+  text_to_type: string;
   remote_entity_id: string;
+  media_player_entity_id: string;
   reason: string;
 }
 
@@ -92,7 +93,7 @@ export type TvToolName =
   | "media_control"
   | "click_select_button"
   | "open_menu"
-  | "type_text"
+  | "delegate_to_typing"
   | "request_screenshot"
   | "get_device_state"
   | "launch_app"
@@ -106,7 +107,7 @@ export type TvToolArguments =
   | MediaControlArgs
   | ClickSelectButtonArgs
   | OpenMenuArgs
-  | TypeTextArgs
+  | DelegateToTypingArgs
   | RequestScreenshotArgs
   | GetDeviceStateArgs
   | LaunchAppArgs

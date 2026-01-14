@@ -174,28 +174,33 @@ export const TV_TOOLS: FunctionToolDefinition[] = [
   {
     type: "function",
     function: {
-      name: "type_text",
+      name: "delegate_to_typing",
       description:
-        "Type text into the currently focused input field on the TV using simple plain English commands (e.g., 'Type Netflix on apple_tv'). The system converts your command to appropriate Home Assistant API calls. REQUIRES screenshot after execution to verify the text was entered.",
+        "Delegate text input tasks to a specialized Typing Agent. IMPORTANT PREREQUISITES: Only call this tool AFTER: (1) Navigation to search has completed successfully, (2) The search input field has been activated (select button pressed), (3) You have verified via screenshot that an on-screen keyboard is visible. If no keyboard is visible, the typing will fail. The keyboard typically appears after pressing select on a search icon or input field.",
       parameters: {
         type: "object",
         properties: {
-          text: {
+          text_to_type: {
             type: "string",
-            description: "The text to type into the focused field.",
+            description: "The text to type into the focused input field (e.g., 'Netflix', 'Breaking Bad', 'comedy movies').",
           },
           remote_entity_id: {
             type: "string",
             description:
               "Home Assistant entity ID of the remote control to use (e.g., 'remote.loft_tv', 'remote.family_room_tv', 'remote.appletv', 'remote.77_oled_qn77s90cafxza').",
           },
+          media_player_entity_id: {
+            type: "string",
+            description:
+              "Home Assistant entity ID of the TV/media player (e.g., 'media_player.loft_tv', 'media_player.family_room_tv').",
+          },
           reason: {
             type: "string",
             description:
-              "What you're trying to accomplish by typing this text.",
+              "Why you're delegating this text input task (e.g., 'to search for a movie', 'to enter username in login field').",
           },
         },
-        required: ["text", "remote_entity_id", "reason"],
+        required: ["text_to_type", "remote_entity_id", "media_player_entity_id", "reason"],
       },
     },
   },
@@ -282,7 +287,7 @@ export const TV_TOOLS: FunctionToolDefinition[] = [
     function: {
       name: "delegate_to_navigation",
       description:
-        "Delegate navigation-related tasks to a specialized Navigation Agent. Use this when you need to: (1) navigate to home screen, (2) go back to previous screen, (3) perform directional navigation (up/down/left/right), or (4) find and activate search functionality using vision AI. The Navigation Agent will handle the complete navigation flow and return the result.",
+        "Delegate navigation-related tasks to a specialized Navigation Agent. Use this when you need to: (1) navigate to home screen, (2) go back to previous screen, (3) perform directional navigation (up/down/left/right), (4) find and activate search functionality using vision AI or (5) to select user profile after launching an app. The Navigation Agent will handle the complete navigation flow and return the result.",
       parameters: {
         type: "object",
         properties: {

@@ -252,6 +252,121 @@ class OpenAIService {
       retryOptions
     );
   }
+
+  /**
+   * Creates a completion with tool/function calling support.
+   * Returns the raw response for custom handling of tool calls.
+   */
+  async createCompletionWithTools(
+    options: {
+      model?: string;
+      messages: Array<{ role: string; content: any }>;
+      tools?: Array<{
+        type: "function";
+        function: {
+          name: string;
+          description?: string;
+          parameters: Record<string, unknown>;
+        };
+      }>;
+      tool_choice?: "auto" | "none" | { type: "function"; function: { name: string } };
+      max_tokens?: number;
+      temperature?: number;
+    },
+    retryOptions?: RetryOptions
+  ): Promise<{
+    output_text: string | null;
+    output: any;
+    status: string | undefined;
+  }> {
+    const finalRetryOptions = { ...this.defaultRetryOptions, ...retryOptions };
+    const { maxRetries, baseDelay, maxDelay } = finalRetryOptions;
+
+    let lastError: any;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const model = options.model || AZURE_OPENAI_API_DEPLOYMENT_NAME;
+
+        // Build the request parameters for the Responses API
+        // Tools and messages must be passed as direct parameters, not stringified
+        const requestParams: any = {
+          model,
+          input: options.messages,
+        };
+
+        // Add temperature if provided (some models like o1/o3 don't support it)
+        if (options.temperature !== undefined) {
+          requestParams.temperature = options.temperature;
+        }
+
+        // Add tools if provided - convert from Chat Completions format to Responses API format
+        // Chat Completions: { type: "function", function: { name, description, parameters } }
+        // Responses API: { type: "function", name, description, parameters }
+        if (options.tools && options.tools.length > 0) {
+          requestParams.tools = options.tools.map((tool) => ({
+            type: "function",
+            name: tool.function.name,
+            description: tool.function.description,
+            parameters: tool.function.parameters,
+          }));
+        }
+
+        // Add tool_choice if provided
+        if (options.tool_choice) {
+          requestParams.tool_choice = options.tool_choice;
+        }
+
+        // Add max_tokens if provided (Responses API uses max_output_tokens)
+        if (options.max_tokens) {
+          requestParams.max_output_tokens = options.max_tokens;
+        }
+
+        let response = await this.client.responses.create(requestParams);
+
+        while (
+          response.status === "queued" ||
+          response.status === "in_progress"
+        ) {
+          console.log(`OpenAI request status: ${response.status}`);
+          await this.delay(50);
+          response = await this.client.responses.retrieve(response.id);
+        }
+
+        if (response.status === "failed") {
+          throw new Error(
+            `OpenAI request failed: ${response.error || "Unknown error"}`
+          );
+        }
+
+        return {
+          output_text: response.output_text || null,
+          output: response.output,
+          status: response.status,
+        };
+      } catch (error: any) {
+        lastError = error;
+        console.error(
+          `OpenAI request attempt ${attempt + 1} failed:`,
+          error.message
+        );
+
+        if (attempt === maxRetries || !this.shouldRetry(error)) {
+          break;
+        }
+
+        const delayMs = this.calculateDelay(attempt, baseDelay, maxDelay);
+        console.log(`Retrying OpenAI request in ${delayMs}ms...`);
+        await this.delay(delayMs);
+      }
+    }
+
+    throw new Error(
+      `OpenAI request failed after ${maxRetries + 1} attempts. Last error: ${
+        lastError?.message || "Unknown error"
+      }`
+    );
+  }
 }
 
 export const openAIService = new OpenAIService();
