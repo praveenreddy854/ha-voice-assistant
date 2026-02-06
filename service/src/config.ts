@@ -32,17 +32,16 @@ export const VACUUM_CLEANER_ENTITY_ID = process.env.VACUUM_CLEANER_ENTITY_ID;
 export const TV_REMOTE_ENTITY_ID = process.env.TV_REMOTE_ENTITY_ID;
 export const TV_DEFAULT_WAIT_MS = Number.parseInt(
   process.env.TV_DEFAULT_WAIT_MS || "1500",
-  10
+  10,
 );
 
-export const AZURE_AI_PROJECT_ENDPOINT = process.env.AZURE_AI_PROJECT_ENDPOINT;
 export const AZURE_AI_AGENT_KEY = process.env.AZURE_AI_AGENT_KEY;
 export const AZURE_AI_AGENT_MODEL =
   process.env.AZURE_AI_AGENT_MODEL || process.env.HA_COMMAND_PROCESS_MODEL;
-export const AZURE_AI_TV_AGENT_FT_MODEL = process.env.AZURE_AI_TV_AGENT_FT_MODEL || AZURE_AI_AGENT_MODEL;
 
 export const AZURE_OPENAI_MODEL_ADVANCED =
-  process.env.AZURE_OPENAI_MODEL_ADVANCED || process.env.HA_COMMAND_PROCESS_MODEL;
+  process.env.AZURE_OPENAI_MODEL_ADVANCED ||
+  process.env.HA_COMMAND_PROCESS_MODEL;
 
 export const AZURE_AI_AGENT_KEY_HEADER_NAME =
   process.env.AZURE_AI_AGENT_KEY_HEADER_NAME || "api-key";
@@ -50,17 +49,17 @@ export const AZURE_AI_AGENT_KEY_HEADER_NAME =
 // Azure AI Agents retry configuration
 export const AZURE_AGENTS_MAX_RETRIES = Number.parseInt(
   process.env.AZURE_AGENTS_MAX_RETRIES || "3",
-  10
+  10,
 );
 export const AZURE_AGENTS_BASE_RETRY_DELAY = Number.parseInt(
   process.env.AZURE_AGENTS_BASE_RETRY_DELAY || "1000",
-  10
+  10,
 );
 export const AZURE_AGENTS_RETRY_ENABLED =
   process.env.AZURE_AGENTS_RETRY_ENABLED !== "false"; // Enabled by default
 export const AZURE_AGENTS_TIMEOUT_MS = Number.parseInt(
   process.env.AZURE_AGENTS_TIMEOUT_MS || "30000", // 30 seconds default
-  10
+  10,
 );
 
 export const TV_AGENT_DEVICES = process.env.TV_AGENT_DEVICES
@@ -72,3 +71,24 @@ export const AZURE_COSMOS_DATABASE = process.env.AZURE_COSMOS_DATABASE;
 export const AZURE_COSMOS_CONTAINER = process.env.AZURE_COSMOS_CONTAINER;
 export const DEVICE_STATE_LOG_CRON =
   process.env.DEVICE_STATE_LOG_CRON || "0 * * * *"; // Top of every hour
+
+export const HOME_ASSISTANT_SKILL_MATCHERS: Record<string, string[]> = (() => {
+  process.env.HOME_ASSISTANT_SKILL_MATCHERS =
+    process.env.HOME_ASSISTANT_SKILL_MATCHERS?.trim();
+  if (!process.env.HOME_ASSISTANT_SKILL_MATCHERS) {
+    return {};
+  }
+
+  // Try to parse as JSON first
+  try {
+    const parsed = JSON.parse(process.env.HOME_ASSISTANT_SKILL_MATCHERS);
+    if (typeof parsed === "object" && parsed !== null) {
+      return parsed;
+    }
+  } catch {
+    // Ignore JSON parse errors
+    console.warn(
+      "Failed to parse HOME_ASSISTANT_SKILL_MATCHERS   as JSON, trying delimited format...",
+    );
+  }
+})();

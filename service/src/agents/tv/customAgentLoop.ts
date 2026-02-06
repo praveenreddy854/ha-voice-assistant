@@ -5,10 +5,9 @@
  */
 
 import { randomUUID } from "crypto";
-import {
-  AZURE_OPENAI_MODEL_ADVANCED,
-  AZURE_AI_TV_AGENT_FT_MODEL,
-} from "../../config";
+import * as fs from "fs";
+import * as path from "path";
+import { AZURE_OPENAI_MODEL_ADVANCED } from "../../config";
 import { openAIService } from "../../openai";
 
 // ============================================================================
@@ -34,15 +33,12 @@ export interface AgentToolCall {
 }
 
 export interface ImageContent {
-  type: "image_url";
-  image_url: {
-    url: string;
-    detail?: "low" | "high" | "auto";
-  };
+  type: "input_image";
+  image_url: string;
 }
 
 export interface TextContent {
-  type: "text";
+  type: "input_text";
   text: string;
 }
 
@@ -68,13 +64,18 @@ export type AgentStepResultType =
   | "tool_calls"
   | "message"
   | "complete"
-  | "error";
+  | "error"
+  | "awaiting_screenshot";
 
 export interface AgentStepResult {
   type: AgentStepResultType;
   message?: string;
   toolCalls?: AgentToolCall[];
   error?: string;
+  /** Tool call ID for the request_screenshot call when type is "awaiting_screenshot" */
+  screenshotToolCallId?: string;
+  /** Arguments passed to request_screenshot when type is "awaiting_screenshot" */
+  screenshotArgs?: Record<string, unknown>;
 }
 
 export interface AgentLoopSession {
@@ -95,21 +96,29 @@ export interface AgentLoopConfig {
   model?: string;
 }
 
+export interface ScreenshotInput {
+  imageBase64: string;
+  imageContentType: string;
+}
+
 export interface CustomAgentLoop {
   createSession(
     userPrompt: string,
-    messageHistory?: Array<{ role: string; content: string }>
+    messageHistory?: Array<{ role: string; content: string }>,
   ): AgentLoopSession;
   deleteSession(sessionId: string): void;
-  runStep(sessionId: string): Promise<AgentStepResult>;
+  runStep(
+    sessionId: string,
+    screenshot?: ScreenshotInput,
+  ): Promise<AgentStepResult>;
   submitToolResults(
     sessionId: string,
-    results: ToolExecutionResult[]
+    results: ToolExecutionResult[],
   ): Promise<AgentStepResult>;
   addMessage(
     sessionId: string,
     role: "user" | "assistant",
-    content: string
+    content: string,
   ): AgentMessage | null;
   removeMessage(sessionId: string, messageId: string): boolean;
   removeLastNMessages(sessionId: string, count: number): number;
@@ -130,7 +139,7 @@ export function removeImagesFromMessage(msg: AgentMessage): void {
   if (Array.isArray(msg.content)) {
     // Filter out image content, keep only text
     const textParts = msg.content.filter(
-      (part) => part.type === "text"
+      (part) => part.type === "input_text",
     ) as Array<TextContent>;
 
     // If only one text part remains, convert back to string
@@ -141,6 +150,50 @@ export function removeImagesFromMessage(msg: AgentMessage): void {
     } else {
       msg.content = textParts;
     }
+  }
+}
+
+/**
+ * Logs messages to a file organized by date and session ID.
+ * Path: out/log/{YYYY-MM-DD}/{sessionId}/stepLog.log
+ */
+function logMessagesToFile(
+  sessionId: string,
+  stepNumber: number,
+  messages: any[],
+): void {
+  try {
+    const now = new Date();
+    const dateStr = now.toISOString().split("T")[0]; // YYYY-MM-DD
+    const timestamp = now.toISOString();
+
+    // Create directory path: out/log/{date}/{sessionId}
+    const logDir = path.join(process.cwd(), "out", "log", dateStr, sessionId);
+
+    // Ensure directory exists
+    fs.mkdirSync(logDir, { recursive: true });
+
+    const logFilePath = path.join(logDir, "stepLog.log");
+
+    // Format log entry
+    const logEntry = {
+      timestamp,
+      sessionId,
+      stepNumber,
+      messagesCount: messages.length,
+      messages,
+    };
+
+    const logLine = `\n${"-".repeat(80)}\n${JSON.stringify(
+      logEntry,
+      null,
+      2,
+    )}\n`;
+
+    // Append to log file
+    fs.appendFileSync(logFilePath, logLine, "utf-8");
+  } catch (error) {
+    console.error("[CustomAgentLoop] Failed to log messages to file:", error);
   }
 }
 
@@ -179,7 +232,7 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
 
   function createSession(
     userPrompt: string,
-    messageHistory?: Array<{ role: string; content: string }>
+    messageHistory?: Array<{ role: string; content: string }>,
   ): AgentLoopSession {
     const sessionId = randomUUID();
 
@@ -198,7 +251,8 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
       messages.push({
         id: randomUUID(),
         role: "user",
-        content: "The following is the conversation history from our previous interactions:",
+        content:
+          "The following is the conversation history from our previous interactions:",
         timestamp: new Date(),
       });
 
@@ -215,7 +269,8 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
       messages.push({
         id: randomUUID(),
         role: "assistant",
-        content: "I understand the conversation history above. I'll continue from where we left off.",
+        content:
+          "I understand the conversation history above. I'll continue from where we left off.",
         timestamp: new Date(),
       });
     }
@@ -246,7 +301,10 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
     sessions.delete(sessionId);
   }
 
-  async function runStep(sessionId: string): Promise<AgentStepResult> {
+  async function runStep(
+    sessionId: string,
+    screenshot?: ScreenshotInput,
+  ): Promise<AgentStepResult> {
     const session = sessions.get(sessionId);
     if (!session) {
       return { type: "error", error: `Session ${sessionId} not found` };
@@ -269,9 +327,12 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
 
     session.currentIteration++;
 
+    let requestSummary: Array<Record<string, unknown>> = [];
     try {
       // Helper to normalize content for OpenAI format
-      const normalizeContent = (content: MessageContent): string | Array<TextContent | ImageContent> => {
+      const normalizeContent = (
+        content: MessageContent,
+      ): string | Array<TextContent | ImageContent> => {
         if (content === null) return "";
         if (typeof content === "string") return content;
         return content;
@@ -283,19 +344,25 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
       // - Assistant messages with tool calls: multiple { type: "function_call", call_id, name, arguments } items
       // - Tool results: { type: "function_call_output", call_id, output: "..." }
       const responsesApiMessages: any[] = [];
-      
+
       for (const msg of session.messages) {
         if (msg.role === "tool") {
           // Tool result -> function_call_output
           const toolContent = Array.isArray(msg.content)
             ? JSON.stringify(msg.content)
-            : (typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content || ""));
+            : typeof msg.content === "string"
+              ? msg.content
+              : JSON.stringify(msg.content || "");
           responsesApiMessages.push({
             type: "function_call_output",
             call_id: msg.toolCallId || "",
             output: toolContent,
           });
-        } else if (msg.role === "assistant" && msg.toolCalls && msg.toolCalls.length > 0) {
+        } else if (
+          msg.role === "assistant" &&
+          msg.toolCalls &&
+          msg.toolCalls.length > 0
+        ) {
           // Assistant with tool calls -> function_call items
           for (const tc of msg.toolCalls) {
             responsesApiMessages.push({
@@ -305,7 +372,11 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
               arguments: tc.function.arguments,
             });
           }
-        } else if (msg.role === "user" || msg.role === "system" || msg.role === "assistant") {
+        } else if (
+          msg.role === "user" ||
+          msg.role === "system" ||
+          msg.role === "assistant"
+        ) {
           // Regular messages
           responsesApiMessages.push({
             role: msg.role,
@@ -314,40 +385,83 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
         }
       }
 
+      // If a screenshot is provided, add it as a user message with image content
+      if (screenshot) {
+        responsesApiMessages.push({
+          role: "user",
+          content: [
+            { type: "input_text", text: "Current TV screen:" },
+            {
+              type: "input_image",
+              image_url: `data:${screenshot.imageContentType};base64,${screenshot.imageBase64}`,
+            },
+          ],
+        });
+      }
+
       // Make chat completion request - include complete_task tool
       const allTools = [...session.tools, COMPLETE_TASK_TOOL];
-      
+
+      requestSummary = responsesApiMessages.map((msg, index) => {
+        if (msg.role) {
+          const contentTypes = Array.isArray(msg.content)
+            ? msg.content.map((part: any) => part.type)
+            : typeof msg.content;
+          return {
+            index,
+            role: msg.role,
+            contentTypes,
+          };
+        }
+        if (msg.type) {
+          return {
+            index,
+            type: msg.type,
+            name: msg.name,
+          };
+        }
+        return { index, type: "unknown" };
+      });
+
+      // Log responsesApiMessages before calling the API
+      logMessagesToFile(
+        sessionId,
+        session.currentIteration,
+        responsesApiMessages,
+      );
+
       // Use the openAIService for the request
       const response = await openAIService.createCompletionWithTools({
         model: model || "gpt-4o",
         messages: responsesApiMessages,
-        tools: allTools.length > 0
-          ? allTools.map((t) => ({
-              type: "function" as const,
-              function: {
-                name: t.function.name,
-                description: t.function.description,
-                parameters: t.function.parameters,
-              },
-            }))
-          : undefined,
+        tools:
+          allTools.length > 0
+            ? allTools.map((t) => ({
+                type: "function" as const,
+                function: {
+                  name: t.function.name,
+                  description: t.function.description,
+                  parameters: t.function.parameters,
+                },
+              }))
+            : undefined,
         tool_choice: allTools.length > 0 ? "auto" : undefined,
       });
 
       // Parse the response - responses API returns output in different format
       const outputText = response.output_text;
-      
+
       // Check if the response contains tool calls
       // The Responses API returns tool calls with type: "function_call" in the output array
       const responseOutput = response.output as any;
-      
+
       // Handle tool calls if present in the response
       if (responseOutput && Array.isArray(responseOutput)) {
         // Look for function_call items in the output array (Responses API format)
         const functionCalls = responseOutput.filter(
-          (item: any) => item.type === "function_call"
+          (item: any) => item.type === "function_call",
         );
-        
+
         if (functionCalls.length > 0) {
           // Handle tool calls from Responses API format
           const toolCalls: AgentToolCall[] = functionCalls.map((tc: any) => ({
@@ -361,7 +475,7 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
 
           // Check if complete_task was called
           const completeTaskCall = toolCalls.find(
-            (tc) => tc.function.name === "complete_task"
+            (tc) => tc.function.name === "complete_task",
           );
 
           if (completeTaskCall) {
@@ -389,9 +503,42 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
             }
           }
 
+          // Check if request_screenshot was called - return immediately to client
+          const screenshotCall = toolCalls.find(
+            (tc) => tc.function.name === "request_screenshot",
+          );
+
+          if (screenshotCall) {
+            // Add the assistant message with tool calls to the session
+            session.messages.push({
+              id: randomUUID(),
+              role: "assistant",
+              content: null,
+              toolCalls,
+              timestamp: new Date(),
+            });
+
+            session.lastToolCalls = toolCalls;
+
+            let screenshotArgs: Record<string, unknown> = {};
+            try {
+              screenshotArgs = JSON.parse(screenshotCall.function.arguments);
+            } catch {
+              // Ignore parse errors for args
+            }
+
+            return {
+              type: "awaiting_screenshot",
+              message: "Screenshot requested - waiting for client to capture",
+              screenshotToolCallId: screenshotCall.id,
+              screenshotArgs,
+              toolCalls,
+            };
+          }
+
           // Filter out complete_task from tool calls returned to caller
           const filteredToolCalls = toolCalls.filter(
-            (tc) => tc.function.name !== "complete_task"
+            (tc) => tc.function.name !== "complete_task",
           );
 
           session.messages.push({
@@ -417,17 +564,17 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
             toolCalls: filteredToolCalls,
           };
         }
-        
+
         // Fallback: Check for assistant message with tool_use content (alternative format)
         const assistantOutput = responseOutput.find(
-          (item: any) => item.type === "message" && item.role === "assistant"
+          (item: any) => item.type === "message" && item.role === "assistant",
         );
-        
+
         if (assistantOutput?.content) {
           const toolCallContent = assistantOutput.content.find(
-            (c: any) => c.type === "tool_use"
+            (c: any) => c.type === "tool_use",
           );
-          
+
           if (toolCallContent) {
             // Handle tool calls from responses API format
             const toolCalls: AgentToolCall[] = assistantOutput.content
@@ -443,7 +590,7 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
 
             // Check if complete_task was called
             const completeTaskCall = toolCalls.find(
-              (tc) => tc.function.name === "complete_task"
+              (tc) => tc.function.name === "complete_task",
             );
 
             if (completeTaskCall) {
@@ -471,9 +618,41 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
               }
             }
 
+            // Check if request_screenshot was called - return immediately to client
+            const screenshotCall = toolCalls.find(
+              (tc) => tc.function.name === "request_screenshot",
+            );
+
+            if (screenshotCall) {
+              session.messages.push({
+                id: randomUUID(),
+                role: "assistant",
+                content: null,
+                toolCalls,
+                timestamp: new Date(),
+              });
+
+              session.lastToolCalls = toolCalls;
+
+              let screenshotArgs: Record<string, unknown> = {};
+              try {
+                screenshotArgs = JSON.parse(screenshotCall.function.arguments);
+              } catch {
+                // Ignore parse errors for args
+              }
+
+              return {
+                type: "awaiting_screenshot",
+                message: "Screenshot requested - waiting for client to capture",
+                screenshotToolCallId: screenshotCall.id,
+                screenshotArgs,
+                toolCalls,
+              };
+            }
+
             // Filter out complete_task from tool calls returned to caller
             const filteredToolCalls = toolCalls.filter(
-              (tc) => tc.function.name !== "complete_task"
+              (tc) => tc.function.name !== "complete_task",
             );
 
             session.messages.push({
@@ -523,7 +702,7 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
 
         // Check if complete_task was called
         const completeTaskCall = toolCalls.find(
-          (tc) => tc.function.name === "complete_task"
+          (tc) => tc.function.name === "complete_task",
         );
 
         if (completeTaskCall) {
@@ -551,9 +730,41 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
           }
         }
 
+        // Check if request_screenshot was called - return immediately to client
+        const screenshotCall = toolCalls.find(
+          (tc) => tc.function.name === "request_screenshot",
+        );
+
+        if (screenshotCall) {
+          session.messages.push({
+            id: randomUUID(),
+            role: "assistant",
+            content: outputText,
+            toolCalls,
+            timestamp: new Date(),
+          });
+
+          session.lastToolCalls = toolCalls;
+
+          let screenshotArgs: Record<string, unknown> = {};
+          try {
+            screenshotArgs = JSON.parse(screenshotCall.function.arguments);
+          } catch {
+            // Ignore parse errors for args
+          }
+
+          return {
+            type: "awaiting_screenshot",
+            message: "Screenshot requested - waiting for client to capture",
+            screenshotToolCallId: screenshotCall.id,
+            screenshotArgs,
+            toolCalls,
+          };
+        }
+
         // Filter out complete_task from tool calls returned to caller
         const filteredToolCalls = toolCalls.filter(
-          (tc) => tc.function.name !== "complete_task"
+          (tc) => tc.function.name !== "complete_task",
         );
 
         session.messages.push({
@@ -595,7 +806,10 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
         message: content,
       };
     } catch (error) {
-      console.error("[CustomAgentLoop] Error in runStep:", error);
+      console.error("[CustomAgentLoop] Error in runStep:", {
+        error,
+        requestSummary,
+      });
       return {
         type: "error",
         error: error instanceof Error ? error.message : String(error),
@@ -605,7 +819,7 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
 
   async function submitToolResults(
     sessionId: string,
-    results: ToolExecutionResult[]
+    results: ToolExecutionResult[],
   ): Promise<AgentStepResult> {
     const session = sessions.get(sessionId);
     if (!session) {
@@ -625,13 +839,10 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
       // If there's an image, create multipart content
       if (result.imageBase64 && result.imageContentType) {
         content = [
-          { type: "text", text: result.result },
+          { type: "input_text", text: result.result },
           {
-            type: "image_url",
-            image_url: {
-              url: `data:${result.imageContentType};base64,${result.imageBase64}`,
-              detail: "high",
-            },
+            type: "input_image",
+            image_url: `data:${result.imageContentType};base64,${result.imageBase64}`,
           },
         ];
       }
@@ -652,7 +863,7 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
   function addMessage(
     sessionId: string,
     role: "user" | "assistant",
-    content: string
+    content: string,
   ): AgentMessage | null {
     const session = sessions.get(sessionId);
     if (!session) {
@@ -718,7 +929,7 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
 
   function clearMessages(
     sessionId: string,
-    keepSystemMessage: boolean = true
+    keepSystemMessage: boolean = true,
   ): boolean {
     const session = sessions.get(sessionId);
     if (!session) {

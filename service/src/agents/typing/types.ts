@@ -5,6 +5,7 @@
 
 // Typing tool-specific argument types
 export interface NavigateArgs {
+  command: string;
   direction: "up" | "down" | "left" | "right";
   count: number;
   remote_entity_id: string;
@@ -12,6 +13,7 @@ export interface NavigateArgs {
 }
 
 export interface ClickSelectButtonArgs {
+  command: string;
   remote_entity_id: string;
   reason: string;
 }
@@ -28,6 +30,7 @@ export interface RequestScreenshotArgs {
 }
 
 export interface GoBackArgs {
+  command: string;
   remote_entity_id: string;
   reason: string;
 }
@@ -42,6 +45,11 @@ export interface AnalyzeKeyboardArgs {
   reason: string;
 }
 
+export interface TypeTextArgs {
+  commands: string[];
+  reasoning: string;
+}
+
 // Union type of all typing tool names
 export type TypingToolName =
   | "navigate"
@@ -50,7 +58,8 @@ export type TypingToolName =
   | "request_screenshot"
   | "go_back"
   | "wait"
-  | "analyze_keyboard";
+  | "analyze_keyboard"
+  | "type_text";
 
 // Union type of all typing tool arguments
 export type TypingToolArguments =
@@ -60,7 +69,8 @@ export type TypingToolArguments =
   | RequestScreenshotArgs
   | GoBackArgs
   | WaitArgs
-  | AnalyzeKeyboardArgs;
+  | AnalyzeKeyboardArgs
+  | TypeTextArgs;
 
 // Tool execution result
 export interface ToolExecutionResult {

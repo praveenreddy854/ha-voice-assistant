@@ -15,27 +15,8 @@ import {
   TypingAgenticFlowResult,
   RunTypingAgenticFlowOptions,
   TypingAgentSessionState,
-  TypingToolName,
-  TypingToolArguments,
-  NavigateArgs,
-  ClickSelectButtonArgs,
-  TypeCharacterArgs,
-  RequestScreenshotArgs,
-  GoBackArgs,
-  WaitArgs,
-  AnalyzeKeyboardArgs,
-  ToolExecutionContext,
-  ToolExecutionResult,
 } from "./types";
-import {
-  executeNavigate,
-  executeClickSelectButton,
-  executeTypeCharacter,
-  executeRequestScreenshot,
-  executeGoBack,
-  executeWait,
-  executeAnalyzeKeyboard,
-} from "./toolExecutors";
+import { executeTool, ToolExecutionContext } from "./tools";
 import {
   CustomAgentLoop,
   createAgentLoop,
@@ -65,48 +46,15 @@ function getOrCreateTypingAgentLoop(): CustomAgentLoop {
 }
 
 // ============================================================================
-// Tool Execution
-// ============================================================================
-
-async function executeTool(
-  toolName: TypingToolName,
-  args: TypingToolArguments,
-  context: ToolExecutionContext
-): Promise<ToolExecutionResult> {
-  console.log(`[Typing Agent] Executing tool: ${toolName}`, args);
-
-  switch (toolName) {
-    case "navigate":
-      return executeNavigate(args as NavigateArgs, context);
-    case "click_select_button":
-      return executeClickSelectButton(args as ClickSelectButtonArgs, context);
-    case "type_character":
-      return executeTypeCharacter(args as TypeCharacterArgs, context);
-    case "request_screenshot":
-      return executeRequestScreenshot(args as RequestScreenshotArgs, context);
-    case "go_back":
-      return executeGoBack(args as GoBackArgs, context);
-    case "wait":
-      return executeWait(args as WaitArgs);
-    case "analyze_keyboard":
-      return executeAnalyzeKeyboard(args as AnalyzeKeyboardArgs, context);
-    default:
-      return {
-        observation: `Unknown tool: ${toolName}`,
-        needsScreenshot: false,
-      };
-  }
-}
-
-// ============================================================================
 // Main Agent Flow
 // ============================================================================
 
 export async function runTypingAgent(
-  options: RunTypingAgenticFlowOptions
+  options: RunTypingAgenticFlowOptions,
 ): Promise<TypingAgenticFlowResult> {
   const sessionId = randomUUID();
-  const maxIterations = options.maxIterations || TYPING_AGENT_MAX_ITERATIONS_CAP;
+  const maxIterations =
+    options.maxIterations || TYPING_AGENT_MAX_ITERATIONS_CAP;
 
   console.log(`[Typing Agent] Starting typing flow:`, {
     sessionId,
@@ -124,7 +72,7 @@ export async function runTypingAgent(
   initialMessage += `- Remote Entity ID: ${options.deviceConfig.remoteEntityId}\n`;
   initialMessage += `- Media Player Entity ID: ${options.deviceConfig.mediaPlayerEntityId}\n\n`;
   initialMessage += `Instructions: Type the text "${options.textToType}" using the on-screen keyboard. `;
-  initialMessage += `Start by requesting a screenshot to see the current keyboard state, then navigate and select characters.`;
+  initialMessage += `If a screenshot is available, use it to confirm the keyboard layout and current cursor position. If not, assume a standard layout starting on 'a'.`;
 
   // Add screenshot context if provided
   if (options.screenshotBase64) {
@@ -157,13 +105,27 @@ export async function runTypingAgent(
 
   try {
     let iteration = 0;
+    let hasInjectedScreenshot = false;
 
     while (iteration < maxIterations) {
       iteration++;
       console.log(`[Typing Agent] Iteration ${iteration}/${maxIterations}`);
 
       // Run a step in the agent loop
-      const stepResult = await loop.runStep(loopSession.id);
+      const screenshotInput =
+        !hasInjectedScreenshot &&
+        options.screenshotBase64 &&
+        options.screenshotContentType
+          ? {
+              imageBase64: options.screenshotBase64,
+              imageContentType: options.screenshotContentType,
+            }
+          : undefined;
+
+      const stepResult = await loop.runStep(loopSession.id, screenshotInput);
+      if (screenshotInput) {
+        hasInjectedScreenshot = true;
+      }
       console.log(`[Typing Agent] Step result type: ${stepResult.type}`);
 
       if (stepResult.type === "error") {
@@ -181,10 +143,13 @@ export async function runTypingAgent(
       }
 
       if (stepResult.type === "complete") {
-        console.log(`[Typing Agent] Agent loop completed: ${stepResult.message}`);
+        console.log(
+          `[Typing Agent] Agent loop completed: ${stepResult.message}`,
+        );
         sessionState.isComplete = true;
         sessionState.completionReason = "success";
-        sessionState.finalMessage = stepResult.message || "Text input completed.";
+        sessionState.finalMessage =
+          stepResult.message || "Text input completed.";
 
         return {
           success: true,
@@ -196,21 +161,21 @@ export async function runTypingAgent(
 
       if (stepResult.type === "tool_calls" && stepResult.toolCalls) {
         console.log(
-          `[Typing Agent] Processing ${stepResult.toolCalls.length} tool calls`
+          `[Typing Agent] Processing ${stepResult.toolCalls.length} tool calls`,
         );
 
         const toolResults: AgentToolResult[] = [];
 
         for (const toolCall of stepResult.toolCalls) {
-          const toolName = toolCall.function.name as TypingToolName;
-          let args: TypingToolArguments;
+          const toolName = toolCall.function.name;
+          let args: unknown;
 
           try {
-            args = JSON.parse(toolCall.function.arguments) as TypingToolArguments;
+            args = JSON.parse(toolCall.function.arguments);
           } catch (parseError) {
             console.error(
               `[Typing Agent] Failed to parse tool arguments:`,
-              parseError
+              parseError,
             );
             toolResults.push({
               toolCallId: toolCall.id,
@@ -250,12 +215,15 @@ export async function runTypingAgent(
         }
 
         // Submit tool results and continue
-        const nextResult = await loop.submitToolResults(loopSession.id, toolResults);
+        const nextResult = await loop.submitToolResults(
+          loopSession.id,
+          toolResults,
+        );
 
         // Handle the result from submitting tool outputs
         if (nextResult.type === "error") {
           console.error(
-            `[Typing Agent] Error after tool submission: ${nextResult.error}`
+            `[Typing Agent] Error after tool submission: ${nextResult.error}`,
           );
           sessionState.isComplete = true;
           sessionState.completionReason = "error";
@@ -271,11 +239,12 @@ export async function runTypingAgent(
 
         if (nextResult.type === "complete") {
           console.log(
-            `[Typing Agent] Completed after tool submission: ${nextResult.message}`
+            `[Typing Agent] Completed after tool submission: ${nextResult.message}`,
           );
           sessionState.isComplete = true;
           sessionState.completionReason = "success";
-          sessionState.finalMessage = nextResult.message || "Text input completed.";
+          sessionState.finalMessage =
+            nextResult.message || "Text input completed.";
 
           return {
             success: true,
@@ -336,7 +305,7 @@ export async function runTypingAgent(
 // ============================================================================
 
 export function getSessionState(
-  sessionId: string
+  sessionId: string,
 ): TypingAgentSessionState | undefined {
   return sessionStore.get(sessionId);
 }

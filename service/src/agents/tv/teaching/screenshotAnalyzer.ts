@@ -30,9 +30,9 @@ export async function analyzeScreenshot(
   screenshotBase64: string,
   contentType: string,
   taskName: string,
-  previousSteps: PreviousStepContext[] = []
-): Promise<{ 
-  description: string; 
+  previousSteps: PreviousStepContext[] = [],
+): Promise<{
+  description: string;
   focusedElement?: string;
   inferredAction: string;
 }> {
@@ -58,9 +58,12 @@ export async function analyzeScreenshot(
     if (previousSteps.length > 0) {
       previousStepsContext = `
 PREVIOUS STEPS IN THIS RECORDING:
-${previousSteps.map(step => 
-  `Step ${step.stepNumber}: ${step.inferredAction || 'Started'} → ${step.description}${step.focusedElement ? ` (Focused: ${step.focusedElement})` : ''}`
-).join('\n')}
+${previousSteps
+  .map(
+    (step) =>
+      `Step ${step.stepNumber}: ${step.inferredAction || "Started"} → ${step.description}${step.focusedElement ? ` (Focused: ${step.focusedElement})` : ""}`,
+  )
+  .join("\n")}
 
 Based on the previous steps, the user is navigating the TV to: "${taskName}"
 `;
@@ -108,10 +111,8 @@ Return JSON:
 Return ONLY the JSON, no other text.`,
           },
           {
-            type: "image_url",
-            image_url: {
-              url: `data:${contentType};base64,${screenshotBase64}`,
-            },
+            type: "input_image",
+            image_url: `data:${contentType};base64,${screenshotBase64}`,
           },
         ],
       },
@@ -135,7 +136,8 @@ Return ONLY the JSON, no other text.`,
       return {
         description: "Screenshot captured",
         focusedElement: undefined,
-        inferredAction: stepNumber === 1 ? "Started recording" : "Navigation action",
+        inferredAction:
+          stepNumber === 1 ? "Started recording" : "Navigation action",
       };
     }
 
@@ -148,13 +150,16 @@ Return ONLY the JSON, no other text.`,
       return {
         description: parsed.description || "Screenshot captured",
         focusedElement: parsed.focusedElement || undefined,
-        inferredAction: parsed.inferredAction || (stepNumber === 1 ? "Started recording" : "Navigation action"),
+        inferredAction:
+          parsed.inferredAction ||
+          (stepNumber === 1 ? "Started recording" : "Navigation action"),
       };
     } catch {
       return {
         description: response.output_text.substring(0, 200),
         focusedElement: undefined,
-        inferredAction: stepNumber === 1 ? "Started recording" : "Navigation action",
+        inferredAction:
+          stepNumber === 1 ? "Started recording" : "Navigation action",
       };
     }
   } catch (error) {

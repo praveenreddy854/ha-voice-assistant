@@ -18,27 +18,11 @@ import {
   NavAgenticFlowResult,
   RunNavAgenticFlowOptions,
   NavAgentSessionState,
-  NavToolName,
-  NavToolArguments,
-  GoHomeArgs,
-  GoBackArgs,
-  NavigateArgs,
-  FindSearchArgs,
-  ClickSelectButtonArgs,
-  RequestScreenshotArgs,
-  WaitArgs,
-  ToolExecutionContext,
-  ToolExecutionResult,
 } from "./types";
 import {
-  executeGoHome,
-  executeGoBack,
-  executeNavigate,
-  executeFindSearch,
-  executeClickSelectButton,
-  executeRequestScreenshot,
-  executeWait,
-} from "./toolExecutors";
+  executeTool,
+  ToolExecutionContext,
+} from "./tools";
 import {
   CustomAgentLoop,
   createAgentLoop,
@@ -68,39 +52,6 @@ function getOrCreateNavAgentLoop(): CustomAgentLoop {
   return navAgentLoop;
 }
 
-// ============================================================================
-// Tool Execution
-// ============================================================================
-
-async function executeTool(
-  toolName: NavToolName,
-  args: NavToolArguments,
-  context: ToolExecutionContext
-): Promise<ToolExecutionResult> {
-  console.log(`[Nav Agent] Executing tool: ${toolName}`, args);
-
-  switch (toolName) {
-    case "go_home":
-      return executeGoHome(args as GoHomeArgs, context);
-    case "go_back":
-      return executeGoBack(args as GoBackArgs, context);
-    case "navigate":
-      return executeNavigate(args as NavigateArgs, context);
-    case "find_search":
-      return executeFindSearch(args as FindSearchArgs, context);
-    case "click_select_button":
-      return executeClickSelectButton(args as ClickSelectButtonArgs, context);
-    case "request_screenshot":
-      return executeRequestScreenshot(args as RequestScreenshotArgs, context);
-    case "wait":
-      return executeWait(args as WaitArgs);
-    default:
-      return {
-        observation: `Unknown tool: ${toolName}`,
-        needsScreenshot: false,
-      };
-  }
-}
 
 // ============================================================================
 // Main Agent Flow
@@ -145,30 +96,6 @@ export async function runNavigationAgent(
   // Create session in the custom agent loop
   const loopSession = loop.createSession(initialMessage);
 
-  // If we have an initial screenshot, inject it as context
-  if (options.screenshotBase64 && options.screenshotContentType) {
-    // Add the screenshot as a follow-up user message with image
-    const screenshotMessage = {
-      role: "user" as const,
-      content: [
-        { type: "text" as const, text: "Here is the current TV screen:" },
-        {
-          type: "image_url" as const,
-          image_url: {
-            url: `data:${options.screenshotContentType};base64,${options.screenshotBase64}`,
-            detail: "high" as const,
-          },
-        },
-      ],
-    };
-    
-    // Manually add to session messages (accessing internal structure)
-    const sessionMessages = loop.getMessages(loopSession.id);
-    if (sessionMessages.length > 0) {
-      loop.addMessage(loopSession.id, "user", JSON.stringify(screenshotMessage.content));
-    }
-  }
-
   // Session state - track current screenshot for tool execution
   const sessionState: NavAgentSessionState = {
     threadId: loopSession.id,
@@ -190,13 +117,27 @@ export async function runNavigationAgent(
 
   try {
     let iteration = 0;
+    let hasInjectedScreenshot = false;
 
     while (iteration < maxIterations) {
       iteration++;
       console.log(`[Nav Agent] Iteration ${iteration}/${maxIterations}`);
 
       // Run a step in the agent loop
-      const stepResult = await loop.runStep(loopSession.id);
+      const screenshotInput =
+        !hasInjectedScreenshot &&
+        sessionState.lastScreenshotBase64 &&
+        sessionState.lastScreenshotContentType
+          ? {
+              imageBase64: sessionState.lastScreenshotBase64,
+              imageContentType: sessionState.lastScreenshotContentType,
+            }
+          : undefined;
+
+      const stepResult = await loop.runStep(loopSession.id, screenshotInput);
+      if (screenshotInput) {
+        hasInjectedScreenshot = true;
+      }
       console.log(`[Nav Agent] Step result type: ${stepResult.type}`);
 
       if (stepResult.type === "error") {
@@ -234,11 +175,11 @@ export async function runNavigationAgent(
         const toolResults: AgentToolResult[] = [];
 
         for (const toolCall of stepResult.toolCalls) {
-          const toolName = toolCall.function.name as NavToolName;
-          let args: NavToolArguments;
+          const toolName = toolCall.function.name;
+          let args: unknown;
 
           try {
-            args = JSON.parse(toolCall.function.arguments) as NavToolArguments;
+            args = JSON.parse(toolCall.function.arguments);
           } catch (parseError) {
             console.error(`[Nav Agent] Failed to parse tool arguments:`, parseError);
             toolResults.push({

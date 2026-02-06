@@ -1,12 +1,17 @@
-import { HOME_ASSISTANT_URL, HOME_ASSISTANT_TOKEN } from "./config";
+import {
+  HOME_ASSISTANT_URL,
+  HOME_ASSISTANT_TOKEN,
+} from "./config";
 import fs from "fs";
 import path from "path";
 import { HassServiceCommandBody, HassServiceCommand, HassState } from "./types/ha";
 import { openAIService } from "./openai";
 import axios from "axios";
+import { SkillManager } from "./skillManager";
 
-const promptCache = new Map();
-const homeAssistantCacheKey = "HOMEASSISTANT";
+const promptCache = new Map<string, string>();
+const homeAssistantTemplateKey = "HOMEASSISTANT_TEMPLATE";
+const skillManager = new SkillManager({ cache: promptCache });
 
 export async function getHACommandBody(
   command: string,
@@ -32,27 +37,43 @@ export async function getHACommandBody(
 }
 
 async function getHAPrompt(command: string) {
-  if (!promptCache.has(homeAssistantCacheKey)) {
-    let prompt = fs.readFileSync(
+  if (!promptCache.has(homeAssistantTemplateKey)) {
+    const template = fs.readFileSync(
       path.join(__dirname, "prompts", "HOMEASSISTANT.md"),
       "utf8"
     );
-    const deviceStates = await getDeviceStates();
-
-    prompt = prompt.replace(
-      "{{{Devices}}}",
-      JSON.stringify(deviceStates, null, 2)
-    );
-
-    promptCache.set(homeAssistantCacheKey, prompt);
+    promptCache.set(homeAssistantTemplateKey, template);
   }
 
-  const cachedPrompt = promptCache
-    .get(homeAssistantCacheKey)
-    .replace("{{{UserCommand}}}", command);
-  return cachedPrompt;
+  const template = promptCache.get(homeAssistantTemplateKey) || "";
+  const deviceStates = await getDeviceStates();
+  const flatStates = Object.values(deviceStates).flat();
+  const skillsSection = skillManager.getSkillsSection(flatStates);
+
+  let prompt = template.replace(
+    "{{{Devices}}}",
+    JSON.stringify(deviceStates, null, 2)
+  );
+
+  prompt = injectSkills(prompt, skillsSection);
+  return prompt.replace("{{{UserCommand}}}", command);
 }
 
+function injectSkills(prompt: string, skillsSection: string): string {
+  if (!skillsSection.trim()) {
+    return prompt;
+  }
+
+  const marker = "### User";
+  const index = prompt.indexOf(marker);
+  if (index === -1) {
+    return `${prompt}\n\n${skillsSection}`;
+  }
+
+  return `${prompt.slice(0, index)}\n\n${skillsSection}\n\n${prompt.slice(
+    index
+  )}`;
+}
 export async function fetchAllStates(): Promise<HassState[]> {
   const response = await axios.get(`${HOME_ASSISTANT_URL}/api/states`, {
     headers: {
@@ -235,16 +256,35 @@ async function executeSingleHACommand(
     Object.assign(requestBody, haBody.service_data);
   }
 
-  const haResponse = await axios.post(
-    `${HOME_ASSISTANT_URL}/api/services/${urlPath}`,
-    requestBody,
-    {
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
-      },
-    }
-  );
+  let haResponse;
+  try {
+    haResponse = await axios.post(
+      `${HOME_ASSISTANT_URL}/api/services/${urlPath}`,
+      requestBody,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
+        },
+      }
+    );
+  } catch (error: any) {
+    const status = error?.response?.status;
+    const data = error?.response?.data;
+    console.error("Home Assistant request failed:", {
+      originalCommand,
+      urlPath,
+      entityId,
+      requestBody,
+      status,
+      data,
+    });
+    return {
+      success: false,
+      message: `Home Assistant API error${status ? ` ${status}` : ""}`,
+      data,
+    };
+  }
 
   if (haResponse.status < 200 || haResponse.status >= 300) {
     console.error("Home Assistant error response:", haResponse.data);

@@ -5,6 +5,7 @@
 
 // New tool-specific argument types
 export interface ClickPowerButtonArgs {
+  command: string;
   remote_entity_id: string;
   reason: string;
 }
@@ -29,6 +30,7 @@ export interface MediaControlArgs {
 }
 
 export interface ClickSelectButtonArgs {
+  command: string;
   remote_entity_id: string;
   reason: string;
 }
@@ -56,6 +58,7 @@ export interface GetDeviceStateArgs {
 }
 
 export interface LaunchAppArgs {
+  command: string;
   app_name: string;
   media_player_entity_id: string;
   reason: string;
@@ -231,6 +234,7 @@ export interface BoundingBox {
 export interface CroppedImage {
   base64: string;
   contentType: string;
+  boundingBox?: BoundingBox;
 }
 
 export function isPerformActionType(

@@ -5,16 +5,19 @@
 
 // Navigation tool-specific argument types
 export interface GoHomeArgs {
+  command: string;
   remote_entity_id: string;
   reason: string;
 }
 
 export interface GoBackArgs {
+  command: string;
   remote_entity_id: string;
   reason: string;
 }
 
 export interface NavigateArgs {
+  command: string;
   direction: "up" | "down" | "left" | "right";
   count: number;
   remote_entity_id: string;
@@ -37,6 +40,7 @@ export interface WaitArgs {
 }
 
 export interface ClickSelectButtonArgs {
+  command: string;
   remote_entity_id: string;
   reason: string;
 }

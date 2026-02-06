@@ -23,11 +23,11 @@ import sharp from "sharp";
  */
 export async function detectTvBoundingBox(
   base64Image: string,
-  contentType: string
+  contentType: string,
 ): Promise<BoundingBox | null> {
   if (!OPEN_AI_BASE_URL || !API_KEY || !AZURE_OPENAI_API_DEPLOYMENT_NAME) {
     console.warn(
-      "[TV Agent] OpenAI configuration missing, skipping image cropping"
+      "[TV Agent] OpenAI configuration missing, skipping image cropping",
     );
     return null;
   }
@@ -64,10 +64,8 @@ If no TV is found, return: {"found": false}
 IMPORTANT: Return ONLY the JSON object, no other text.`,
           },
           {
-            type: "image_url",
-            image_url: {
-              url: `data:${contentType};base64,${base64Image}`,
-            },
+            type: "input_image",
+            image_url: `data:${contentType};base64,${base64Image}`,
           },
         ],
       },
@@ -93,7 +91,7 @@ IMPORTANT: Return ONLY the JSON object, no other text.`,
       console.error(
         `[TV Agent] Vision detection failed: ${
           response.error || "Unknown error"
-        }`
+        }`,
       );
       return null;
     }
@@ -142,7 +140,7 @@ IMPORTANT: Return ONLY the JSON object, no other text.`,
  * Crops the image to focus on the TV using Sharp library
  * Applies moderate compression to balance quality and token consumption:
  * - Resizes to max 640x640 pixels for better detail visibility
- * - Uses 15% JPEG quality for reasonable clarity
+ * - Uses 60% JPEG quality for reasonable clarity
  * - Enables progressive and mozjpeg compression
  */
 export async function cropImageToTv(
@@ -150,94 +148,149 @@ export async function cropImageToTv(
   contentType: string,
   sessionId?: string,
   stepIndex?: number,
-  toolName?: string
+  toolName?: string,
+  boundingBoxHint?: BoundingBox,
 ): Promise<CroppedImage | null> {
   try {
-    const boundingBox = await detectTvBoundingBox(base64Image, contentType);
+    const clamp = (value: number, min: number, max: number): number =>
+      Math.min(Math.max(value, min), max);
 
-    if (!boundingBox) {
+    const normalizeBoundingBox = (
+      boundingBox?: BoundingBox,
+    ): BoundingBox | null => {
+      if (!boundingBox) return null;
+      const x = clamp(boundingBox.x, 0, 1);
+      const y = clamp(boundingBox.y, 0, 1);
+      const width = clamp(boundingBox.width, 0, 1 - x);
+      const height = clamp(boundingBox.height, 0, 1 - y);
+
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+      if (width <= 0 || height <= 0) return null;
+
+      return { x, y, width, height };
+    };
+
+    const cropWithBoundingBox = async (
+      boundingBox: BoundingBox,
+    ): Promise<CroppedImage | null> => {
+      // Convert base64 to buffer
+      const imageBuffer = Buffer.from(base64Image, "base64");
+
+      // Get image metadata to determine dimensions
+      const metadata = await sharp(imageBuffer).metadata();
+      if (!metadata.width || !metadata.height) {
+        console.warn("[TV Agent] Could not determine image dimensions");
+        return null;
+      }
+
+      // Calculate actual pixel coordinates from normalized values
+      const left = Math.round(boundingBox.x * metadata.width);
+      const top = Math.round(boundingBox.y * metadata.height);
+      const width = Math.round(boundingBox.width * metadata.width);
+      const height = Math.round(boundingBox.height * metadata.height);
+
+      const maxWidth = metadata.width - left;
+      const maxHeight = metadata.height - top;
+      const safeWidth = Math.max(1, Math.min(width, maxWidth));
+      const safeHeight = Math.max(1, Math.min(height, maxHeight));
+
+      if (safeWidth <= 1 || safeHeight <= 1) {
+        console.warn("[TV Agent] Bounding box too small after clamping");
+        return null;
+      }
+
+      console.log("[TV Agent] Cropping to pixels:", {
+        left,
+        top,
+        width: safeWidth,
+        height: safeHeight,
+      });
+
+      // Crop the image with moderate compression for better navigation accuracy
+      const croppedBuffer = await sharp(imageBuffer)
+        .extract({ left, top, width: safeWidth, height: safeHeight })
+        .resize(640, 640, {
+          fit: "inside",
+          withoutEnlargement: true,
+        }) // Resize to max 640x640 for better detail
+        .jpeg({
+          quality: 60, // Higher quality for UI element visibility
+          progressive: true,
+          mozjpeg: true, // Better compression if available
+        })
+        .toBuffer();
+
+      const croppedBase64 = croppedBuffer.toString("base64");
+
       console.log(
-        "[TV Agent] Skipping image crop - no TV detected or detection failed"
+        `[TV Agent] Image cropped and compressed. Original: ${
+          base64Image.length
+        } bytes, Cropped: ${croppedBase64.length} bytes (${Math.round(
+          (croppedBase64.length / base64Image.length) * 100,
+        )}% of original size)`,
+      );
+
+      // Save both original and cropped images if session info is provided
+      if (sessionId) {
+        try {
+          const baseToolName = toolName || "unknown_tool";
+
+          // Save original image
+          await saveScreenshotToServerFile({
+            base64Data: base64Image,
+            sessionId,
+            toolName: `${baseToolName}_original`,
+            stepIndex,
+          });
+
+          // Save cropped image
+          await saveCroppedScreenshotToServerFile({
+            base64Data: croppedBase64,
+            sessionId,
+            toolName: `${baseToolName}_cropped`,
+            stepIndex,
+            originalSize: base64Image.length,
+            croppedSize: croppedBase64.length,
+            cropInfo: `TV crop at (${left},${top}) ${safeWidth}x${safeHeight}`,
+          });
+        } catch (saveError) {
+          console.warn("[TV Agent] Error saving screenshot files:", saveError);
+        }
+      }
+
+      return {
+        base64: croppedBase64,
+        contentType: "image/jpeg",
+        boundingBox,
+      };
+    };
+
+    const normalizedHint = normalizeBoundingBox(boundingBoxHint);
+
+    if (normalizedHint) {
+      const cropped = await cropWithBoundingBox(normalizedHint);
+      if (cropped) {
+        return cropped;
+      }
+      console.warn(
+        "[TV Agent] Cached bounding box failed, attempting fresh detection",
+      );
+    }
+
+    const detectedBox = await detectTvBoundingBox(base64Image, contentType);
+    const normalizedDetected = normalizeBoundingBox(detectedBox || undefined);
+
+    if (!normalizedDetected) {
+      console.log(
+        "[TV Agent] Skipping image crop - no TV detected or detection failed",
       );
       return null;
     }
 
     console.log("[TV Agent] Cropping image to TV bounds...");
 
-    // Convert base64 to buffer
-    const imageBuffer = Buffer.from(base64Image, "base64");
-
-    // Get image metadata to determine dimensions
-    const metadata = await sharp(imageBuffer).metadata();
-    if (!metadata.width || !metadata.height) {
-      console.warn("[TV Agent] Could not determine image dimensions");
-      return null;
-    }
-
-    // Calculate actual pixel coordinates from normalized values
-    const left = Math.round(boundingBox.x * metadata.width);
-    const top = Math.round(boundingBox.y * metadata.height);
-    const width = Math.round(boundingBox.width * metadata.width);
-    const height = Math.round(boundingBox.height * metadata.height);
-
-    console.log("[TV Agent] Cropping to pixels:", { left, top, width, height });
-
-    // Crop the image with moderate compression for better navigation accuracy
-    const croppedBuffer = await sharp(imageBuffer)
-      .extract({ left, top, width, height })
-      .resize(640, 640, {
-        fit: "inside",
-        withoutEnlargement: true,
-      }) // Resize to max 640x640 for better detail
-      .jpeg({
-        quality: 15, // Moderate quality for better UI element visibility
-        progressive: true,
-        mozjpeg: true, // Better compression if available
-      })
-      .toBuffer();
-
-    const croppedBase64 = croppedBuffer.toString("base64");
-
-    console.log(
-      `[TV Agent] Image cropped and compressed for token efficiency. Original: ${
-        base64Image.length
-      } bytes, Cropped: ${croppedBase64.length} bytes (${Math.round(
-        (croppedBase64.length / base64Image.length) * 100
-      )}% of original size)`
-    );
-
-    // Save both original and cropped images if session info is provided
-    if (sessionId) {
-      try {
-        const baseToolName = toolName || "unknown_tool";
-
-        // Save original image
-        await saveScreenshotToServerFile({
-          base64Data: base64Image,
-          sessionId,
-          toolName: `${baseToolName}_original`,
-          stepIndex,
-        });
-
-        // Save cropped image
-        await saveCroppedScreenshotToServerFile({
-          base64Data: croppedBase64,
-          sessionId,
-          toolName: `${baseToolName}_cropped`,
-          stepIndex,
-          originalSize: base64Image.length,
-          croppedSize: croppedBase64.length,
-          cropInfo: `TV crop at (${left},${top}) ${width}x${height}`,
-        });
-      } catch (saveError) {
-        console.warn("[TV Agent] Error saving screenshot files:", saveError);
-      }
-    }
-
-    return {
-      base64: croppedBase64,
-      contentType: "image/jpeg",
-    };
+    return await cropWithBoundingBox(normalizedDetected);
   } catch (error) {
     console.error("[TV Agent] Error cropping image:", error);
     return null;

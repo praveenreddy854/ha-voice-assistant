@@ -10,6 +10,7 @@ import {
   HOME_ASSISTANT_URL,
   TV_DEFAULT_WAIT_MS,
   TV_AGENT_DEVICES,
+  AZURE_OPENAI_MODEL_ADVANCED,
 } from "../../config";
 import {
   createTVAgentSpan,
@@ -28,6 +29,7 @@ import {
   TvToolName,
   TvToolArguments,
   WaitArgs,
+  BoundingBox,
 } from "./types";
 import { cropImageToTv } from "./imageProcessor";
 import { saveScreenshotToServerFile } from "./screenshotSaver";
@@ -43,6 +45,7 @@ import {
   ToolExecutionResult,
   AgentMessage,
   ToolDefinition,
+  ScreenshotInput,
 } from "./customAgentLoop";
 
 // ============================================================================
@@ -63,6 +66,7 @@ interface TvAgentSessionState {
   agentLoopSessionId: string; // Session ID for the custom agent loop
   steps: TvAgentStep[];
   pendingScreenshot?: PendingScreenshotState;
+  lastKnownTvBounds?: BoundingBox;
   completed: boolean;
   finalCommand?: string;
   iterations: number;
@@ -126,11 +130,11 @@ function getToolActionSummary(toolName: string, args: TvToolArguments): string {
 
 function getToolExecutionContext(
   screenshotBase64?: string,
-  screenshotContentType?: string
+  screenshotContentType?: string,
 ): ToolExecutionContext {
   if (!HOME_ASSISTANT_URL || !HOME_ASSISTANT_TOKEN) {
     throw new Error(
-      "Home Assistant connection is not configured. Set HOME_ASSISTANT_URL and HOME_ASSISTANT_TOKEN."
+      "Home Assistant connection is not configured. Set HOME_ASSISTANT_URL and HOME_ASSISTANT_TOKEN.",
     );
   }
 
@@ -145,7 +149,7 @@ function getToolExecutionContext(
 
 async function getTvAgentDeviceStates(): Promise<HassState[]> {
   const deviceStates = (await getKnownDeviceStates()).filter((s) =>
-    TV_AGENT_DEVICES.includes(s.entity_id.split(".")[1])
+    TV_AGENT_DEVICES.includes(s.entity_id.split(".")[1]),
   );
   return deviceStates;
 }
@@ -170,6 +174,7 @@ function getOrCreateAgentLoop(): CustomAgentLoop {
       systemPrompt: TV_AGENT_INSTRUCTIONS,
       tools,
       maxIterations: TV_AGENT_MAX_ITERATIONS_CAP,
+      model: AZURE_OPENAI_MODEL_ADVANCED || undefined,
     });
   }
   return agentLoop;
@@ -184,7 +189,7 @@ async function createAgentSession(
   options?: {
     maxSteps?: number;
     messageHistory?: Array<{ role: string; content: string }>;
-  }
+  },
 ): Promise<TvAgentSessionState> {
   const span = createTVAgentSpan("tv-agent.createSession", {
     "prompt.length": userPrompt.length,
@@ -195,7 +200,10 @@ async function createAgentSession(
   console.log(`[TV Agent] Creating agent session for prompt: "${userPrompt}"`);
 
   const loop = getOrCreateAgentLoop();
-  const maxSteps = resolveMaxSteps(options?.maxSteps, TV_AGENT_MAX_ITERATIONS_CAP);
+  const maxSteps = resolveMaxSteps(
+    options?.maxSteps,
+    TV_AGENT_MAX_ITERATIONS_CAP,
+  );
 
   // Build initial message with context
   let initialMessage = `The user asked: "${userPrompt}"\n\n`;
@@ -204,14 +212,14 @@ async function createAgentSession(
   initialMessage += `Current device states:\n${JSON.stringify(
     await getTvAgentDeviceStates(),
     null,
-    2
+    2,
   )}\n\n`;
 
   if (options?.messageHistory && options.messageHistory.length > 0) {
     initialMessage += `Previous conversation context:\n${JSON.stringify(
       options.messageHistory,
       null,
-      2
+      2,
     )}\n\n`;
   }
 
@@ -235,6 +243,7 @@ async function createAgentSession(
     agentLoopSessionId: loopSession.id,
     steps: [],
     pendingScreenshot: undefined,
+    lastKnownTvBounds: undefined,
     completed: false,
     finalCommand: undefined,
     iterations: 0,
@@ -246,7 +255,7 @@ async function createAgentSession(
   sessionStore.set(sessionState.id, sessionState);
 
   console.log(
-    `[TV Agent] Session created: ${sessionState.id} (agent loop session: ${loopSession.id}, max steps: ${maxSteps})`
+    `[TV Agent] Session created: ${sessionState.id} (agent loop session: ${loopSession.id}, max steps: ${maxSteps})`,
   );
 
   span.setAttributes({
@@ -279,7 +288,7 @@ async function cleanupSession(session: TvAgentSessionState): Promise<void> {
 // ============================================================================
 
 function extractScreenshotPayload(
-  options: RunTvAgenticFlowOptions
+  options: RunTvAgenticFlowOptions,
 ): ScreenshotPayload {
   if (options.screenshotError) {
     return { error: options.screenshotError };
@@ -332,7 +341,7 @@ function extractScreenshotPayload(
 
 async function processScreenshot(
   session: TvAgentSessionState,
-  screenshot: ScreenshotPayload
+  screenshot: ScreenshotPayload,
 ): Promise<{ observation: string; base64?: string; contentType?: string }> {
   const pending = session.pendingScreenshot;
   if (!pending) {
@@ -387,7 +396,8 @@ async function processScreenshot(
     screenshot.contentType,
     session.id,
     pending.stepIndex,
-    pending.toolName
+    pending.toolName,
+    session.lastKnownTvBounds,
   );
 
   let finalBase64: string;
@@ -395,6 +405,9 @@ async function processScreenshot(
   let observation: string;
 
   if (croppedImage) {
+    if (croppedImage.boundingBox) {
+      session.lastKnownTvBounds = croppedImage.boundingBox;
+    }
     console.log("[TV Agent] Using cropped image focused on TV");
     finalBase64 = croppedImage.base64;
     finalContentType = croppedImage.contentType;
@@ -430,7 +443,7 @@ async function processScreenshot(
 
 function buildAwaitingScreenshotResult(
   session: TvAgentSessionState,
-  step: TvAgentStep
+  step: TvAgentStep,
 ): TvAgenticFlowResult {
   const retryInfo =
     step.retryCount && step.retryCount > 0
@@ -460,7 +473,7 @@ function buildAwaitingScreenshotResult(
 async function executeToolCall(
   session: TvAgentSessionState,
   toolCall: AgentToolCall,
-  context: ToolExecutionContext
+  context: ToolExecutionContext,
 ): Promise<{
   result: ToolExecutionResult;
   needsScreenshot: boolean;
@@ -473,7 +486,7 @@ async function executeToolCall(
     parsedArgs = JSON.parse(toolCall.function.arguments);
   } catch (error) {
     throw new Error(
-      `Failed to parse tool arguments for ${toolName}: ${toolCall.function.arguments}`
+      `Failed to parse tool arguments for ${toolName}: ${toolCall.function.arguments}`,
     );
   }
 
@@ -503,7 +516,9 @@ async function executeToolCall(
       result: JSON.stringify({
         success: true,
         observation: execResult.observation,
-        status: execResult.needsScreenshot ? "awaiting_screenshot" : "completed",
+        status: execResult.needsScreenshot
+          ? "awaiting_screenshot"
+          : "completed",
       }),
     },
     needsScreenshot: execResult.needsScreenshot,
@@ -517,16 +532,16 @@ async function executeToolCall(
 
 async function processAgentLoop(
   session: TvAgentSessionState,
-  screenshotContext?: { base64: string; contentType: string }
+  screenshotContext?: { base64: string; contentType: string },
 ): Promise<TvAgenticFlowResult> {
   const loop = getOrCreateAgentLoop();
   const context = getToolExecutionContext(
     screenshotContext?.base64,
-    screenshotContext?.contentType
+    screenshotContext?.contentType,
   );
 
   console.log(
-    `[TV Agent] Processing agent loop for session ${session.id}, iteration ${session.iterations}/${session.maxSteps}`
+    `[TV Agent] Processing agent loop for session ${session.id}, iteration ${session.iterations}/${session.maxSteps}`,
   );
 
   // Check iteration limit
@@ -545,8 +560,20 @@ async function processAgentLoop(
 
   session.iterations++;
 
-  // Run a step in the agent loop
-  const stepResult = await loop.runStep(session.agentLoopSessionId);
+  // Build screenshot input if available
+  const screenshotInputForStep: ScreenshotInput | undefined =
+    screenshotContext?.base64 && screenshotContext?.contentType
+      ? {
+          imageBase64: screenshotContext.base64,
+          imageContentType: screenshotContext.contentType,
+        }
+      : undefined;
+
+  // Run a step in the agent loop, passing the screenshot if available
+  const stepResult = await loop.runStep(
+    session.agentLoopSessionId,
+    screenshotInputForStep,
+  );
 
   console.log(`[TV Agent] Step result type: ${stepResult.type}`);
 
@@ -579,9 +606,46 @@ async function processAgentLoop(
     };
   }
 
+  // Handle request_screenshot - return immediately to client for screenshot capture
+  if (stepResult.type === "awaiting_screenshot") {
+    console.log(
+      `[TV Agent] Screenshot requested by model, returning to client`,
+    );
+
+    // Create step record for screenshot request
+    const step: TvAgentStep = {
+      index: session.steps.length + 1,
+      actionSummary: "Request screenshot",
+      reasoning:
+        (stepResult.screenshotArgs?.reason as string) ||
+        "Capture current TV screen state",
+      observation: "Awaiting screenshot from client",
+      toolArguments: (stepResult.screenshotArgs ||
+        {}) as unknown as TvToolArguments,
+      toolName: "request_screenshot",
+      toolCallId: stepResult.screenshotToolCallId || "",
+      retryCount: 0,
+      maxRetries: 3,
+    };
+
+    session.steps.push(step);
+
+    // Set up pending screenshot state
+    session.pendingScreenshot = {
+      toolCallId: stepResult.screenshotToolCallId || "",
+      toolName: "request_screenshot",
+      args: (stepResult.screenshotArgs || {}) as unknown as TvToolArguments,
+      stepIndex: step.index,
+      observation: step.observation,
+      retryCount: 0,
+    };
+
+    return buildAwaitingScreenshotResult(session, step);
+  }
+
   if (stepResult.type === "tool_calls" && stepResult.toolCalls) {
     console.log(
-      `[TV Agent] Processing ${stepResult.toolCalls.length} tool calls`
+      `[TV Agent] Processing ${stepResult.toolCalls.length} tool calls`,
     );
 
     const toolResults: ToolExecutionResult[] = [];
@@ -593,7 +657,7 @@ async function processAgentLoop(
         const { result, needsScreenshot, step } = await executeToolCall(
           session,
           toolCall,
-          context
+          context,
         );
         toolResults.push(result);
 
@@ -626,7 +690,7 @@ async function processAgentLoop(
     // If screenshot needed, return awaiting state
     if (screenshotNeeded && pendingStep) {
       console.log(
-        `[TV Agent] Awaiting screenshot for step ${pendingStep.index}`
+        `[TV Agent] Awaiting screenshot for step ${pendingStep.index}`,
       );
       return buildAwaitingScreenshotResult(session, pendingStep);
     }
@@ -634,7 +698,7 @@ async function processAgentLoop(
     // Submit tool results and continue
     const nextResult = await loop.submitToolResults(
       session.agentLoopSessionId,
-      toolResults
+      toolResults,
     );
 
     // Recursively handle the next result
@@ -645,7 +709,7 @@ async function processAgentLoop(
   if (stepResult.type === "message") {
     console.log(`[TV Agent] Received message: ${stepResult.message}`);
     // Continue processing
-    return processAgentLoop(session, screenshotContext);
+    return processAgentLoop(session);
   }
 
   // Unexpected result
@@ -663,7 +727,7 @@ async function processAgentLoop(
 async function handleStepResult(
   session: TvAgentSessionState,
   stepResult: AgentStepResult,
-  context: ToolExecutionContext
+  context: ToolExecutionContext,
 ): Promise<TvAgenticFlowResult> {
   const loop = getOrCreateAgentLoop();
 
@@ -695,9 +759,46 @@ async function handleStepResult(
     };
   }
 
+  // Handle request_screenshot - return immediately to client for screenshot capture
+  if (stepResult.type === "awaiting_screenshot") {
+    console.log(
+      `[TV Agent] Screenshot requested by model, returning to client`,
+    );
+
+    // Create step record for screenshot request
+    const step: TvAgentStep = {
+      index: session.steps.length + 1,
+      actionSummary: "Request screenshot",
+      reasoning:
+        (stepResult.screenshotArgs?.reason as string) ||
+        "Capture current TV screen state",
+      observation: "Awaiting screenshot from client",
+      toolArguments: (stepResult.screenshotArgs ||
+        {}) as unknown as TvToolArguments,
+      toolName: "request_screenshot",
+      toolCallId: stepResult.screenshotToolCallId || "",
+      retryCount: 0,
+      maxRetries: 3,
+    };
+
+    session.steps.push(step);
+
+    // Set up pending screenshot state
+    session.pendingScreenshot = {
+      toolCallId: stepResult.screenshotToolCallId || "",
+      toolName: "request_screenshot",
+      args: (stepResult.screenshotArgs || {}) as unknown as TvToolArguments,
+      stepIndex: step.index,
+      observation: step.observation,
+      retryCount: 0,
+    };
+
+    return buildAwaitingScreenshotResult(session, step);
+  }
+
   if (stepResult.type === "tool_calls" && stepResult.toolCalls) {
     console.log(
-      `[TV Agent] Processing ${stepResult.toolCalls.length} tool calls`
+      `[TV Agent] Processing ${stepResult.toolCalls.length} tool calls`,
     );
 
     const toolResults: ToolExecutionResult[] = [];
@@ -709,7 +810,7 @@ async function handleStepResult(
         const { result, needsScreenshot, step } = await executeToolCall(
           session,
           toolCall,
-          context
+          context,
         );
         toolResults.push(result);
 
@@ -740,14 +841,14 @@ async function handleStepResult(
 
     if (screenshotNeeded && pendingStep) {
       console.log(
-        `[TV Agent] Awaiting screenshot for step ${pendingStep.index}`
+        `[TV Agent] Awaiting screenshot for step ${pendingStep.index}`,
       );
       return buildAwaitingScreenshotResult(session, pendingStep);
     }
 
     const nextResult = await loop.submitToolResults(
       session.agentLoopSessionId,
-      toolResults
+      toolResults,
     );
 
     return handleStepResult(session, nextResult, context);
@@ -764,7 +865,7 @@ async function handleStepResult(
 export function addMessageToSession(
   sessionId: string,
   role: "user" | "assistant",
-  content: string
+  content: string,
 ): boolean {
   const session = sessionStore.get(sessionId);
   if (!session) {
@@ -779,7 +880,7 @@ export function addMessageToSession(
 
 export function removeMessageFromSession(
   sessionId: string,
-  messageId: string
+  messageId: string,
 ): boolean {
   const session = sessionStore.get(sessionId);
   if (!session) {
@@ -793,7 +894,7 @@ export function removeMessageFromSession(
 
 export function removeLastMessagesFromSession(
   sessionId: string,
-  count: number
+  count: number,
 ): number {
   const session = sessionStore.get(sessionId);
   if (!session) {
@@ -818,7 +919,7 @@ export function getSessionMessages(sessionId: string): AgentMessage[] {
 
 export function clearSessionMessages(
   sessionId: string,
-  keepSystemMessage: boolean = true
+  keepSystemMessage: boolean = true,
 ): boolean {
   const session = sessionStore.get(sessionId);
   if (!session) {
@@ -829,7 +930,7 @@ export function clearSessionMessages(
   const loop = getOrCreateAgentLoop();
   const result = loop.clearMessages(
     session.agentLoopSessionId,
-    keepSystemMessage
+    keepSystemMessage,
   );
 
   // Reset session state
@@ -849,7 +950,7 @@ export function clearSessionMessages(
 // ============================================================================
 
 export async function runTvAgenticFlow(
-  options: RunTvAgenticFlowOptions
+  options: RunTvAgenticFlowOptions,
 ): Promise<TvAgenticFlowResult> {
   const span = createTVAgentSpan("tv-agent.runAgenticFlow", {
     "session.id": options.sessionId || "new-session",
@@ -874,27 +975,27 @@ export async function runTvAgenticFlow(
     // Get or create session
     if (options.sessionId) {
       console.log(
-        `[TV Agent] Looking for existing session: ${options.sessionId}`
+        `[TV Agent] Looking for existing session: ${options.sessionId}`,
       );
       session = sessionStore.get(options.sessionId);
       if (!session) {
         throw new Error(
-          `No active TV agent session found for sessionId ${options.sessionId}. Start a new session by omitting sessionId.`
+          `No active TV agent session found for sessionId ${options.sessionId}. Start a new session by omitting sessionId.`,
         );
       }
       console.log(
-        `[TV Agent] Found existing session with ${session.steps.length} steps`
+        `[TV Agent] Found existing session with ${session.steps.length} steps`,
       );
     }
 
     if (!session) {
       if (!options.userPrompt) {
         throw new Error(
-          "userPrompt is required when starting a new agentic flow session."
+          "userPrompt is required when starting a new agentic flow session.",
         );
       }
       console.log(
-        `[TV Agent] Creating new session for prompt: "${options.userPrompt}"`
+        `[TV Agent] Creating new session for prompt: "${options.userPrompt}"`,
       );
       session = await createAgentSession(options.userPrompt, {
         maxSteps: options.maxSteps,
@@ -907,14 +1008,17 @@ export async function runTvAgenticFlow(
       throw new Error("Failed to initialize the TV agent session.");
     }
 
-    session.maxSteps = resolveMaxSteps(session.maxSteps, TV_AGENT_MAX_ITERATIONS_CAP);
+    session.maxSteps = resolveMaxSteps(
+      session.maxSteps,
+      TV_AGENT_MAX_ITERATIONS_CAP,
+    );
 
     let result: TvAgenticFlowResult;
 
     // Handle pending screenshot
     if (session.pendingScreenshot) {
       console.log(
-        `[TV Agent] Session has pending screenshot request for step ${session.pendingScreenshot.stepIndex}`
+        `[TV Agent] Session has pending screenshot request for step ${session.pendingScreenshot.stepIndex}`,
       );
 
       const screenshotPayload = extractScreenshotPayload(options);
@@ -933,17 +1037,21 @@ export async function runTvAgenticFlow(
             screenshot_captured: true,
           }),
         };
+        if (processed.base64 && processed.contentType) {
+          toolResult.imageBase64 = processed.base64;
+          toolResult.imageContentType = processed.contentType;
+        }
 
         session.pendingScreenshot = undefined;
 
         const nextResult = await loop.submitToolResults(
           session.agentLoopSessionId,
-          [toolResult]
+          [toolResult],
         );
 
         const context = getToolExecutionContext(
           processed.base64,
-          processed.contentType
+          processed.contentType,
         );
         result = await handleStepResult(session, nextResult, context);
       } else if (screenshotPayload.error) {
@@ -964,17 +1072,21 @@ export async function runTvAgenticFlow(
 
         const nextResult = await loop.submitToolResults(
           session.agentLoopSessionId,
-          [toolResult]
+          [toolResult],
         );
 
-        result = await handleStepResult(session, nextResult, getToolExecutionContext());
+        result = await handleStepResult(
+          session,
+          nextResult,
+          getToolExecutionContext(),
+        );
       } else {
         console.log(
-          `[TV Agent] No screenshot provided, returning pending state`
+          `[TV Agent] No screenshot provided, returning pending state`,
         );
         const pendingStepIndex = session.pendingScreenshot?.stepIndex;
         const pendingStep = session.steps.find(
-          (step) => step.index === pendingStepIndex
+          (step) => step.index === pendingStepIndex,
         );
         if (pendingStep) {
           return buildAwaitingScreenshotResult(session, pendingStep);
@@ -982,19 +1094,38 @@ export async function runTvAgenticFlow(
 
         // Inconsistent state, clear and continue
         console.warn(
-          `[TV Agent] Pending screenshot state inconsistent, clearing`
+          `[TV Agent] Pending screenshot state inconsistent, clearing`,
         );
         session.pendingScreenshot = undefined;
         result = await processAgentLoop(session);
       }
     } else {
       console.log(`[TV Agent] No pending screenshot, processing agent`);
-      result = await processAgentLoop(session);
+      let screenshotContext:
+        | { base64: string; contentType: string }
+        | undefined;
+
+      if (options.screenshotBase64) {
+        screenshotContext = {
+          base64: options.screenshotBase64,
+          contentType: options.screenshotContentType || "image/jpeg",
+        };
+      } else if (options.screenshotDataUrl) {
+        const parsed = extractScreenshotPayload(options);
+        if (parsed.base64 && parsed.contentType) {
+          screenshotContext = {
+            base64: parsed.base64,
+            contentType: parsed.contentType,
+          };
+        }
+      }
+
+      result = await processAgentLoop(session, screenshotContext);
     }
 
     if (result.status === "completed" || result.status === "error") {
       console.log(
-        `[TV Agent] Flow ${result.status}, cleaning up session ${session.id}`
+        `[TV Agent] Flow ${result.status}, cleaning up session ${session.id}`,
       );
       await cleanupSession(session);
     }
@@ -1032,7 +1163,7 @@ export async function runTvAgenticFlow(
     }
 
     span.recordException(
-      error instanceof Error ? error : new Error(String(error))
+      error instanceof Error ? error : new Error(String(error)),
     );
     span.setStatus({
       code: SpanStatusCode.ERROR,
