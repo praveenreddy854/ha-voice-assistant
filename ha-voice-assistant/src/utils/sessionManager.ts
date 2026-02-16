@@ -13,7 +13,7 @@ interface MessageHistory {
 class MessageHistoryManager {
   private readonly EXPIRY_TIME = 10 * 60 * 1000; // 10 minutes in milliseconds
   private readonly STORAGE_KEY = 'voiceAssistantMessageHistory';
-  private readonly MAX_MESSAGES = 20; // Keep last 20 messages for context
+  private readonly MAX_MESSAGES = 5; // Keep last 5 messages for context
 
   private messageHistory: MessageHistory;
 
@@ -125,7 +125,7 @@ class MessageHistoryManager {
   }
 
   // Get contextual history for LLM (last N messages)
-  getContextualHistory(maxMessages: number = 10): Array<{ role: string; content: string }> {
+  getContextualHistory(maxMessages: number = 5): Array<{ role: string; content: string }> {
     const history = this.getHistory();
     
     if (history.length <= maxMessages) {

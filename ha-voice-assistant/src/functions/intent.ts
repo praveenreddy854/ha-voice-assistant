@@ -83,12 +83,15 @@ export const getIntent = async (text: string): Promise<Response<Intent>> => {
       };
     }
     
-    // Add user message to history
-    messageHistoryManager.addMessage('user', text);
-    
+    const parsedIntent = parseIntentFromResponse(payload);
+    if (parsedIntent !== Intent.Chat) {
+      // Keep history focused on actionable assistant workflows.
+      messageHistoryManager.addMessage('user', text);
+    }
+
     return {
       success: true,
-      data: parseIntentFromResponse(payload),
+      data: parsedIntent,
     };
   } catch (error) {
     console.error("Error fetching intent:", error);
