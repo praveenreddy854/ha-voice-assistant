@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Hands } from "@mediapipe/hands";
-import { Camera } from "@mediapipe/camera_utils";
 
 interface GestureEvent {
   type: string;
@@ -10,6 +9,10 @@ interface GestureEvent {
 
 interface HandGestureDetectorProps {
   active: boolean;
+}
+
+interface GestureCameraHandle {
+  stop: () => void;
 }
 
 export default function HandGestureDetector({ active }: HandGestureDetectorProps) {
@@ -23,7 +26,7 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
 
   // ALL internal state as refs - NO re-renders
   const handsRef = useRef<Hands | null>(null);
-  const cameraRef = useRef<any>(null);
+  const cameraRef = useRef<GestureCameraHandle | null>(null);
   const gestureEngineRef = useRef<GestureEngine | null>(null);
   const isInitializedRef = useRef(false);
 
@@ -610,16 +613,68 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
       }
     });
 
-    try {
-      const camera = new Camera(videoElement, {
-        onFrame: async () => {
+    handsRef.current = hands;
+    let frameRequestId: number | null = null;
+
+    const initializeCamera = async () => {
+      try {
+        if (navigator.mediaDevices?.enumerateDevices) {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const hasVideoInput = devices.some(
+            (device) => device.kind === "videoinput"
+          );
+          if (!hasVideoInput) {
+            console.warn("No video input devices detected for gesture camera.");
+            cleanupResources();
+            return;
+          }
+        }
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+          },
+          audio: false,
+        });
+
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
+        videoElement.srcObject = stream;
+        try {
+          await videoElement.play();
+        } catch (error) {
+          console.warn("Gesture camera video playback could not start:", error);
+        }
+
+        cameraRef.current = {
+          stop: () => {
+            if (frameRequestId !== null) {
+              cancelAnimationFrame(frameRequestId);
+              frameRequestId = null;
+            }
+            stream.getTracks().forEach((track) => track.stop());
+            if (videoElement.srcObject === stream) {
+              videoElement.srcObject = null;
+            }
+          },
+        };
+
+        isInitializedRef.current = true;
+
+        const processFrame = async () => {
           if (cancelled) {
             return;
           }
+
           const handsInstance = handsRef.current;
           if (!handsInstance) {
             return;
           }
+
           try {
             await handsInstance.send({ image: videoElement });
           } catch (error) {
@@ -627,31 +682,22 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
               console.error("Failed to process gesture frame:", error);
             }
           }
-        },
-        width: 640,
-        height: 480,
-      });
 
-      cameraRef.current = camera;
-      handsRef.current = hands;
-      const startResult = camera.start() as unknown;
-      if (
-        startResult &&
-        typeof (startResult as Promise<void>).catch === "function"
-      ) {
-        (startResult as Promise<void>).catch((error) => {
-          if (!cancelled) {
-            console.warn("Gesture camera start failed:", error);
-            cleanupResources();
-          }
-        });
+          frameRequestId = requestAnimationFrame(() => {
+            void processFrame();
+          });
+        };
+
+        void processFrame();
+      } catch (error) {
+        if (!cancelled) {
+          console.warn("Gesture camera start failed:", error);
+          cleanupResources();
+        }
       }
-      isInitializedRef.current = true;
-    } catch (error) {
-      console.error("Failed to initialize camera:", error);
-      cancelled = true;
-      cleanupResources();
-    }
+    };
+
+    void initializeCamera();
 
     return () => {
       cancelled = true;
