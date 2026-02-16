@@ -20,6 +20,7 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
   const [recentGestures, setRecentGestures] = useState<GestureEvent[]>([]);
   const [debugMode, setDebugMode] = useState(false);
   const [handDistance, setHandDistance] = useState("Unknown");
+  const [cameraUnavailable, setCameraUnavailable] = useState(false);
 
   // ALL internal state as refs - NO re-renders
   const handsRef = useRef<Hands | null>(null);
@@ -574,6 +575,11 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
 
     const videoElement = videoRef.current;
     if (!videoElement) return;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      console.warn("Camera API is not available in this environment.");
+      setCameraUnavailable(true);
+      return;
+    }
 
     let cancelled = false;
 
@@ -630,10 +636,24 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
 
       cameraRef.current = camera;
       handsRef.current = hands;
-      camera.start();
+      setCameraUnavailable(false);
+      const startResult = camera.start() as unknown;
+      if (
+        startResult &&
+        typeof (startResult as Promise<void>).catch === "function"
+      ) {
+        (startResult as Promise<void>).catch((error) => {
+          if (!cancelled) {
+            console.warn("Gesture camera start failed:", error);
+            setCameraUnavailable(true);
+            cleanupResources();
+          }
+        });
+      }
       isInitializedRef.current = true;
     } catch (error) {
       console.error("Failed to initialize camera:", error);
+      setCameraUnavailable(true);
       cancelled = true;
       cleanupResources();
     }
@@ -731,6 +751,18 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
                 😴
               </span>
               <p>Say "Hey Assistant" to enable gesture camera.</p>
+            </div>
+          )}
+          {active && cameraUnavailable && (
+            <div className="camera-disabled">
+              <span
+                className="camera-icon"
+                role="img"
+                aria-label="camera unavailable"
+              >
+                📷
+              </span>
+              <p>No camera detected. Continuing without gesture input.</p>
             </div>
           )}
           <div className="gesture-overlay">
