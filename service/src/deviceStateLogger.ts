@@ -6,6 +6,7 @@ import {
   isCosmosConfigured,
   saveDeviceStatesBatch,
 } from "./cosmos";
+import { SpanKind, addStoryEvent, withSpan } from "./tracing";
 
 let schedulerStarted = false;
 
@@ -44,33 +45,56 @@ const mapStatesToRecords = (
 };
 
 const captureAndPersistStates = async (reason: string): Promise<void> => {
-  if (!isCosmosConfigured()) {
-    console.warn(
-      `Azure Cosmos DB credentials are missing; skipping device state capture (${reason})`
-    );
-    return;
-  }
+  await withSpan(
+    "device_state_logger.capture_and_persist",
+    {
+      kind: SpanKind.INTERNAL,
+      attributes: {
+        "device_state_logger.reason": reason,
+      },
+    },
+    async (span) => {
+      if (!isCosmosConfigured()) {
+        console.warn(
+          `Azure Cosmos DB credentials are missing; skipping device state capture (${reason})`
+        );
+        addStoryEvent(span, "device_state_logger.skipped", {
+          "device_state_logger.reason": reason,
+          "device_state_logger.skip_reason": "cosmos_not_configured",
+        });
+        return;
+      }
 
-  try {
-    const states = await getKnownDeviceStates();
+      try {
+        const states = await getKnownDeviceStates();
 
-    const capturedAt = new Date();
-    const records = mapStatesToRecords(capturedAt, reason, states);
+        const capturedAt = new Date();
+        const records = mapStatesToRecords(capturedAt, reason, states);
 
-    if (records.length === 0) {
-      console.info(
-        `No Home Assistant device states matched the configured filters at ${capturedAt.toISOString()}`
-      );
-      return;
+        if (records.length === 0) {
+          console.info(
+            `No Home Assistant device states matched the configured filters at ${capturedAt.toISOString()}`
+          );
+          addStoryEvent(span, "device_state_logger.no_records", {
+            "device_state_logger.reason": reason,
+          });
+          return;
+        }
+
+        await saveDeviceStatesBatch(records);
+        addStoryEvent(span, "device_state_logger.persisted", {
+          "device_state_logger.reason": reason,
+          "device_state_logger.record_count": records.length,
+        });
+        console.info(
+          `Persisted ${records.length} Home Assistant device states to Azure Cosmos DB (${reason})`
+        );
+      } catch (error) {
+        console.error("Failed to capture Home Assistant device states", error);
+        throw error;
+      }
     }
-
-    await saveDeviceStatesBatch(records);
-    console.info(
-      `Persisted ${records.length} Home Assistant device states to Azure Cosmos DB (${reason})`
-    );
-  } catch (error) {
-    console.error("Failed to capture Home Assistant device states", error);
-  }
+  );
 };
 
 export const startDeviceStateLogging = (): void => {

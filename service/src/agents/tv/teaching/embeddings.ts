@@ -3,43 +3,33 @@
  * Uses Azure OpenAI embeddings to find similar recordings
  */
 
-import { AzureOpenAI } from "openai";
+import { embed } from "ai";
+import { AZURE_OPENAI_EMBEDDING_MODEL } from "../../../config";
 import {
-  OPEN_AI_BASE_URL,
-  API_KEY,
-  OPENAI_RESPONSES_API_VERSION,
-} from "../../../config";
+  getAzureEmbeddingModel,
+  isAzureAiSdkConfigured,
+} from "../../../aiSdk";
 import { loadIndex } from "./storage";
 import { SimilarRecording } from "./types";
 
-const EMBEDDING_MODEL = "text-embedding-ada-002";
+const EMBEDDING_MODEL = AZURE_OPENAI_EMBEDDING_MODEL;
 
 /**
  * Generate an embedding for a text string
  */
 export async function generateEmbedding(text: string): Promise<number[]> {
-  if (!OPEN_AI_BASE_URL || !API_KEY) {
+  if (!isAzureAiSdkConfigured()) {
     console.warn("[Teaching Embeddings] OpenAI not configured, returning empty embedding");
     return [];
   }
 
   try {
-    const client = new AzureOpenAI({
-      endpoint: OPEN_AI_BASE_URL,
-      apiKey: API_KEY,
-      apiVersion: OPENAI_RESPONSES_API_VERSION,
+    const response = await embed({
+      model: getAzureEmbeddingModel(EMBEDDING_MODEL),
+      value: text,
     });
 
-    const response = await client.embeddings.create({
-      model: EMBEDDING_MODEL,
-      input: text,
-    });
-
-    if (response.data && response.data.length > 0) {
-      return response.data[0].embedding;
-    }
-
-    return [];
+    return response.embedding || [];
   } catch (error) {
     console.error("[Teaching Embeddings] Error generating embedding:", error);
     return [];

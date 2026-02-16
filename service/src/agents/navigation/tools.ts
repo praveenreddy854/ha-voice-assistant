@@ -4,10 +4,15 @@
  */
 
 import { z } from "zod";
+import { generateText } from "ai";
 import { ToolDefinition } from "../tv/customAgentLoop";
 import { executeHACommand } from "../../ha";
 import { delay } from "../common/utils";
-import { TV_DEFAULT_WAIT_MS } from "../../config";
+import { AZURE_AI_AGENT_MODEL, TV_DEFAULT_WAIT_MS } from "../../config";
+import {
+  getAzureResponsesModel,
+  isAzureAiSdkConfigured,
+} from "../../aiSdk";
 
 // ============================================================================
 // Tool Execution Context & Result Types
@@ -380,17 +385,8 @@ const findSearch: NavToolDefinition<typeof FindSearchSchema> = {
       };
     }
 
-    // Import vision analysis dynamically
     try {
-      const { AzureOpenAI } = await import("openai");
-      const {
-        OPEN_AI_BASE_URL,
-        API_KEY,
-        OPENAI_RESPONSES_API_VERSION,
-        AZURE_AI_AGENT_MODEL,
-      } = await import("../../config");
-
-      if (!OPEN_AI_BASE_URL || !API_KEY) {
+      if (!isAzureAiSdkConfigured()) {
         return {
           observation:
             "⚠️ Vision API not configured. Use manual navigation:\n" +
@@ -403,12 +399,6 @@ const findSearch: NavToolDefinition<typeof FindSearchSchema> = {
 
       const visionModel = AZURE_AI_AGENT_MODEL || "gpt-4o";
       console.log(`[Nav Agent] Analyzing screenshot using ${visionModel}...`);
-
-      const client = new AzureOpenAI({
-        baseURL: OPEN_AI_BASE_URL,
-        apiKey: API_KEY,
-        apiVersion: OPENAI_RESPONSES_API_VERSION,
-      });
 
       const analysisPrompt = `Analyze this TV screenshot. Find the search icon and provide navigation.
 
@@ -425,46 +415,24 @@ OUTPUT JSON only:
   "alternative_suggestion": "..."
 }`;
 
-      const messages = [
-        {
-          role: "user" as const,
-          content: [
-            { type: "text" as const, text: analysisPrompt },
-            {
-              type: "image_url" as const,
-              image_url: {
-                url: `data:${screenshotContentType};base64,${screenshotBase64}`,
-                detail: "high" as const,
+      const response = await generateText({
+        model: getAzureResponsesModel(visionModel),
+        maxOutputTokens: 500,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: analysisPrompt },
+              {
+                type: "image",
+                image: `data:${screenshotContentType};base64,${screenshotBase64}`,
               },
-            },
-          ],
-        },
-      ];
-
-      let response = await client.responses.create({
-        model: visionModel,
-        input: JSON.stringify({ messages, max_tokens: 500, temperature: 0.1 }),
+            ],
+          },
+        ],
       });
 
-      let pollCount = 0;
-      while (
-        (response.status === "queued" || response.status === "in_progress") &&
-        pollCount < 60
-      ) {
-        await delay(100);
-        response = await client.responses.retrieve(response.id);
-        pollCount++;
-      }
-
-      if (response.status === "failed") {
-        return {
-          observation:
-            "❌ Vision analysis failed. Use manual navigation to search.",
-          needsScreenshot: false,
-        };
-      }
-
-      const content = response.output_text;
+      const content = response.text;
       if (!content) {
         return {
           observation: "❌ No response from vision analysis.",

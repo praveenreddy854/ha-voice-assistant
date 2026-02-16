@@ -77,8 +77,13 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
     private gestureStartTime: number = 0;
     private gestureDirection: string = "";
     private gestureConfidence: number = 0;
-    private readonly MIN_GESTURE_DURATION = 250; // Faster response for better UX
+    private readonly MIN_GESTURE_DURATION = 250; // Stationary gestures (e.g., Select)
+    private readonly MIN_SWIPE_DURATION = 120; // Swipes should trigger faster than fist
     private readonly GESTURE_COOLDOWN = 600; // Prevent rapid fire
+    private readonly REQUIRED_QUIET_MS = 220; // Re-arm only after hand settles
+    private readonly BASE_QUIET_THRESHOLD_N = 0.08;
+    private swipeArmed = true;
+    private quietStartTime: number = 0;
 
     // Distance and sensitivity
     private currentHandSize: number = 0;
@@ -126,6 +131,25 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
       // Need minimum history for stable detection
       if (this.handHistory.length < 4) return;
 
+      // Re-arm swipe detection only when motion settles to avoid reverse swipe on recenter
+      if (!this.swipeArmed) {
+        const recentMotionN = this.calculateRecentMotionN();
+        if (recentMotionN < this.calculateQuietMotionThreshold()) {
+          if (this.quietStartTime === 0) {
+            this.quietStartTime = now;
+          }
+          if (now - this.quietStartTime >= this.REQUIRED_QUIET_MS) {
+            this.swipeArmed = true;
+            this.quietStartTime = 0;
+            this.resetGestureTracking();
+            this.handHistory = this.handHistory.slice(-4);
+            console.log("Swipe detector re-armed");
+          }
+        } else {
+          this.quietStartTime = 0;
+        }
+      }
+
       // Check for fist/select gesture first (stationary gesture)
       const fistGesture = this.detectFistGesture(landmarks);
       if (fistGesture) {
@@ -134,6 +158,10 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
       }
 
       // Check for swipe gestures (movement-based)
+      if (!this.swipeArmed) {
+        this.resetGestureTracking();
+        return;
+      }
       const swipeGesture = this.detectSwipeGesture();
       if (swipeGesture) {
         this.handleGestureDetection(
@@ -192,18 +220,28 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
           )}`
         );
 
-        // Slightly adapt duration for very far distances (more jitter)
+        const isSwipe = gestureType.startsWith("Swipe");
+        const baseMinDuration = isSwipe
+          ? this.MIN_SWIPE_DURATION
+          : this.MIN_GESTURE_DURATION;
         const effectiveMin = Math.max(
-          180,
-          this.MIN_GESTURE_DURATION * (this.currentHandSize < 0.035 ? 1.1 : 1.0)
+          isSwipe ? 120 : 180,
+          baseMinDuration * (this.currentHandSize < 0.035 ? 1.05 : 0.95)
         );
-        if (duration >= effectiveMin && this.gestureConfidence > 0.5) {
+        const minConfidence = isSwipe ? 0.56 : 0.5;
+        if (duration >= effectiveMin && this.gestureConfidence > minConfidence) {
           // Trigger gesture
           console.log(`🎯 TRIGGERING GESTURE: ${gestureType}`);
           this.onGestureDetected(gestureType, this.gestureConfidence);
           this.lastGesture = gestureType;
           this.lastGestureTime = now;
           this.resetGestureTracking();
+          if (isSwipe) {
+            // Prevent false opposite swipe when user returns to center.
+            this.swipeArmed = false;
+            this.quietStartTime = 0;
+            this.handHistory = this.handHistory.slice(-3);
+          }
 
           // Auto-clear display
           if (this.gestureTimeout) clearTimeout(this.gestureTimeout);
@@ -218,6 +256,32 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
       this.gestureDirection = "";
       this.gestureStartTime = 0;
       this.gestureConfidence = 0;
+    }
+
+    private calculateRecentMotionN(windowSize: number = 5): number {
+      if (this.handHistory.length < 2) return 0;
+
+      const start = Math.max(1, this.handHistory.length - windowSize);
+      let total = 0;
+      let count = 0;
+
+      for (let i = start; i < this.handHistory.length; i++) {
+        const prev = this.handHistory[i - 1];
+        const curr = this.handHistory[i];
+        const meanScale = Math.max(0.02, (prev.scale + curr.scale) / 2);
+        const dx = (curr.centroid.x - prev.centroid.x) / meanScale;
+        const dy = (curr.centroid.y - prev.centroid.y) / meanScale;
+        total += Math.hypot(dx, dy);
+        count++;
+      }
+
+      return count > 0 ? total / count : 0;
+    }
+
+    private calculateQuietMotionThreshold(): number {
+      if (this.currentHandSize < 0.035) return 0.06;
+      if (this.currentHandSize < 0.05) return 0.07;
+      return this.BASE_QUIET_THRESHOLD_N;
     }
 
     private calculateHandSize(landmarks: any[]): number {
@@ -329,9 +393,17 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
         const ndy = (late.y - early.y) / meanScale;
         const totalMovementN = Math.hypot(ndx, ndy);
 
-        // Dynamic normalized threshold: base + noise-adaptive
-        const baseThresholdN = 0.3; // ~0.3 hand widths
-        const minMovementN = Math.max(baseThresholdN, avgJitter * 3.0);
+        // Dynamic normalized threshold tuned for TV distance and noisy tracks
+        const baseThresholdN =
+          this.currentHandSize < 0.035
+            ? 0.18
+            : this.currentHandSize < 0.05
+            ? 0.22
+            : this.currentHandSize < 0.08
+            ? 0.26
+            : 0.3;
+        const noiseThresholdN = Math.min(0.55, avgJitter * 2.2);
+        const minMovementN = Math.max(baseThresholdN, noiseThresholdN);
 
         if (totalMovementN < minMovementN) return null;
 
@@ -360,15 +432,45 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
           dirConfidence = 0.6;
         }
 
+        // Require mostly consistent movement on dominant axis to reject rebound motion.
+        const dominantAxis = horizontalMovement >= verticalMovement ? "x" : "y";
+        const dominantDelta = dominantAxis === "x" ? ndx : ndy;
+        let alignedSteps = 0;
+        let directedSteps = 0;
+        for (let i = 1; i < this.handHistory.length; i++) {
+          const a = this.handHistory[i - 1];
+          const b = this.handHistory[i];
+          const stepScale = Math.max(0.02, (a.scale + b.scale) / 2);
+          const stepDelta =
+            dominantAxis === "x"
+              ? (b.centroid.x - a.centroid.x) / stepScale
+              : (b.centroid.y - a.centroid.y) / stepScale;
+          if (Math.abs(stepDelta) < 0.015) continue;
+          directedSteps++;
+          if (
+            (dominantDelta > 0 && stepDelta > 0) ||
+            (dominantDelta < 0 && stepDelta < 0)
+          ) {
+            alignedSteps++;
+          }
+        }
+        const directionalConsistency =
+          directedSteps > 0 ? alignedSteps / directedSteps : 0;
+        if (directionalConsistency < 0.62) {
+          return null;
+        }
+
         // Blend direction confidence with speed factor
         const speedFactor = Math.min(1.0, totalMovementN / (minMovementN * 2));
         const finalConfidence = Math.max(
           0.5,
-          dirConfidence * 0.6 + speedFactor * 0.4
+          dirConfidence * 0.5 +
+            speedFactor * 0.35 +
+            directionalConsistency * 0.15
         );
 
         const result =
-          finalConfidence > 0.55
+          finalConfidence > 0.56
             ? { type: gestureType, confidence: finalConfidence }
             : null;
         if (result) {
@@ -377,7 +479,9 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
               2
             )}, thr=${minMovementN.toFixed(2)}, conf=${finalConfidence.toFixed(
               2
-            )}, jitter=${avgJitter.toFixed(2)}, dt=${timeSpan}ms`
+            )}, jitter=${avgJitter.toFixed(2)}, align=${directionalConsistency.toFixed(
+              2
+            )}, dt=${timeSpan}ms`
           );
         }
         return result;
@@ -392,6 +496,8 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
       this.handHistory = [];
       this.currentHandSize = 0;
       this.adaptiveThreshold = 0;
+      this.swipeArmed = true;
+      this.quietStartTime = 0;
     }
 
     cleanup() {
@@ -481,8 +587,8 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
     hands.setOptions({
       maxNumHands: 1,
       modelComplexity: 1,
-      minDetectionConfidence: 0.7,
-      minTrackingConfidence: 0.6,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.5,
     });
 
     hands.onResults((results) => {

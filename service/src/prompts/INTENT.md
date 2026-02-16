@@ -39,11 +39,17 @@ Your task is to examine each incoming user message and decide which of the five 
 
 ### Successful call
 
-Return intent of the selected class in JSON format: {intent: "HACommand"}, {intent: "Reminder"}, {intent: "TeachingMode"}, {intent: "AgenticFlow"} or {intent: "Chat" }.
+Return intent of the selected class in strict JSON format:
+{"intent":"HACommand"}, {"intent":"Reminder"}, {"intent":"TeachingMode"}, {"intent":"AgenticFlow"}, or {"intent":"Chat"}.
 
 ### Error fallback
 
-If the intent cannot be determined, return an error in JSON format: { "error": "no_match" }.
+If the intent cannot be determined, return: {"error":"no_match"}.
+
+IMPORTANT:
+- Return exactly one valid JSON object.
+- Use double quotes for all keys and string values.
+- Do not include markdown, code fences, explanations, or extra text.
 
 Here is the user prompt:
 {{{UserPrompt}}}

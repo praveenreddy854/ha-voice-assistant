@@ -8,7 +8,14 @@ import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { AZURE_OPENAI_MODEL_ADVANCED } from "../../config";
-import { openAIService } from "../../openai";
+import { openAIService } from "../../aiService";
+import {
+  SpanKind,
+  addStoryEvent,
+  getTelemetryMetrics,
+  recordSpanError,
+  withSpan,
+} from "../../tracing";
 
 // ============================================================================
 // Types
@@ -430,23 +437,53 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
         responsesApiMessages,
       );
 
-      // Use the openAIService for the request
-      const response = await openAIService.createCompletionWithTools({
-        model: model || "gpt-4o",
-        messages: responsesApiMessages,
-        tools:
-          allTools.length > 0
-            ? allTools.map((t) => ({
-                type: "function" as const,
-                function: {
-                  name: t.function.name,
-                  description: t.function.description,
-                  parameters: t.function.parameters,
-                },
-              }))
-            : undefined,
-        tool_choice: allTools.length > 0 ? "auto" : undefined,
+      const metrics = getTelemetryMetrics();
+      metrics.workflowStepsTotal.add(1, {
+        "workflow.name": "custom_agent_loop",
+        "workflow.step": "run_step",
       });
+
+      // Use the openAIService for the request
+      const response = await withSpan(
+        "tv-agent.custom_loop.model_call",
+        {
+          kind: SpanKind.CLIENT,
+          attributes: {
+            "tv.loop.session_id": sessionId,
+            "tv.loop.iteration": session.currentIteration,
+            "tv.loop.message_count": responsesApiMessages.length,
+            "tv.loop.tool_count": allTools.length,
+          },
+        },
+        async (span) => {
+          addStoryEvent(span, "custom_loop.model_call.started", {
+            "custom_loop.iteration": session.currentIteration,
+            "custom_loop.message_count": responsesApiMessages.length,
+            "custom_loop.has_screenshot": !!screenshot,
+          });
+          const modelResponse = await openAIService.createCompletionWithTools({
+            model: model || "gpt-4o",
+            messages: responsesApiMessages,
+            tools:
+              allTools.length > 0
+                ? allTools.map((t) => ({
+                    type: "function" as const,
+                    function: {
+                      name: t.function.name,
+                      description: t.function.description,
+                      parameters: t.function.parameters,
+                    },
+                  }))
+                : undefined,
+            tool_choice: allTools.length > 0 ? "auto" : undefined,
+          });
+          addStoryEvent(span, "custom_loop.model_call.completed", {
+            "custom_loop.response.status": modelResponse.status || "",
+            "custom_loop.response.has_output_text": !!modelResponse.output_text,
+          });
+          return modelResponse;
+        },
+      );
 
       // Parse the response - responses API returns output in different format
       const outputText = response.output_text;
@@ -810,6 +847,25 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
         error,
         requestSummary,
       });
+      const metrics = getTelemetryMetrics();
+      metrics.errorsTotal.add(1, {
+        "error.source": "custom_agent_loop.runStep",
+      });
+      await withSpan(
+        "tv-agent.custom_loop.run_step_error",
+        {
+          kind: SpanKind.INTERNAL,
+          attributes: {
+            "tv.loop.session_id": sessionId,
+            "tv.loop.iteration": session.currentIteration,
+          },
+        },
+        async (span) => {
+          recordSpanError(span, error, {
+            "tv.loop.request_summary": JSON.stringify(requestSummary),
+          });
+        },
+      );
       return {
         type: "error",
         error: error instanceof Error ? error.message : String(error),
@@ -825,6 +881,16 @@ export function createAgentLoop(config: AgentLoopConfig): CustomAgentLoop {
     if (!session) {
       return { type: "error", error: `Session ${sessionId} not found` };
     }
+
+    const metrics = getTelemetryMetrics();
+    metrics.workflowStepsTotal.add(1, {
+      "workflow.name": "custom_agent_loop",
+      "workflow.step": "submit_tool_results",
+    });
+    metrics.toolCallsTotal.add(results.length, {
+      "workflow.name": "custom_agent_loop",
+      "tool.group": "submitted_results",
+    });
 
     // Remove images from all previous messages to save tokens
     // Only keep the current image in the new tool result

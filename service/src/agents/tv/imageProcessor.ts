@@ -3,14 +3,14 @@
  * Handles TV detection and image cropping using OpenAI vision and Sharp
  */
 
-import { AzureOpenAI } from "openai";
+import { generateText } from "ai";
 import {
-  OPEN_AI_BASE_URL,
-  API_KEY,
-  OPENAI_RESPONSES_API_VERSION,
-  AZURE_OPENAI_API_DEPLOYMENT_NAME,
   AZURE_AI_AGENT_MODEL,
 } from "../../config";
+import {
+  getAzureResponsesModel,
+  isAzureAiSdkConfigured,
+} from "../../aiSdk";
 import { BoundingBox, CroppedImage } from "./types";
 import {
   saveScreenshotToServerFile,
@@ -25,7 +25,7 @@ export async function detectTvBoundingBox(
   base64Image: string,
   contentType: string,
 ): Promise<BoundingBox | null> {
-  if (!OPEN_AI_BASE_URL || !API_KEY || !AZURE_OPENAI_API_DEPLOYMENT_NAME) {
+  if (!isAzureAiSdkConfigured()) {
     console.warn(
       "[TV Agent] OpenAI configuration missing, skipping image cropping",
     );
@@ -36,19 +36,16 @@ export async function detectTvBoundingBox(
     const visionModel = AZURE_AI_AGENT_MODEL || "gpt-5-mini";
     console.log(`[TV Agent] Detecting TV in image using ${visionModel}...`);
 
-    const client = new AzureOpenAI({
-      baseURL: OPEN_AI_BASE_URL,
-      apiKey: API_KEY,
-      apiVersion: OPENAI_RESPONSES_API_VERSION,
-    });
-
-    const messages = [
-      {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: `Analyze this image and detect if there is a TV screen visible. Look for:
+    const response = await generateText({
+      model: getAzureResponsesModel(visionModel),
+      maxOutputTokens: 200,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: `Analyze this image and detect if there is a TV screen visible. Look for:
 - A rectangular display showing content (video, UI, apps, menus)
 - TV bezel or frame around the display
 - The actual content area, not the wall or surroundings
@@ -62,41 +59,17 @@ Example: {"found": true, "x": 0.15, "y": 0.1, "width": 0.7, "height": 0.8}
 If no TV is found, return: {"found": false}
 
 IMPORTANT: Return ONLY the JSON object, no other text.`,
-          },
-          {
-            type: "input_image",
-            image_url: `data:${contentType};base64,${base64Image}`,
-          },
-        ],
-      },
-    ];
-
-    let response = await client.responses.create({
-      model: visionModel,
-      input: JSON.stringify({
-        messages,
-        max_tokens: 200,
-        temperature: 0.1,
-      }),
+            },
+            {
+              type: "image",
+              image: `data:${contentType};base64,${base64Image}`,
+            },
+          ],
+        },
+      ],
     });
 
-    // Poll until response is complete
-    while (response.status === "queued" || response.status === "in_progress") {
-      console.log(`[TV Agent] Vision detection status: ${response.status}`);
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      response = await client.responses.retrieve(response.id);
-    }
-
-    if (response.status === "failed") {
-      console.error(
-        `[TV Agent] Vision detection failed: ${
-          response.error || "Unknown error"
-        }`,
-      );
-      return null;
-    }
-
-    const content = response.output_text;
+    const content = response.text;
     if (!content) {
       console.warn(`[TV Agent] No response from ${visionModel} vision model`);
       return null;

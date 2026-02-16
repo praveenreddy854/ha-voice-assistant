@@ -3,14 +3,14 @@
  * Uses vision models to analyze TV screenshots and infer user actions
  */
 
-import { AzureOpenAI } from "openai";
+import { generateText } from "ai";
 import {
-  OPEN_AI_BASE_URL,
-  API_KEY,
-  OPENAI_RESPONSES_API_VERSION,
-  AZURE_AI_AGENT_MODEL,
   AZURE_OPENAI_MODEL_ADVANCED,
 } from "../../../config";
+import {
+  getAzureResponsesModel,
+  isAzureAiSdkConfigured,
+} from "../../../aiSdk";
 
 /**
  * Previous step context for action inference
@@ -36,7 +36,7 @@ export async function analyzeScreenshot(
   focusedElement?: string;
   inferredAction: string;
 }> {
-  if (!OPEN_AI_BASE_URL || !API_KEY) {
+  if (!isAzureAiSdkConfigured()) {
     return {
       description: "Screenshot captured (analysis unavailable)",
       focusedElement: undefined,
@@ -46,12 +46,6 @@ export async function analyzeScreenshot(
 
   try {
     const visionModel = AZURE_OPENAI_MODEL_ADVANCED || "gpt-5.1";
-
-    const client = new AzureOpenAI({
-      baseURL: OPEN_AI_BASE_URL,
-      apiKey: API_KEY,
-      apiVersion: OPENAI_RESPONSES_API_VERSION,
-    });
 
     // Build context from previous steps
     let previousStepsContext = "";
@@ -73,13 +67,16 @@ Based on the previous steps, the user is navigating the TV to: "${taskName}"
 
     const stepNumber = previousSteps.length + 1;
 
-    const messages = [
-      {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: `You are analyzing a TV screen recording where a user is teaching navigation steps.
+    const response = await generateText({
+      model: getAzureResponsesModel(visionModel),
+      maxOutputTokens: 500,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: `You are analyzing a TV screen recording where a user is teaching navigation steps.
 
 TASK: "${taskName}"
 CURRENT STEP: ${stepNumber}
@@ -109,30 +106,17 @@ Return JSON:
 }
 
 Return ONLY the JSON, no other text.`,
-          },
-          {
-            type: "input_image",
-            image_url: `data:${contentType};base64,${screenshotBase64}`,
-          },
-        ],
-      },
-    ];
-
-    let response = await client.responses.create({
-      model: visionModel,
-      input: JSON.stringify({
-        messages,
-        max_tokens: 500,
-        temperature: 0.2,
-      }),
+            },
+            {
+              type: "image",
+              image: `data:${contentType};base64,${screenshotBase64}`,
+            },
+          ],
+        },
+      ],
     });
 
-    while (response.status === "queued" || response.status === "in_progress") {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      response = await client.responses.retrieve(response.id);
-    }
-
-    if (response.status === "failed" || !response.output_text) {
+    if (!response.text) {
       return {
         description: "Screenshot captured",
         focusedElement: undefined,
@@ -142,7 +126,7 @@ Return ONLY the JSON, no other text.`,
     }
 
     try {
-      const cleaned = response.output_text
+      const cleaned = response.text
         .replace(/```json\n?/g, "")
         .replace(/```\n?/g, "")
         .trim();
@@ -156,7 +140,7 @@ Return ONLY the JSON, no other text.`,
       };
     } catch {
       return {
-        description: response.output_text.substring(0, 200),
+        description: response.text.substring(0, 200),
         focusedElement: undefined,
         inferredAction:
           stepNumber === 1 ? "Started recording" : "Navigation action",

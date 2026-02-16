@@ -28,6 +28,16 @@ export const HOME_ASSISTANT_URL =
 export const HOME_ASSISTANT_TOKEN = process.env.HOME_ASSISTANT_TOKEN;
 
 export const VACUUM_CLEANER_ENTITY_ID = process.env.VACUUM_CLEANER_ENTITY_ID;
+export const LAUNDRY_SWITCH_ENTITY_ID =
+  process.env.LAUNDRY_SWITCH_ENTITY_ID || "switch.laundry_switch";
+export const HOME_ASSISTANT_NOTIFY_SERVICE =
+  process.env.HOME_ASSISTANT_NOTIFY_SERVICE || "notify/notify";
+export const HOME_CHECKS_ENABLED = process.env.HOME_CHECKS_ENABLED !== "false";
+export const HOME_CHECKS_CRON = process.env.HOME_CHECKS_CRON || "0 9 * * *";
+export const LAUNDRY_ALERT_MINUTES = Number.parseInt(
+  process.env.LAUNDRY_ALERT_MINUTES || "50",
+  10
+);
 
 export const TV_REMOTE_ENTITY_ID = process.env.TV_REMOTE_ENTITY_ID;
 export const TV_DEFAULT_WAIT_MS = Number.parseInt(
@@ -42,6 +52,9 @@ export const AZURE_AI_AGENT_MODEL =
 export const AZURE_OPENAI_MODEL_ADVANCED =
   process.env.AZURE_OPENAI_MODEL_ADVANCED ||
   process.env.HA_COMMAND_PROCESS_MODEL;
+
+export const AZURE_OPENAI_EMBEDDING_MODEL =
+  process.env.AZURE_OPENAI_EMBEDDING_MODEL || "text-embedding-ada-002";
 
 export const AZURE_AI_AGENT_KEY_HEADER_NAME =
   process.env.AZURE_AI_AGENT_KEY_HEADER_NAME || "api-key";
