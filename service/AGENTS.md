@@ -1,0 +1,574 @@
+# Service Package - Agent Architecture Documentation
+
+This document provides comprehensive documentation for the service package's agent architecture, which powers the intelligent automation features of the Home Assistant Voice Assistant.
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Core Components](#core-components)
+- [Agents](#agents)
+  - [TV Agent](#tv-agent)
+  - [Navigation Agent](#navigation-agent)
+  - [Typing Agent](#typing-agent)
+- [Common Utilities](#common-utilities)
+- [Teaching System](#teaching-system)
+- [Custom Agent Loop](#custom-agent-loop)
+- [Tracing & Observability](#tracing--observability)
+- [Configuration](#configuration)
+- [API Reference](#api-reference)
+
+---
+
+## Overview
+
+The service package is a Node.js/Express backend that provides:
+
+- **Intent Classification**: Routes user requests to appropriate handlers (Home Assistant commands, reminders, chat, or agentic flows)
+- **Home Assistant Integration**: Executes smart home commands via Home Assistant APIs
+- **Multi-Agent System**: Orchestrates specialized AI agents for complex TV automation tasks
+- **Teaching Mode**: Records and learns from manual demonstrations to improve agent performance
+- **OpenTelemetry Tracing**: Comprehensive observability for debugging and monitoring
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Express API Server                            │
+│                         (src/index.ts)                               │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
+│  │    Intent    │  │     Home     │  │   Reminder   │              │
+│  │ Classifier   │  │  Assistant   │  │  Processor   │              │
+│  └──────────────┘  └──────────────┘  └──────────────┘              │
+│                                                                      │
+├─────────────────────────────────────────────────────────────────────┤
+│                       Agent System                                   │
+│  ┌────────────────────────────────────────────────────────────────┐ │
+│  │                    Custom Agent Loop                           │ │
+│  │                 (OpenAI Chat Completions)                      │ │
+│  └────────────────────────────────────────────────────────────────┘ │
+│                              │                                       │
+│     ┌────────────────────────┼────────────────────────┐             │
+│     │                        │                        │             │
+│     ▼                        ▼                        ▼             │
+│  ┌──────────┐          ┌──────────┐          ┌──────────┐          │
+│  │ TV Agent │◄────────►│Navigation│◄────────►│ Typing   │          │
+│  │ (Parent) │ delegate │  Agent   │ delegate │  Agent   │          │
+│  └──────────┘          └──────────┘          └──────────┘          │
+│                                                                      │
+├─────────────────────────────────────────────────────────────────────┤
+│                    Supporting Systems                                │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
+│  │   Teaching   │  │    Image     │  │   Tracing    │              │
+│  │    System    │  │  Processor   │  │   (OTEL)     │              │
+│  └──────────────┘  └──────────────┘  └──────────────┘              │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+## Core Components
+
+### Intent Classification (`src/intent.ts`)
+
+Routes user requests based on intent:
+
+| Intent | Description |
+|--------|-------------|
+| `HACommand` | Direct Home Assistant commands (lights, switches, etc.) |
+| `Reminder` | Create, list, or query reminders |
+| `Chat` | General conversational responses |
+| `AgenticFlow` | Complex TV automation tasks |
+| `TeachingMode` | Record demonstrations for training |
+
+### Home Assistant Integration (`src/ha.ts`)
+
+- Fetches device states from Home Assistant API
+- Translates natural language commands to HA service calls
+- Supports a wide range of domains: lights, switches, media players, remotes, etc.
+
+### Reminder Processing (`src/reminder.ts`)
+
+Handles reminder-related operations:
+- **CREATE**: Add new reminders with scheduling
+- **LIST**: Retrieve reminders with filtering
+- **QUERY**: Search reminders by category, date, or terms
+
+---
+
+## Agents
+
+The agent system uses a hierarchical architecture with specialized sub-agents:
+
+### TV Agent
+
+**Location**: `src/agents/tv/`
+
+The TV Agent is the primary orchestrator for smart TV automation tasks.
+
+#### Purpose
+- Execute complex, multi-step TV control sequences
+- Coordinate sub-agents for specialized tasks
+- Process visual feedback for intelligent decision-making
+
+#### Tools
+
+| Tool | Description |
+|------|-------------|
+| `click_power_button` | Turn TV on/off |
+| `media_control` | Play, pause, volume, seek operations |
+| `click_select_button` | Confirm selections |
+| `open_menu` | Access menus and settings |
+| `delegate_to_typing` | Hand off text input to Typing Agent |
+| `request_screenshot` | Capture current screen state |
+| `get_device_state` | Query device status |
+| `launch_app` | Open specific applications |
+| `analyze_screenshot` | AI-powered visual analysis |
+| `verify_ui_state` | Validate expected UI state |
+| `wait` | Pause for UI transitions |
+
+#### Configuration
+
+```typescript
+TV_AGENT_MAX_ITERATIONS_CAP = 8  // Max steps per task
+MIN_RUN_CREATION_INTERVAL_MS = 3000  // Rate limiting
+```
+
+#### Usage
+
+```typescript
+import { runTvAgenticFlow } from "./tvAgent";
+
+const result = await runTvAgenticFlow({
+  userMessage: "Play the latest episode of Breaking Bad on Netflix",
+  screenshotBase64: "...",
+  screenshotContentType: "image/jpeg",
+  maxIterations: 8,
+});
+```
+
+---
+
+### Navigation Agent
+
+**Location**: `src/agents/navigation/`
+
+A specialized sub-agent for TV UI navigation operations. The Navigation Agent uses visual feedback (screenshots) to intelligently navigate TV interfaces.
+
+#### Purpose
+- Navigate TV interfaces using directional controls with visual verification
+- Locate and activate search functionality using AI vision
+- Reset navigation state when lost or confused
+- Provide clear step-by-step feedback about navigation actions
+
+#### Screenshot-Based Navigation Strategy
+The Navigation Agent follows a rigorous visual verification approach:
+1. **Analyze**: Examine screenshot to understand current UI state (what's highlighted)
+2. **Plan**: Calculate efficient navigation path to target
+3. **Execute**: Send navigation commands (limited steps at a time)
+4. **Verify**: Request new screenshot to confirm position
+5. **Adjust**: Modify approach if needed
+
+#### Tools
+
+| Tool | Description |
+|------|-------------|
+| `go_home` | Press HOME button to reset to main screen |
+| `go_back` | Press BACK to return to previous screen |
+| `navigate` | Directional movement (up/down/left/right) with count |
+| `find_search` | AI-powered search detection, navigation, and activation |
+| `click_select_button` | Press SELECT to activate highlighted item |
+| `request_screenshot` | Request fresh screenshot for visual feedback |
+| `wait` | Pause for UI animations (100-10000ms) |
+
+#### Configuration
+
+```typescript
+NAV_AGENT_MAX_ITERATIONS_CAP = 12  // Increased for complex navigation
+MIN_RUN_CREATION_INTERVAL_MS = 2000  // Rate limiting between API calls
+```
+
+#### Usage
+
+```typescript
+import { runNavigationAgent, updateSessionScreenshot } from "./agents/navigation";
+
+const result = await runNavigationAgent({
+  userMessage: "Find and activate the search function",
+  deviceConfig: {
+    remoteEntityId: "remote.appletv",
+    mediaPlayerEntityId: "media_player.appletv",
+  },
+  screenshotBase64: "...",  // Initial screenshot for context
+  screenshotContentType: "image/jpeg",
+  maxIterations: 12,
+});
+
+// Result includes detailed step history
+console.log(result.steps);  // Array of navigation steps taken
+console.log(result.success);  // true if navigation completed successfully
+```
+
+#### Common App Navigation Patterns
+| App | Search Location | Typical Navigation |
+|-----|----------------|-------------------|
+| YouTube | Top-left | UP to menu bar, LEFT to search icon |
+| Netflix | Top navigation bar | UP to top bar, look for magnifying glass |
+| Prime Video | Top-left | UP + LEFT to search |
+| Disney+ | Top navigation | UP to reach top menu |
+| Hulu | Top-left | Similar to YouTube |
+
+---
+
+### Typing Agent
+
+**Location**: `src/agents/typing/`
+
+A specialized sub-agent for text input on smart TV on-screen keyboards.
+
+#### Purpose
+- Navigate on-screen keyboards efficiently
+- Type text character-by-character
+- Handle various keyboard layouts
+
+#### Tools
+
+| Tool | Description |
+|------|-------------|
+| `navigate` | Move cursor on keyboard |
+| `click_select_button` | Select highlighted character |
+| `type_character` | Direct character input (where supported) |
+| `request_screenshot` | Verify keyboard state |
+| `go_back` | Delete characters / exit keyboard |
+| `wait` | Wait for input processing |
+| `analyze_keyboard` | AI-powered keyboard layout analysis |
+
+#### Configuration
+
+```typescript
+TYPING_AGENT_MAX_ITERATIONS_CAP = 15  // More iterations for longer text
+MIN_RUN_CREATION_INTERVAL_MS = 1500  // Faster for character input
+```
+
+
+#### Keyboard Navigation Strategy
+
+The agent calculates efficient navigation paths:
+
+```
+Example: Type "hello"
+Navigate RIGHT x7 → Click SELECT  # h
+Navigate LEFT x3 → Click SELECT   # e
+Navigate RIGHT x7 → Click SELECT  # l
+Click SELECT                       # l (same position)
+Navigate RIGHT x3 → Click SELECT  # o
+```
+
+---
+
+## Common Utilities
+
+**Location**: `src/agents/common/`
+
+Shared utilities across all agents:
+
+### Utility Functions (`utils/index.ts`)
+
+```typescript
+// Safe JSON serialization
+safeJsonStringify(value: unknown): string | undefined
+
+// Normalize multiline strings
+normalizeMultiline(value?: string | null): string
+
+// Cap iteration counts
+resolveMaxSteps(requested?: number, maxCap?: number): number
+
+// Async delay
+delay(ms: number): Promise<void>
+```
+
+### Error Handling (`errors/`)
+
+Centralized error handling for Azure AI Agents and other integrations.
+
+---
+
+## Teaching System
+
+**Location**: `src/agents/tv/teaching/`
+
+The teaching system enables learning from manual demonstrations.
+
+### Components
+
+| Module | Purpose |
+|--------|---------|
+| `teachingRecorder.ts` | Session management and step recording |
+| `storage.ts` | Persist recordings to filesystem |
+| `blobStorage.ts` | Screenshot storage in Azure Blob |
+| `embeddings.ts` | Generate embeddings for similarity search |
+| `screenshotAnalyzer.ts` | AI analysis of screenshots |
+| `types.ts` | Type definitions |
+
+### Workflow
+
+1. **Start Session**: User initiates teaching mode with a task description
+2. **Record Steps**: Each manual action is captured with screenshots
+3. **Complete Session**: Recording is saved with embeddings for retrieval
+4. **Guidance Retrieval**: Similar tasks can retrieve past recordings for guidance
+
+### API
+
+```typescript
+// Start a teaching session
+startTeachingSession(taskDescription: string): TeachingSession
+
+// Record a step
+recordStep(sessionId: string, step: RecordedStep): void
+
+// Add screenshot to step
+addScreenshotCapture(sessionId: string, base64: string): void
+
+// Complete and save
+completeTeachingSession(sessionId: string): TeachingRecording
+
+// Find guidance for similar tasks
+findGuidanceForTask(task: string): Promise<GuidedInstructions | null>
+```
+
+### Teaching Triggers
+
+Certain phrases automatically trigger teaching mode:
+- "Let me show you how to..."
+- "Watch how I do this..."
+- "I'll teach you to..."
+
+---
+
+## Custom Agent Loop
+
+**Location**: `src/agents/tv/customAgentLoop.ts`
+
+A flexible, controllable agent loop implementation using OpenAI chat completions.
+
+### Features
+
+- **Session Management**: Create, manage, and delete agent sessions
+- **Tool Execution**: Handle tool calls with proper result submission
+- **Message History**: Maintain conversation context
+- **Image Support**: Process screenshots in conversations
+- **Rate Limiting**: Configurable intervals between API calls
+
+### Architecture
+
+```typescript
+interface CustomAgentLoop {
+  // Session management
+  createSession(userPrompt: string, history?: Message[]): AgentLoopSession;
+  deleteSession(sessionId: string): void;
+  
+  // Execution
+  runStep(sessionId: string): Promise<AgentStepResult>;
+  submitToolResults(sessionId: string, results: ToolExecutionResult[]): Promise<AgentStepResult>;
+  
+  // Message management
+  addMessage(sessionId: string, role: string, content: string): AgentMessage | null;
+  removeMessage(sessionId: string, messageId: string): boolean;
+  removeLastNMessages(sessionId: string, count: number): number;
+  getMessages(sessionId: string): AgentMessage[];
+  clearMessages(sessionId: string, keepSystemMessage?: boolean): boolean;
+}
+```
+
+### Step Result Types
+
+| Type | Description |
+|------|-------------|
+| `tool_calls` | Agent requests tool execution |
+| `message` | Agent provides text response |
+| `complete` | Task finished successfully |
+| `error` | An error occurred |
+
+---
+
+## Tracing & Observability
+
+**Location**: `src/tracing/`
+
+OpenTelemetry-based tracing for monitoring and debugging.
+
+### Features
+
+- File-based trace export to `logs/tv-agent-traces.jsonl`
+- Prompt and response logging
+- Span attributes for searchability
+- Graceful shutdown handling
+
+### Usage
+
+```typescript
+import { createTVAgentSpan, logPromptAndResponse } from "./tracing";
+
+const span = createTVAgentSpan("tv-control-operation", {
+  "device.id": "remote.loft_tv",
+});
+
+logPromptAndResponse(span, prompt, response);
+span.end();
+```
+
+### Viewing Traces
+
+```bash
+# View all traces
+npm run traces
+
+# View prompts only
+npm run traces:prompts
+
+# View errors only
+npm run traces:errors
+```
+
+---
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `AZURE_OPENAI_ENDPOINT` | Azure OpenAI endpoint | - |
+| `AZURE_OPENAI_API_KEY` | API key | - |
+| `HOME_ASSISTANT_URL` | Home Assistant URL | `http://homeassistant.local:8123` |
+| `HOME_ASSISTANT_TOKEN` | HA long-lived token | - |
+| `TV_REMOTE_ENTITY_ID` | Default TV remote entity | - |
+| `TV_DEFAULT_WAIT_MS` | Wait time after actions | `1500` |
+| `TV_AGENT_MAX_ITERATIONS` | Max TV agent steps | `8` |
+| `TV_AGENT_DEVICES` | Comma-separated device list | - |
+| `AZURE_SPEECH_KEY` | Azure Speech Service key | - |
+| `AZURE_SPEECH_REGION` | Speech Service region | `eastus` |
+
+### Prompt Templates
+
+Located in `src/prompts/`:
+
+| File | Purpose |
+|------|---------|
+| `INTENT.md` | Intent classification prompt |
+| `HOMEASSISTANT.md` | HA command generation prompt |
+| `REMINDER.md` | Reminder processing prompt |
+| `TVAGENT.md` | TV Agent system instructions |
+
+---
+
+## API Reference
+
+### Express Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Health check |
+| `/api/process` | POST | Process user commands |
+| `/api/tv/agentic` | POST | Execute TV agentic flows |
+| `/api/teaching/*` | Various | Teaching mode endpoints |
+| `/api/reminders/*` | Various | Reminder CRUD operations |
+
+### Request/Response Types
+
+#### Agentic Flow Request
+
+```typescript
+interface TvAgenticRequest {
+  userMessage: string;
+  screenshotBase64?: string;
+  screenshotContentType?: string;
+  maxIterations?: number;
+}
+```
+
+#### Agentic Flow Response
+
+```typescript
+interface TvAgenticFlowResult {
+  success: boolean;
+  message: string;
+  steps: TvAgentStep[];
+  sessionState?: TvAgentSessionState;
+  error?: string;
+}
+```
+
+---
+
+## Development
+
+### Scripts
+
+```bash
+# Development with hot reload
+npm run dev
+
+# Build TypeScript
+npm run build
+
+# Production start
+npm start
+
+# View traces
+npm run traces
+```
+
+### Project Structure
+
+```
+service/
+├── src/
+│   ├── agents/
+│   │   ├── common/         # Shared utilities
+│   │   ├── navigation/     # Navigation sub-agent
+│   │   ├── tv/             # TV agent (main orchestrator)
+│   │   │   ├── teaching/   # Teaching system
+│   │   │   └── ...
+│   │   └── typing/         # Typing sub-agent
+│   ├── prompts/            # LLM prompt templates
+│   ├── tracing/            # OpenTelemetry setup
+│   ├── types/              # TypeScript type definitions
+│   ├── config.ts           # Configuration
+│   ├── ha.ts               # Home Assistant integration
+│   ├── index.ts            # Express server entry point
+│   ├── intent.ts           # Intent classification
+│   ├── openai.ts           # OpenAI service wrapper
+│   └── reminder.ts         # Reminder processing
+├── logs/                   # Trace output files
+├── generated_data/         # Runtime generated data
+└── package.json
+```
+
+---
+
+## Best Practices
+
+### Agent Development
+
+1. **Use the Custom Agent Loop**: Provides better control than Azure AI Agents SDK
+2. **Always Request Screenshots**: Visual feedback is essential for TV automation
+3. **Implement Graceful Degradation**: Handle tool failures with alternative approaches
+4. **Rate Limit API Calls**: Prevent overwhelming the OpenAI API
+5. **Log Extensively**: Use tracing for debugging complex flows
+
+### Tool Design
+
+1. **Single Responsibility**: Each tool should do one thing well
+2. **Clear Descriptions**: Help the LLM understand when to use each tool
+3. **Explicit Parameters**: Make required inputs obvious
+4. **Return Actionable Results**: Include next-step guidance in tool outputs
+
+### Error Handling
+
+1. **Catch at Boundaries**: Handle errors at agent/tool boundaries
+2. **Provide Context**: Include relevant state in error messages
+3. **Enable Recovery**: Allow agents to try alternative approaches
+4. **Log for Debugging**: Capture enough context for post-mortem analysis

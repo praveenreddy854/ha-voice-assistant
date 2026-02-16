@@ -3,6 +3,7 @@ import {
   AudioConfig,
   SpeechRecognizer,
   ResultReason,
+  PropertyId,
 } from "microsoft-cognitiveservices-speech-sdk";
 import { getSpeechCredentials } from "../utils/config";
 import { Message } from "../types/chat";
@@ -12,6 +13,9 @@ interface SpeechRecognize {
   setIsListening: React.Dispatch<React.SetStateAction<boolean>>;
   isListeningForWakeWord: React.RefObject<boolean>;
   processRecognizedText: (text: string) => void;
+  onSessionStarted?: () => void;
+  onSessionStopped?: () => void;
+  extendedSilenceTimeout?: boolean; // For teaching mode - extend silence timeout
 }
 
 let recognizer: SpeechRecognizer | undefined;
@@ -22,6 +26,7 @@ export const startAzureSpeechRecognition = async (props: SpeechRecognize) => {
     setRecognizedText,
     isListeningForWakeWord,
     processRecognizedText,
+    extendedSilenceTimeout = false,
   } = props;
 
   const { speechKey, speechRegion } = await getSpeechCredentials();
@@ -36,11 +41,32 @@ export const startAzureSpeechRecognition = async (props: SpeechRecognize) => {
 
   const speechConfig = SpeechConfig.fromSubscription(speechKey, speechRegion);
   speechConfig.speechRecognitionLanguage = "en-US";
+  
+  // Configure silence timeouts
+  // For teaching mode, use longer timeouts (5 minutes = 300 seconds)
+  // Default is ~15 seconds which is too short
+  if (extendedSilenceTimeout) {
+    // Set initial silence timeout (time before first speech) - 5 minutes
+    speechConfig.setProperty(
+      PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs,
+      "300000"
+    );
+    // Set end silence timeout (time after speech ends to wait for more) - 30 seconds
+    speechConfig.setProperty(
+      PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs,
+      "30000"
+    );
+  }
+  
   const audioConfig = AudioConfig.fromDefaultMicrophoneInput();
   recognizer = new SpeechRecognizer(speechConfig, audioConfig);
 
-  setIsListening(true);
-  isListeningForWakeWord.current = false;
+  recognizer.sessionStarted = () => {
+    console.log("Azure Speech session started");
+    setIsListening(true);
+    isListeningForWakeWord.current = false;
+    props.onSessionStarted?.();
+  };
 
   recognizer.recognized = async (_, e) => {
     try {
@@ -62,7 +88,22 @@ export const startAzureSpeechRecognition = async (props: SpeechRecognize) => {
     stopRecognition(props);
   };
 
-  recognizer.startContinuousRecognitionAsync();
+  recognizer.startContinuousRecognitionAsync(
+    undefined,
+    (err) => {
+      console.error("Failed to start Azure speech recognition:", err);
+      setRecognizedText({
+        sender: "assistant",
+        text:
+          "Unable to access the microphone for Azure speech recognition. Please check microphone permissions and try again.",
+      });
+      recognizer?.close();
+      recognizer = undefined;
+      setIsListening(false);
+      isListeningForWakeWord.current = true;
+      props.onSessionStopped?.();
+    }
+  );
 };
 
 export const stopRecognition = (
@@ -76,6 +117,7 @@ export const stopRecognition = (
   });
   setIsListening(false);
   isListeningForWakeWord.current = true;
+  props.onSessionStopped?.();
 
   recognizer?.stopContinuousRecognitionAsync(
     () => {

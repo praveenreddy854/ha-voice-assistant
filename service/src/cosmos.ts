@@ -1,4 +1,4 @@
-import { CosmosClient, Container } from "@azure/cosmos";
+import { CosmosClient, Container, PartitionKeyKind } from "@azure/cosmos";
 import {
   AZURE_COSMOS_CONTAINER,
   AZURE_COSMOS_DATABASE,
@@ -49,7 +49,7 @@ const initializeContainer = async (): Promise<Container> => {
   const { container } = await database.containers.createIfNotExists({
     id: AZURE_COSMOS_CONTAINER!,
     partitionKey: {
-      kind: "Hash",
+      kind: PartitionKeyKind.Hash,
       paths: ["/entityId"],
     },
   });

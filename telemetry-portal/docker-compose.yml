@@ -1,0 +1,14 @@
+services:
+  lgtm:
+    image: grafana/otel-lgtm:latest
+    container_name: ha-voice-assistant-telemetry-portal
+    ports:
+      - "3300:3000"
+      - "4317:4317"
+      - "4318:4318"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

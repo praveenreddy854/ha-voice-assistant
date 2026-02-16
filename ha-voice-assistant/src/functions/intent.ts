@@ -5,7 +5,47 @@ export enum Intent {
   HACommand = "HACommand",
   Chat = "Chat",
   Reminder = "Reminder",
+  AgenticFlow = "AgenticFlow",
+  TeachingMode = "TeachingMode",
 }
+
+const INTENT_VALUES = new Set<string>(Object.values(Intent));
+
+const parseIntentFromResponse = (payload: unknown): Intent => {
+  if (payload && typeof payload === "object") {
+    const candidate = payload as { intent?: unknown; error?: unknown };
+    if (typeof candidate.intent === "string" && INTENT_VALUES.has(candidate.intent)) {
+      return candidate.intent as Intent;
+    }
+    if (candidate.error === "no_match") {
+      return Intent.Chat;
+    }
+  }
+
+  if (typeof payload === "string") {
+    try {
+      const parsed = JSON.parse(payload);
+      return parseIntentFromResponse(parsed);
+    } catch {
+      const normalized = payload.toLowerCase();
+      if (normalized.includes("hacommand") || normalized.includes("ha command")) {
+        return Intent.HACommand;
+      }
+      if (normalized.includes("teachingmode") || normalized.includes("teaching mode")) {
+        return Intent.TeachingMode;
+      }
+      if (normalized.includes("agenticflow") || normalized.includes("agentic flow")) {
+        return Intent.AgenticFlow;
+      }
+      if (normalized.includes("reminder")) {
+        return Intent.Reminder;
+      }
+      return Intent.Chat;
+    }
+  }
+
+  return Intent.Chat;
+};
 
 export const getIntent = async (text: string): Promise<Response<Intent>> => {
   try {
@@ -27,23 +67,35 @@ export const getIntent = async (text: string): Promise<Response<Intent>> => {
       }),
     });
 
-    if (!response.ok) {
-      throw new Error("Network response was not ok");
+    let payload: unknown = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
     }
 
-    const data = await response.json();
+    if (!response.ok) {
+      // Fallback gracefully for classification errors instead of failing the whole voice flow
+      console.warn("Intent API non-OK response, defaulting to Chat intent");
+      return {
+        success: true,
+        data: Intent.Chat,
+      };
+    }
     
     // Add user message to history
     messageHistoryManager.addMessage('user', text);
     
     return {
       success: true,
-      data: data.intent as Intent,
+      data: parseIntentFromResponse(payload),
     };
   } catch (error) {
     console.error("Error fetching intent:", error);
     return {
-      success: false,
+      // Keep UX responsive even if classification fails
+      success: true,
+      data: Intent.Chat,
       errorMessage: error instanceof Error ? error.message : String(error),
     };
   }
