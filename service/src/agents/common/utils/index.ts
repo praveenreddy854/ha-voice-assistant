@@ -34,12 +34,12 @@ export function normalizeMultiline(value?: string | null): string {
 /**
  * Resolve the maximum number of steps/iterations for an agent, capping at a maximum value
  * @param requested - The requested number of steps
- * @param maxCap - The maximum allowed steps (default: 8)
+ * @param maxCap - The maximum allowed steps (default: 20)
  * @returns The resolved number of steps, capped at maxCap
  */
 export function resolveMaxSteps(
   requested?: number,
-  maxCap: number = 8
+  maxCap: number = 20
 ): number {
   if (!Number.isFinite(requested) || (requested ?? 0) <= 0) {
     return maxCap;

@@ -1,14 +1,10 @@
 /**
  * Embeddings for similarity search
- * Uses Azure OpenAI embeddings to find similar recordings
+ * Uses Azure AI SDK embeddings to find similar recordings
  */
 
-import { AzureOpenAI } from "openai";
-import {
-  OPEN_AI_BASE_URL,
-  API_KEY,
-  OPENAI_RESPONSES_API_VERSION,
-} from "../../../config";
+import { embed } from "ai";
+import { azureProvider } from "../../../ai";
 import { loadIndex } from "./storage";
 import { SimilarRecording } from "./types";
 
@@ -18,28 +14,12 @@ const EMBEDDING_MODEL = "text-embedding-ada-002";
  * Generate an embedding for a text string
  */
 export async function generateEmbedding(text: string): Promise<number[]> {
-  if (!OPEN_AI_BASE_URL || !API_KEY) {
-    console.warn("[Teaching Embeddings] OpenAI not configured, returning empty embedding");
-    return [];
-  }
-
   try {
-    const client = new AzureOpenAI({
-      endpoint: OPEN_AI_BASE_URL,
-      apiKey: API_KEY,
-      apiVersion: OPENAI_RESPONSES_API_VERSION,
+    const { embedding } = await embed({
+      model: azureProvider.embeddingModel(EMBEDDING_MODEL),
+      value: text,
     });
-
-    const response = await client.embeddings.create({
-      model: EMBEDDING_MODEL,
-      input: text,
-    });
-
-    if (response.data && response.data.length > 0) {
-      return response.data[0].embedding;
-    }
-
-    return [];
+    return embedding;
   } catch (error) {
     console.error("[Teaching Embeddings] Error generating embedding:", error);
     return [];
@@ -82,7 +62,6 @@ export async function findSimilarRecordings(
   const index = await loadIndex();
 
   if (queryEmbedding.length === 0) {
-    // No embedding available, return empty
     return [];
   }
 
@@ -105,7 +84,6 @@ export async function findSimilarRecordings(
     }
   }
 
-  // Sort by similarity descending and take top K
   results.sort((a, b) => b.similarity - a.similarity);
   return results.slice(0, topK);
 }
@@ -136,9 +114,6 @@ export async function updateMissingEmbeddings(): Promise<number> {
       }
     }
   }
-
-  // Note: This doesn't save back to the index file
-  // The caller should handle saving if needed
 
   return updatedCount;
 }

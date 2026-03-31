@@ -44,7 +44,7 @@ import {
   createAgentLoop,
   AgentToolCall,
   ToolExecutionResult as AgentToolResult,
-} from "../tv/customAgentLoop";
+} from "../tv/agentLoop";
 
 // ============================================================================
 // Session Management

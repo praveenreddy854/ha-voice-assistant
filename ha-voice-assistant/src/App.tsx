@@ -124,6 +124,19 @@ function App() {
     setMessages((prev) => [...prev, message]);
   }, []);
 
+  const handleTextCommand = useCallback(
+    async (text: string) => {
+      // processRecognizedText already adds the user message to chat
+      await processRecognizedText(
+        text,
+        handleRecognizedText,
+        isListeningForWakeWord,
+        allReminders
+      );
+    },
+    [handleRecognizedText, allReminders]
+  );
+
   const processRecognizedTextCallback = useCallback(
     async (text: string) => {
       await processRecognizedText(
@@ -350,7 +363,7 @@ function App() {
           Auto-stop in: {countdown}s
         </div>
       )}
-      <Chat messages={messages} />
+      <Chat messages={messages} onSendMessage={handleTextCommand} />
 
       <div
         style={{

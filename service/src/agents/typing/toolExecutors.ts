@@ -157,33 +157,15 @@ export async function executeAnalyzeKeyboard(
   }
 
   try {
-    // Use OpenAI vision to analyze the keyboard
-    const { AzureOpenAI } = await import("openai");
-    const {
-      OPEN_AI_BASE_URL,
-      API_KEY,
-      OPENAI_RESPONSES_API_VERSION,
-      AZURE_AI_AGENT_MODEL,
-    } = await import("../../config");
+    const { AI_MODEL_MINI } = await import("../../config");
+    const { generateVisionText } = await import("../../ai");
 
-    const visionModel = AZURE_AI_AGENT_MODEL || "gpt-4o-mini";
+    const visionModel = AI_MODEL_MINI || "gpt-5.1-mini";
     console.log(
       `[Typing Agent] Analyzing keyboard layout using ${visionModel}...`
     );
 
-    const client = new AzureOpenAI({
-      baseURL: OPEN_AI_BASE_URL,
-      apiKey: API_KEY,
-      apiVersion: OPENAI_RESPONSES_API_VERSION,
-    });
-
-    const messages = [
-      {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: `Analyze this TV on-screen keyboard screenshot. I need to type: "${args.target_text}"
+    const prompt = `Analyze this TV on-screen keyboard screenshot. I need to type: "${args.target_text}"
 
 Please identify:
 1. KEYBOARD TYPE: Is this a QWERTY keyboard, alphabetical (A-Z in order), or other layout?
@@ -192,31 +174,18 @@ Please identify:
 4. REMAINING TEXT: What characters still need to be typed?
 5. NAVIGATION PLAN: For each remaining character, describe the navigation steps needed (up/down/left/right) from the current position.
 
-Provide a clear, actionable response focusing on the most efficient navigation path to type the remaining characters.`,
-          },
-          {
-            type: "image_url",
-            image_url: {
-              url: `data:${screenshotContentType || "image/png"};base64,${screenshotBase64}`,
-              detail: "high",
-            },
-          },
-        ],
-      },
-    ];
+Provide a clear, actionable response focusing on the most efficient navigation path to type the remaining characters.`;
 
-    const response = await client.chat.completions.create({
+    const analysisResult = await generateVisionText({
       model: visionModel,
-      messages: messages as any,
-      max_tokens: 1000,
-      temperature: 0.1,
+      prompt,
+      imageBase64: screenshotBase64,
+      imageContentType: screenshotContentType || "image/png",
+      maxTokens: 1000,
     });
 
-    const analysisResult =
-      response.choices[0]?.message?.content || "Unable to analyze keyboard.";
-
     const observation =
-      `🔍 Keyboard Analysis Complete:\n\n${analysisResult}\n\n` +
+      `🔍 Keyboard Analysis Complete:\n\n${analysisResult || "Unable to analyze keyboard."}\n\n` +
       `🎯 Target text: "${args.target_text}"`;
 
     return { observation, needsScreenshot: false };

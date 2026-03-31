@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
-import { openAIService } from "./openai";
+import { generateJsonCompletion } from "./ai";
+import { AI_MODEL_NANO } from "./config";
 
 const promptCache = new Map();
 const intentCacheKey = "INTENT";
@@ -24,14 +25,16 @@ export async function classifyIntent(userPrompt: string, messageHistory?: Array<
     .get(intentCacheKey)
     .replace("{{{UserPrompt}}}", userPrompt);
 
-  // Combine message history with current prompt
   const messages = [
     ...(messageHistory || []),
     { role: "user", content: prompt }
   ];
 
   try {
-    return await openAIService.createIntentClassification(messages);
+    return await generateJsonCompletion<IntentClassificationResponse | IntentErrorResponse>({
+      model: AI_MODEL_NANO || "",
+      messages,
+    });
   } catch (error) {
     console.error("Failed to classify intent:", error);
     throw new Error("Failed to classify user intent");

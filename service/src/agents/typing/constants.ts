@@ -3,7 +3,7 @@
  * Specialized agent for text input operations on smart TVs
  */
 
-import { ToolDefinition } from "../tv/customAgentLoop";
+import { ToolDefinition } from "../tv/agentLoop";
 
 export const TYPING_AGENT_NAME = "tv-typing-agent";
 

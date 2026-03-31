@@ -43,7 +43,7 @@ import {
   ToolExecutionResult,
   AgentMessage,
   ToolDefinition,
-} from "./customAgentLoop";
+} from "./agentLoop";
 
 // ============================================================================
 // Types

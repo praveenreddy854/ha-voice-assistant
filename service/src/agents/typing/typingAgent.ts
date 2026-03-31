@@ -40,7 +40,7 @@ import {
   CustomAgentLoop,
   createAgentLoop,
   ToolExecutionResult as AgentToolResult,
-} from "../tv/customAgentLoop";
+} from "../tv/agentLoop";
 
 // ============================================================================
 // Session Management

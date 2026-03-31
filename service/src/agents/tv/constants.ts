@@ -3,7 +3,7 @@
  * Centralized configuration values for the TV automation agent
  */
 
-import { FunctionToolDefinition } from "@azure/ai-agents/dist/commonjs/models/models";
+import { ToolDefinition } from "./agentLoop";
 import fs from "fs";
 import path from "path";
 
@@ -38,7 +38,7 @@ export const TV_AGENT_INSTRUCTIONS = loadTvAgentInstructions();
 export const TV_AGENT_MAX_ITERATIONS_CAP = (() => {
   const parsed = Number.parseInt(process.env.TV_AGENT_MAX_ITERATIONS ?? "", 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    return 8;
+    return 20;
   }
   return Math.max(1, Math.trunc(parsed));
 })();
@@ -55,7 +55,7 @@ export const MIN_RUN_CREATION_INTERVAL_MS = (() => {
 })();
 
 // Tool Definitions - Multiple specialized tools instead of one generic tool
-export const TV_TOOLS: FunctionToolDefinition[] = [
+export const TV_TOOLS: ToolDefinition[] = [
   {
     type: "function",
     function: {

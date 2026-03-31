@@ -1,16 +1,10 @@
 /**
  * TV Agent Image Processing Utilities
- * Handles TV detection and image cropping using OpenAI vision and Sharp
+ * Handles TV detection and image cropping using AI SDK vision and Sharp
  */
 
-import { AzureOpenAI } from "openai";
-import {
-  OPEN_AI_BASE_URL,
-  API_KEY,
-  OPENAI_RESPONSES_API_VERSION,
-  AZURE_OPENAI_API_DEPLOYMENT_NAME,
-  AZURE_AI_AGENT_MODEL,
-} from "../../config";
+import { AI_MODEL_MINI } from "../../config";
+import { generateVisionText } from "../../ai";
 import { BoundingBox, CroppedImage } from "./types";
 import {
   saveScreenshotToServerFile,
@@ -19,36 +13,24 @@ import {
 import sharp from "sharp";
 
 /**
- * Detects TV in the image and returns bounding box coordinates using OpenAI vision
+ * Detects TV in the image and returns bounding box coordinates using AI SDK vision
  */
 export async function detectTvBoundingBox(
   base64Image: string,
   contentType: string
 ): Promise<BoundingBox | null> {
-  if (!OPEN_AI_BASE_URL || !API_KEY || !AZURE_OPENAI_API_DEPLOYMENT_NAME) {
+  if (!AI_MODEL_MINI) {
     console.warn(
-      "[TV Agent] OpenAI configuration missing, skipping image cropping"
+      "[TV Agent] AI_MODEL_MINI not configured, skipping image cropping"
     );
     return null;
   }
 
   try {
-    const visionModel = AZURE_AI_AGENT_MODEL || "gpt-5-mini";
+    const visionModel = AI_MODEL_MINI || "gpt-4o-mini";
     console.log(`[TV Agent] Detecting TV in image using ${visionModel}...`);
 
-    const client = new AzureOpenAI({
-      baseURL: OPEN_AI_BASE_URL,
-      apiKey: API_KEY,
-      apiVersion: OPENAI_RESPONSES_API_VERSION,
-    });
-
-    const messages = [
-      {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: `Analyze this image and detect if there is a TV screen visible. Look for:
+    const prompt = `Analyze this image and detect if there is a TV screen visible. Look for:
 - A rectangular display showing content (video, UI, apps, menus)
 - TV bezel or frame around the display
 - The actual content area, not the wall or surroundings
@@ -61,52 +43,18 @@ Example: {"found": true, "x": 0.15, "y": 0.1, "width": 0.7, "height": 0.8}
 
 If no TV is found, return: {"found": false}
 
-IMPORTANT: Return ONLY the JSON object, no other text.`,
-          },
-          {
-            type: "image_url",
-            image_url: {
-              url: `data:${contentType};base64,${base64Image}`,
-            },
-          },
-        ],
-      },
-    ];
+IMPORTANT: Return ONLY the JSON object, no other text.`;
 
-    let response = await client.responses.create({
+    const content = await generateVisionText({
       model: visionModel,
-      input: JSON.stringify({
-        messages,
-        max_tokens: 200,
-        temperature: 0.1,
-      }),
+      prompt,
+      imageBase64: base64Image,
+      imageContentType: contentType,
+      maxTokens: 200,
     });
-
-    // Poll until response is complete
-    while (response.status === "queued" || response.status === "in_progress") {
-      console.log(`[TV Agent] Vision detection status: ${response.status}`);
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      response = await client.responses.retrieve(response.id);
-    }
-
-    if (response.status === "failed") {
-      console.error(
-        `[TV Agent] Vision detection failed: ${
-          response.error || "Unknown error"
-        }`
-      );
-      return null;
-    }
-
-    const content = response.output_text;
-    if (!content) {
-      console.warn(`[TV Agent] No response from ${visionModel} vision model`);
-      return null;
-    }
 
     console.log(`[TV Agent] ${visionModel} response:`, content);
 
-    // Parse the JSON response
     const jsonMatch = content.match(/\{[^}]+\}/);
     if (!jsonMatch) {
       console.warn("[TV Agent] Could not extract JSON from vision response");
@@ -164,17 +112,13 @@ export async function cropImageToTv(
 
     console.log("[TV Agent] Cropping image to TV bounds...");
 
-    // Convert base64 to buffer
     const imageBuffer = Buffer.from(base64Image, "base64");
-
-    // Get image metadata to determine dimensions
     const metadata = await sharp(imageBuffer).metadata();
     if (!metadata.width || !metadata.height) {
       console.warn("[TV Agent] Could not determine image dimensions");
       return null;
     }
 
-    // Calculate actual pixel coordinates from normalized values
     const left = Math.round(boundingBox.x * metadata.width);
     const top = Math.round(boundingBox.y * metadata.height);
     const width = Math.round(boundingBox.width * metadata.width);
@@ -182,17 +126,16 @@ export async function cropImageToTv(
 
     console.log("[TV Agent] Cropping to pixels:", { left, top, width, height });
 
-    // Crop the image with moderate compression for better navigation accuracy
     const croppedBuffer = await sharp(imageBuffer)
       .extract({ left, top, width, height })
       .resize(640, 640, {
         fit: "inside",
         withoutEnlargement: true,
-      }) // Resize to max 640x640 for better detail
+      })
       .jpeg({
-        quality: 15, // Moderate quality for better UI element visibility
+        quality: 15,
         progressive: true,
-        mozjpeg: true, // Better compression if available
+        mozjpeg: true,
       })
       .toBuffer();
 
@@ -206,20 +149,15 @@ export async function cropImageToTv(
       )}% of original size)`
     );
 
-    // Save both original and cropped images if session info is provided
     if (sessionId) {
       try {
         const baseToolName = toolName || "unknown_tool";
-
-        // Save original image
         await saveScreenshotToServerFile({
           base64Data: base64Image,
           sessionId,
           toolName: `${baseToolName}_original`,
           stepIndex,
         });
-
-        // Save cropped image
         await saveCroppedScreenshotToServerFile({
           base64Data: croppedBase64,
           sessionId,

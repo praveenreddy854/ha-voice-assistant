@@ -1,11 +1,27 @@
-import React from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { Message } from "./types/chat";
 
 interface ChatProps {
   messages: Message[];
+  onSendMessage?: (text: string) => void;
 }
 
-const Chat: React.FC<ChatProps> = ({ messages }) => {
+const Chat: React.FC<ChatProps> = ({ messages, onSendMessage }) => {
+  const [inputText, setInputText] = useState("");
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = inputText.trim();
+    if (!trimmed || !onSendMessage) return;
+    onSendMessage(trimmed);
+    setInputText("");
+  };
+
   return (
     <div
       style={{
@@ -16,7 +32,9 @@ const Chat: React.FC<ChatProps> = ({ messages }) => {
         animation: 'glow 3s ease-in-out infinite',
         width: '100%',
         maxWidth: '600px',
-        margin: '20px 0'
+        margin: '20px 0',
+        display: 'flex',
+        flexDirection: 'column',
       }}
     >
       <div
@@ -24,22 +42,19 @@ const Chat: React.FC<ChatProps> = ({ messages }) => {
           background: 'linear-gradient(135deg, #ffffff 0%, #f8fafc 100%)',
           borderRadius: '19px',
           padding: '20px',
-          height: '320px',
-          overflowY: 'auto',
-          position: 'relative'
+          display: 'flex',
+          flexDirection: 'column',
         }}
       >
+        {/* Header */}
         <div style={{
-          position: 'absolute',
-          top: '16px',
-          left: '20px',
-          right: '20px',
           display: 'flex',
           alignItems: 'center',
           gap: '8px',
           paddingBottom: '12px',
           borderBottom: '1px solid rgba(16, 185, 129, 0.1)',
-          marginBottom: '16px'
+          marginBottom: '16px',
+          flexShrink: 0,
         }}>
           <span style={{ fontSize: '20px' }}>💬</span>
           <h3 style={{
@@ -54,12 +69,14 @@ const Chat: React.FC<ChatProps> = ({ messages }) => {
             Voice Assistant Chat
           </h3>
         </div>
-        
-        <div style={{ 
-          paddingTop: '60px',
+
+        {/* Messages */}
+        <div style={{
+          height: '260px',
+          overflowY: 'auto',
           display: 'flex',
           flexDirection: 'column',
-          gap: '12px'
+          gap: '12px',
         }}>
           {messages.length === 0 ? (
             <div style={{
@@ -70,7 +87,7 @@ const Chat: React.FC<ChatProps> = ({ messages }) => {
               padding: '40px 20px'
             }}>
               <span style={{ fontSize: '32px', display: 'block', marginBottom: '8px' }}>🎤</span>
-              Start a conversation by saying "Hey Assistant"
+              Say "Hey Assistant" or type a command below
             </div>
           ) : (
             messages.map((message, index) => (
@@ -93,10 +110,10 @@ const Chat: React.FC<ChatProps> = ({ messages }) => {
                     maxWidth: '75%',
                     fontSize: '14px',
                     lineHeight: '1.4',
-                    boxShadow: message.sender === "user" 
+                    boxShadow: message.sender === "user"
                       ? '0 4px 12px rgba(16, 185, 129, 0.3)'
                       : '0 2px 8px rgba(0, 0, 0, 0.1)',
-                    border: message.sender === "user" 
+                    border: message.sender === "user"
                       ? '1px solid rgba(255, 255, 255, 0.3)'
                       : '1px solid rgba(226, 232, 240, 0.8)',
                     position: 'relative'
@@ -215,7 +232,60 @@ const Chat: React.FC<ChatProps> = ({ messages }) => {
               </div>
             ))
           )}
+          <div ref={messagesEndRef} />
         </div>
+
+        {/* Text Input */}
+        <form
+          onSubmit={handleSubmit}
+          style={{
+            display: 'flex',
+            gap: '8px',
+            marginTop: '12px',
+            paddingTop: '12px',
+            borderTop: '1px solid rgba(16, 185, 129, 0.1)',
+            flexShrink: 0,
+          }}
+        >
+          <input
+            type="text"
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            placeholder="Type a command..."
+            style={{
+              flex: 1,
+              padding: '10px 14px',
+              borderRadius: '12px',
+              border: '1.5px solid #d1d5db',
+              fontSize: '14px',
+              outline: 'none',
+              transition: 'border-color 0.2s',
+              background: '#f9fafb',
+            }}
+            onFocus={(e) => { e.currentTarget.style.borderColor = '#10b981'; }}
+            onBlur={(e) => { e.currentTarget.style.borderColor = '#d1d5db'; }}
+          />
+          <button
+            type="submit"
+            disabled={!inputText.trim()}
+            style={{
+              padding: '10px 18px',
+              borderRadius: '12px',
+              border: 'none',
+              background: inputText.trim()
+                ? 'linear-gradient(135deg, #10b981 0%, #059669 100%)'
+                : '#d1d5db',
+              color: 'white',
+              fontSize: '14px',
+              fontWeight: '600',
+              cursor: inputText.trim() ? 'pointer' : 'default',
+              transition: 'all 0.2s',
+              flexShrink: 0,
+            }}
+          >
+            Send
+          </button>
+        </form>
       </div>
     </div>
   );

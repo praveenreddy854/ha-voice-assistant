@@ -552,24 +552,13 @@ export async function executeAnalyzeScreenshot(
   }
 
   try {
-    const { AzureOpenAI } = await import("openai");
-    const {
-      OPEN_AI_BASE_URL,
-      API_KEY,
-      OPENAI_RESPONSES_API_VERSION,
-      AZURE_AI_AGENT_MODEL,
-    } = await import("../../config");
+    const { AI_MODEL_MINI } = await import("../../config");
+    const { generateVisionText } = await import("../../ai");
 
-    const visionModel = AZURE_AI_AGENT_MODEL || "gpt-5-mini";
+    const visionModel = AI_MODEL_MINI || "gpt-4o-mini";
     console.log(
       `[TV Agent] Analyzing screenshot with query: "${args.query}" using ${visionModel}...`
     );
-
-    const client = new AzureOpenAI({
-      baseURL: OPEN_AI_BASE_URL,
-      apiKey: API_KEY,
-      apiVersion: OPENAI_RESPONSES_API_VERSION,
-    });
 
     const analysisPrompt = `You are analyzing an image captured by a camera pointed at a smart TV. The image contains the TV screen along with surrounding room elements (walls, furniture, ambient lighting, etc.).
 
@@ -603,51 +592,14 @@ IMPORTANT:
 - Only analyze what's ON the TV screen
 - Ignore any room elements, reflections, or items outside the TV`;
 
-    const messages = [
-      {
-        role: "user",
-        content: [
-          { type: "text", text: analysisPrompt },
-          {
-            type: "image_url",
-            image_url: {
-              url: `data:${screenshotContentType};base64,${screenshotBase64}`,
-            },
-          },
-        ],
-      },
-    ];
-
-    let response = await client.responses.create({
+    const content = await generateVisionText({
       model: visionModel,
-      input: JSON.stringify({
-        messages,
-        max_tokens: 500,
-        temperature: 0.1,
-      }),
+      prompt: analysisPrompt,
+      imageBase64: screenshotBase64,
+      imageContentType: screenshotContentType || "image/jpeg",
+      maxTokens: 500,
     });
 
-    // Poll until response is complete
-    while (response.status === "queued" || response.status === "in_progress") {
-      await delay(50);
-      response = await client.responses.retrieve(response.id);
-    }
-
-    if (response.status === "failed") {
-      console.error(
-        `[TV Agent] Screenshot analysis failed: ${
-          response.error || "Unknown error"
-        }`
-      );
-      return {
-        observation: `❌ Failed to analyze screenshot: ${
-          response.error || "Unknown error"
-        }`,
-        needsScreenshot: false,
-      };
-    }
-
-    const content = response.output_text;
     if (!content) {
       return {
         observation: "❌ No response from vision model for screenshot analysis.",
@@ -705,24 +657,13 @@ export async function executeVerifyUIState(
   }
 
   try {
-    const { AzureOpenAI } = await import("openai");
-    const {
-      OPEN_AI_BASE_URL,
-      API_KEY,
-      OPENAI_RESPONSES_API_VERSION,
-      AZURE_AI_AGENT_MODEL,
-    } = await import("../../config");
+    const { AI_MODEL_MINI } = await import("../../config");
+    const { generateVisionText } = await import("../../ai");
 
-    const visionModel = AZURE_AI_AGENT_MODEL || "gpt-5-mini";
+    const visionModel = AI_MODEL_MINI || "gpt-4o-mini";
     console.log(
       `[TV Agent] Verifying UI state: "${args.expected_state}" using ${visionModel}...`
     );
-
-    const client = new AzureOpenAI({
-      baseURL: OPEN_AI_BASE_URL,
-      apiKey: API_KEY,
-      apiVersion: OPENAI_RESPONSES_API_VERSION,
-    });
 
     const verificationPrompt = `You are analyzing an image captured by a camera pointed at a smart TV. The image contains the TV screen along with surrounding room elements.
 
@@ -749,51 +690,14 @@ Return a JSON object with:
 
 IMPORTANT: Base your verification ONLY on what's displayed on the TV screen, not room elements.`;
 
-    const messages = [
-      {
-        role: "user",
-        content: [
-          { type: "text", text: verificationPrompt },
-          {
-            type: "image_url",
-            image_url: {
-              url: `data:${screenshotContentType};base64,${screenshotBase64}`,
-            },
-          },
-        ],
-      },
-    ];
-
-    let response = await client.responses.create({
+    const content = await generateVisionText({
       model: visionModel,
-      input: JSON.stringify({
-        messages,
-        max_tokens: 400,
-        temperature: 0.1,
-      }),
+      prompt: verificationPrompt,
+      imageBase64: screenshotBase64,
+      imageContentType: screenshotContentType || "image/jpeg",
+      maxTokens: 400,
     });
 
-    // Poll until response is complete
-    while (response.status === "queued" || response.status === "in_progress") {
-      await delay(50);
-      response = await client.responses.retrieve(response.id);
-    }
-
-    if (response.status === "failed") {
-      console.error(
-        `[TV Agent] UI state verification failed: ${
-          response.error || "Unknown error"
-        }`
-      );
-      return {
-        observation: `❌ Failed to verify UI state: ${
-          response.error || "Unknown error"
-        }`,
-        needsScreenshot: false,
-      };
-    }
-
-    const content = response.output_text;
     if (!content) {
       return {
         observation: "❌ No response from vision model for UI verification.",

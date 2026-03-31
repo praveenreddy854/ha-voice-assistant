@@ -1,8 +1,8 @@
-import { HOME_ASSISTANT_URL, HOME_ASSISTANT_TOKEN } from "./config";
+import { HOME_ASSISTANT_URL, HOME_ASSISTANT_TOKEN, AI_MODEL_MINI } from "./config";
 import fs from "fs";
 import path from "path";
 import { HassServiceCommandBody, HassServiceCommand, HassState } from "./types/ha";
-import { openAIService } from "./openai";
+import { generateCompletion } from "./ai";
 import axios from "axios";
 
 const promptCache = new Map();
@@ -21,9 +21,10 @@ export async function getHACommandBody(
   ];
 
   try {
-    const responseText = await openAIService.createHomeAssistantCompletion(
-      messages
-    );
+    const responseText = await generateCompletion({
+      model: AI_MODEL_MINI || "",
+      messages,
+    });
     return JSON.parse(responseText) as HassServiceCommandBody;
   } catch (error) {
     console.error("Failed to get Home Assistant command:", error);

@@ -17,7 +17,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@azure/ai-agents": "^1.0.0",
+    "@ai-sdk/azure": "^3.0.49",
     "@azure/core-auth": "^1.7.2",
     "@azure/cosmos": "^4.1.2",
     "@azure/identity": "^4.13.0",
@@ -27,12 +27,12 @@
     "@opentelemetry/instrumentation-fs": "^0.27.0",
     "@opentelemetry/instrumentation-http": "^0.207.0",
     "@opentelemetry/sdk-node": "^0.207.0",
+    "ai": "^6.0.141",
     "axios": "^1.10.0",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
     "node-cron": "^3.0.3",
-    "openai": "^5.8.2",
     "sharp": "^0.34.4",
     "uuid": "^13.0.0"
   },

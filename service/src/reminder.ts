@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
-import { openAIService } from "./openai";
+import { generateJsonCompletion } from "./ai";
+import { AI_MODEL_NANO } from "./config";
 
 const promptCache = new Map();
 const reminderCacheKey = "REMINDER";
@@ -9,7 +10,7 @@ export interface ReminderCreateRequest {
   action: "CREATE";
   title: string;
   description?: string;
-  dueDate: string; // ISO string
+  dueDate: string;
   category:
     | "general"
     | "medication"
@@ -84,14 +85,16 @@ export async function processReminderRequest(
     .replace("{{{CurrentDateTime}}}", currentDateTime)
     .replace("{{{CurrentReminders}}}", remindersContext);
 
-  // Combine message history with current prompt
   const messages = [
     ...(messageHistory || []),
     { role: "user", content: prompt }
   ];
 
   try {
-    return await openAIService.createReminderCompletion<ReminderRequest>(messages);
+    return await generateJsonCompletion<ReminderRequest>({
+      model: AI_MODEL_NANO || "",
+      messages,
+    });
   } catch (error) {
     console.error("Failed to process reminder request:", error);
     throw new Error("Failed to process reminder request");

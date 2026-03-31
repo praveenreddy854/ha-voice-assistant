@@ -164,34 +164,11 @@ export async function executeFindSearch(
   }
 
   try {
-    // Use OpenAI vision to analyze the screenshot and find the search icon
-    const { AzureOpenAI } = await import("openai");
-    const {
-      OPEN_AI_BASE_URL,
-      API_KEY,
-      OPENAI_RESPONSES_API_VERSION,
-      AZURE_AI_AGENT_MODEL,
-    } = await import("../../config");
+    const { AI_MODEL_MINI } = await import("../../config");
+    const { generateVisionText } = await import("../../ai");
 
-    if (!OPEN_AI_BASE_URL || !API_KEY) {
-      return {
-        observation:
-          "⚠️ Vision API not configured. Use manual navigation instead:\n" +
-          "1. Navigate UP to reach the top menu bar\n" +
-          "2. Navigate LEFT to reach the search icon (usually leftmost item)\n" +
-          "3. Press SELECT to activate search",
-        needsScreenshot: false,
-      };
-    }
-
-    const visionModel = AZURE_AI_AGENT_MODEL || "gpt-4o";
+    const visionModel = AI_MODEL_MINI || "gpt-4o";
     console.log(`[Nav Agent] Analyzing screenshot to find search icon using ${visionModel}...`);
-
-    const client = new AzureOpenAI({
-      baseURL: OPEN_AI_BASE_URL,
-      apiKey: API_KEY,
-      apiVersion: OPENAI_RESPONSES_API_VERSION,
-    });
 
     const analysisPrompt = `You are analyzing an image captured by a camera pointed at a smart TV. The image contains the TV screen along with surrounding room elements (walls, furniture, etc.).
 
@@ -231,7 +208,7 @@ OUTPUT FORMAT (JSON only):
   },
   "search_position": {
     "description": "where search icon is located",
-    "row": "top/middle/bottom or specific row name", 
+    "row": "top/middle/bottom or specific row name",
     "estimated_column": number (0-based from left)
   },
   "navigation_required": {
@@ -246,59 +223,21 @@ OUTPUT FORMAT (JSON only):
   "alternative_suggestion": "what to do if search not visible or content is playing"
 }
 
-IMPORTANT: 
+IMPORTANT:
 - If content is playing, set must_go_back_first=true and provide guidance to exit player first
 - Focus ONLY on the TV screen, ignore room elements
 - Be conservative with navigation counts - better to under-navigate and verify
 - If search is not visible, suggest how to get there (e.g., "go home first", "press back to exit player")
 - Only return the JSON object, no additional text`;
 
-    const messages = [
-      {
-        role: "user" as const,
-        content: [
-          { type: "text" as const, text: analysisPrompt },
-          {
-            type: "image_url" as const,
-            image_url: {
-              url: `data:${screenshotContentType};base64,${screenshotBase64}`,
-              detail: "high" as const,
-            },
-          },
-        ],
-      },
-    ];
-
-    let response = await client.responses.create({
+    const content = await generateVisionText({
       model: visionModel,
-      input: JSON.stringify({
-        messages,
-        max_tokens: 500,
-        temperature: 0.1,
-      }),
+      prompt: analysisPrompt,
+      imageBase64: screenshotBase64,
+      imageContentType: screenshotContentType || "image/jpeg",
+      maxTokens: 500,
     });
 
-    // Poll until response is complete
-    let pollCount = 0;
-    while ((response.status === "queued" || response.status === "in_progress") && pollCount < 60) {
-      await delay(100);
-      response = await client.responses.retrieve(response.id);
-      pollCount++;
-    }
-
-    if (response.status === "failed") {
-      console.error(`[Nav Agent] Vision analysis failed: ${response.error || "Unknown error"}`);
-      return {
-        observation:
-          "❌ Vision analysis failed. Use manual navigation:\n" +
-          "1. Press UP multiple times to reach the top menu bar\n" +
-          "2. Press LEFT to move towards the search icon\n" +
-          "3. Press SELECT when search is highlighted",
-        needsScreenshot: false,
-      };
-    }
-
-    const content = response.output_text;
     if (!content) {
       return {
         observation:
