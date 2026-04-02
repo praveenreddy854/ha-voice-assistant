@@ -14,6 +14,7 @@ import {
   LaunchAppArgs,
   DelegateToNavigationArgs,
   WaitArgs,
+  RetrieveSimilarFlowsArgs,
   AnalyzeScreenshotArgs,
   VerifyUIStateArgs,
   TvToolName,
@@ -24,9 +25,9 @@ import { delay } from "../common/utils";
 import { TV_DEFAULT_WAIT_MS, TV_AGENT_DEVICES } from "../../config";
 import {
   runNavigationAgent,
-  getSessionState as getNavSessionState,
 } from "../navigation";
 import { runTypingAgent } from "../typing";
+import { retrieveSimilarTvFlows } from "./flowMemory";
 
 // ============================================================================
 // Plain English Command Processing
@@ -50,6 +51,75 @@ export interface ToolExecutionContext {
 export interface ToolExecutionResult {
   observation: string;
   needsScreenshot: boolean;
+  toolSuccess?: boolean;
+  appUiContext?: {
+    appName?: string;
+    layoutType?: string;
+    selectionPosition?: string;
+    navigationLandmarks?: string[];
+  };
+}
+
+function pickFirstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (typeof item === "string" ? item.trim() : ""))
+      .filter(Boolean);
+  }
+  if (typeof value === "string" && value.trim()) {
+    return [value.trim()];
+  }
+  return [];
+}
+
+function extractAppUiContext(payload: unknown): ToolExecutionResult["appUiContext"] {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+
+  const parsed = payload as Record<string, unknown>;
+
+  const appName = pickFirstString(
+    parsed.app_name,
+    parsed.current_app,
+    parsed.app_detected
+  );
+  const layoutType = pickFirstString(
+    parsed.layout_type,
+    parsed.screen_type,
+    parsed.current_state_type
+  );
+  const selectionPosition = pickFirstString(
+    parsed.selection_position,
+    parsed.selected_item,
+    parsed.current_position && typeof parsed.current_position === "object"
+      ? (parsed.current_position as Record<string, unknown>).description
+      : undefined
+  );
+  const navigationLandmarks = [
+    ...normalizeStringArray(parsed.navigation_landmarks),
+    ...normalizeStringArray(parsed.ui_elements),
+  ];
+
+  if (!appName && !layoutType && !selectionPosition && navigationLandmarks.length === 0) {
+    return undefined;
+  }
+
+  return {
+    appName,
+    layoutType,
+    selectionPosition,
+    navigationLandmarks,
+  };
 }
 
 export async function executeClickPowerButton(
@@ -537,6 +607,43 @@ export async function executeWait(args: WaitArgs): Promise<ToolExecutionResult> 
   };
 }
 
+export async function executeRetrieveSimilarFlows(
+  args: RetrieveSimilarFlowsArgs
+): Promise<ToolExecutionResult> {
+  const limit = typeof args.limit === "number" ? args.limit : undefined;
+  const { flows, usedFallbackPartials } = await retrieveSimilarTvFlows({
+    currentGoal: args.current_goal,
+    currentContext: args.current_context,
+    limit,
+  });
+
+  if (!flows.length) {
+    return {
+      observation:
+        `📚 No relevant TV flow memory found for current goal.\n` +
+        `Goal: ${args.current_goal}\n` +
+        `Reason: ${args.reason}\n` +
+        `Proceed with fresh reasoning and request screenshots for verification.`,
+      needsScreenshot: false,
+      toolSuccess: true,
+    };
+  }
+
+  const payload = {
+    goal: args.current_goal,
+    reason: args.reason,
+    totalReturned: flows.length,
+    usedFallbackPartials,
+    flows,
+  };
+
+  return {
+    observation: `📚 Retrieved similar TV flows:\n${JSON.stringify(payload, null, 2)}`,
+    needsScreenshot: false,
+    toolSuccess: true,
+  };
+}
+
 export async function executeAnalyzeScreenshot(
   args: AnalyzeScreenshotArgs,
   context: ToolExecutionContext
@@ -548,6 +655,7 @@ export async function executeAnalyzeScreenshot(
       observation:
         "⚠️ No screenshot available. Please call request_screenshot first to capture the current TV screen.",
       needsScreenshot: true,
+      toolSuccess: false,
     };
   }
 
@@ -563,6 +671,7 @@ export async function executeAnalyzeScreenshot(
     const analysisPrompt = `You are analyzing an image captured by a camera pointed at a smart TV. The image contains the TV screen along with surrounding room elements (walls, furniture, ambient lighting, etc.).
 
 CRITICAL: Focus ONLY on the content displayed on the TV screen. Completely ignore everything outside the TV boundaries (room, furniture, reflections, decorations, etc.).
+CRITICAL: Do NOT describe or depend on dynamic content titles/names. Use stable UI structure only.
 
 USER QUERY: "${args.query}"
 
@@ -577,20 +686,25 @@ Provide a detailed analysis in JSON format:
   "content_playing": true/false,
   "content_playing_type": "video/movie/show/music/none",
   "must_exit_player_first": true/false,
-  "current_app": "name of the app currently displayed (YouTube, Netflix, Home Screen, etc.)",
+  "app_name": "app shell name if identifiable (YouTube, Netflix, Home, etc.)",
+  "layout_type": "home/search/results/video_player/menu/profile_picker/etc",
+  "row_column_structure": "stable description like '3 content rows with left navigation rail'",
+  "navigation_landmarks": ["stable UI landmarks like profile icon, search icon, home tab, left rail, top tabs"],
+  "selection_position": "stable position text such as 'row 1 column 1' or 'left rail item 1 selected'",
   "screen_type": "type of screen (home, search, video_player, browse, menu, etc.)",
-  "ui_elements": ["list of visible UI elements like search icons, buttons, menus, text fields - ONLY from TV screen"],
-  "selected_item": "description of currently highlighted/selected item if any",
+  "ui_elements": ["stable UI elements only, no dynamic title text"],
+  "selected_item": "describe highlighted element by position/type, not by content title",
   "keyboard_visible": true/false,
   "answer": "direct answer to the query",
-  "suggested_actions": ["list of suggested next actions based on current state"],
+  "suggested_actions": ["list of suggested next actions based on current structure"],
   "navigation_hints": "hints for navigating to desired elements"
 }
 
 IMPORTANT:
 - If content is playing, recommend pressing BACK before attempting navigation
 - Only analyze what's ON the TV screen
-- Ignore any room elements, reflections, or items outside the TV`;
+- Ignore any room elements, reflections, or items outside the TV
+- Never output dynamic content titles as evidence`;
 
     const content = await generateVisionText({
       model: visionModel,
@@ -604,6 +718,7 @@ IMPORTANT:
       return {
         observation: "❌ No response from vision model for screenshot analysis.",
         needsScreenshot: false,
+        toolSuccess: false,
       };
     }
 
@@ -621,6 +736,8 @@ IMPORTANT:
             2
           )}\n\nQuery: ${args.query}\nReason: ${args.reason}`,
           needsScreenshot: false,
+          toolSuccess: true,
+          appUiContext: extractAppUiContext(analysis),
         };
       }
     } catch (parseError) {
@@ -630,6 +747,7 @@ IMPORTANT:
     return {
       observation: `🔍 Screenshot Analysis:\n${content}\n\nQuery: ${args.query}\nReason: ${args.reason}`,
       needsScreenshot: false,
+      toolSuccess: true,
     };
   } catch (error) {
     console.error("[TV Agent] Screenshot analysis error:", error);
@@ -638,6 +756,7 @@ IMPORTANT:
         error instanceof Error ? error.message : "Unknown error"
       }`,
       needsScreenshot: false,
+      toolSuccess: false,
     };
   }
 }
@@ -653,6 +772,7 @@ export async function executeVerifyUIState(
       observation:
         "⚠️ No screenshot available. Please call request_screenshot first to capture the current TV screen.",
       needsScreenshot: true,
+      toolSuccess: false,
     };
   }
 
@@ -668,6 +788,7 @@ export async function executeVerifyUIState(
     const verificationPrompt = `You are analyzing an image captured by a camera pointed at a smart TV. The image contains the TV screen along with surrounding room elements.
 
 CRITICAL: Focus ONLY on the content displayed on the TV screen. Completely ignore everything outside the TV (room, furniture, reflections, etc.).
+CRITICAL: Verify using stable UI structure cues only. Do NOT rely on dynamic content titles.
 
 VERIFY THIS STATE: "${args.expected_state}"
 
@@ -682,13 +803,19 @@ Return a JSON object with:
   "must_exit_player_first": true/false,
   "verified": true/false,
   "confidence": "high/medium/low",
-  "current_state": "description of what is actually visible ON THE TV SCREEN ONLY",
+  "app_name": "app shell name if identifiable",
+  "layout_type": "home/search/results/video_player/menu/profile_picker/etc",
+  "selection_position": "stable selected position description (e.g., row/column/index)",
+  "navigation_landmarks": ["stable landmarks like search icon, profile icon, left rail, top tabs"],
+  "current_state": "stable structure-centric description of what is visible on TV screen",
   "match_details": "explanation of why it matches or doesn't match",
   "keyboard_visible": true/false,
   "recommendations": "if not verified, what needs to happen to reach expected state (include 'press back to exit player' if content is playing)"
 }
 
-IMPORTANT: Base your verification ONLY on what's displayed on the TV screen, not room elements.`;
+IMPORTANT:
+- Base your verification ONLY on what's displayed on the TV screen, not room elements
+- Avoid dynamic content title references in evidence`;
 
     const content = await generateVisionText({
       model: visionModel,
@@ -702,6 +829,7 @@ IMPORTANT: Base your verification ONLY on what's displayed on the TV screen, not
       return {
         observation: "❌ No response from vision model for UI verification.",
         needsScreenshot: false,
+        toolSuccess: false,
       };
     }
 
@@ -720,6 +848,8 @@ IMPORTANT: Base your verification ONLY on what's displayed on the TV screen, not
             2
           )}\n\nReason: ${args.reason}`,
           needsScreenshot: false,
+          toolSuccess: Boolean(verification.verified),
+          appUiContext: extractAppUiContext(verification),
         };
       }
     } catch (parseError) {
@@ -729,6 +859,7 @@ IMPORTANT: Base your verification ONLY on what's displayed on the TV screen, not
     return {
       observation: `🔍 UI State Verification:\n${content}\n\nExpected: ${args.expected_state}\nReason: ${args.reason}`,
       needsScreenshot: false,
+      toolSuccess: true,
     };
   } catch (error) {
     console.error("[TV Agent] UI state verification error:", error);
@@ -737,6 +868,7 @@ IMPORTANT: Base your verification ONLY on what's displayed on the TV screen, not
         error instanceof Error ? error.message : "Unknown error"
       }`,
       needsScreenshot: false,
+      toolSuccess: false,
     };
   }
 }
@@ -778,6 +910,10 @@ export async function executeTool(
       return await executeDelegateToNavigation(
         args as DelegateToNavigationArgs,
         context
+      );
+    case "retrieve_similar_flows":
+      return await executeRetrieveSimilarFlows(
+        args as RetrieveSimilarFlowsArgs
       );
     case "analyze_screenshot":
       return await executeAnalyzeScreenshot(

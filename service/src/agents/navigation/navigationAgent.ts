@@ -1,9 +1,11 @@
 /**
  * TV Navigation Agent Core Logic
- * Specialized agent for TV navigation operations using Custom Agent Loop
+ * Specialized agent for TV navigation operations using ToolLoopAgent
+ *
+ * All tools have execute functions, so the ToolLoopAgent auto-loops
+ * until complete_task is called or max iterations are reached.
  */
 
-import { randomUUID } from "crypto";
 import {
   HOME_ASSISTANT_TOKEN,
   HOME_ASSISTANT_URL,
@@ -40,33 +42,10 @@ import {
   executeWait,
 } from "./toolExecutors";
 import {
-  CustomAgentLoop,
+  AgentLoop,
   createAgentLoop,
-  AgentToolCall,
-  ToolExecutionResult as AgentToolResult,
-} from "../tv/agentLoop";
-
-// ============================================================================
-// Session Management
-// ============================================================================
-
-const sessionStore = new Map<string, NavAgentSessionState>();
-let navAgentLoop: CustomAgentLoop | null = null;
-
-// ============================================================================
-// Agent Loop Management
-// ============================================================================
-
-function getOrCreateNavAgentLoop(): CustomAgentLoop {
-  if (!navAgentLoop) {
-    navAgentLoop = createAgentLoop({
-      systemPrompt: NAV_AGENT_INSTRUCTIONS,
-      tools: NAV_TOOLS,
-      maxIterations: NAV_AGENT_MAX_ITERATIONS_CAP,
-    });
-  }
-  return navAgentLoop;
-}
+  ToolDefinition,
+} from "../core/agentLoop";
 
 // ============================================================================
 // Tool Execution
@@ -103,83 +82,57 @@ async function executeTool(
 }
 
 // ============================================================================
+// Tool Builder
+// ============================================================================
+
+function buildNavTools(
+  context: ToolExecutionContext,
+  steps: NavAgentStep[]
+): ToolDefinition[] {
+  return NAV_TOOLS.map((t): ToolDefinition => ({
+    type: "function" as const,
+    function: {
+      name: t.function.name,
+      description: t.function.description,
+      parameters: t.function.parameters as Record<string, unknown>,
+    },
+    execute: async (args: Record<string, unknown>) => {
+      const toolName = t.function.name as NavToolName;
+      const result = await executeTool(
+        toolName,
+        args as unknown as NavToolArguments,
+        context
+      );
+
+      steps.push({
+        iteration: steps.length + 1,
+        toolName,
+        toolArgs: args,
+        observation: result.observation,
+        timestamp: new Date(),
+      });
+
+      return { observation: result.observation };
+    },
+  }));
+}
+
+// ============================================================================
 // Main Agent Flow
 // ============================================================================
 
 export async function runNavigationAgent(
   options: RunNavAgenticFlowOptions
 ): Promise<NavAgenticFlowResult> {
-  const sessionId = randomUUID();
   const maxIterations = options.maxIterations || NAV_AGENT_MAX_ITERATIONS_CAP;
 
   console.log(`[Nav Agent] Starting navigation flow:`, {
-    sessionId,
     userMessage: options.userMessage,
     maxIterations,
     hasScreenshot: !!options.screenshotBase64,
   });
 
-  const loop = getOrCreateNavAgentLoop();
-
-  // Build initial message with device configuration context
-  let initialMessage = `## Navigation Task\n${options.userMessage}\n\n`;
-  initialMessage += `## Device Configuration\n`;
-  initialMessage += `- Remote Entity ID: ${options.deviceConfig.remoteEntityId}\n`;
-  initialMessage += `- Media Player Entity ID: ${options.deviceConfig.mediaPlayerEntityId}\n\n`;
-
-  // Add screenshot instruction
-  if (options.screenshotBase64) {
-    initialMessage += `## Current Screen State\n`;
-    initialMessage += `📸 A screenshot of the current TV screen is attached. Analyze it to understand the current UI state and determine your navigation strategy.\n`;
-    initialMessage += `Look for:\n`;
-    initialMessage += `- Currently highlighted/selected item (usually has a border or different color)\n`;
-    initialMessage += `- Target element location relative to current position\n`;
-    initialMessage += `- Navigation path needed (up/down/left/right presses)\n\n`;
-  } else {
-    initialMessage += `⚠️ No screenshot available. Request a screenshot first to see the current TV state.\n\n`;
-  }
-
-  initialMessage += `## Instructions\n`;
-  initialMessage += `Complete the navigation task efficiently. After each navigation action, analyze the result and adjust as needed.`;
-
-  // Create session in the custom agent loop
-  const loopSession = loop.createSession(initialMessage);
-
-  // If we have an initial screenshot, inject it as context
-  if (options.screenshotBase64 && options.screenshotContentType) {
-    // Add the screenshot as a follow-up user message with image
-    const screenshotMessage = {
-      role: "user" as const,
-      content: [
-        { type: "text" as const, text: "Here is the current TV screen:" },
-        {
-          type: "image_url" as const,
-          image_url: {
-            url: `data:${options.screenshotContentType};base64,${options.screenshotBase64}`,
-            detail: "high" as const,
-          },
-        },
-      ],
-    };
-    
-    // Manually add to session messages (accessing internal structure)
-    const sessionMessages = loop.getMessages(loopSession.id);
-    if (sessionMessages.length > 0) {
-      loop.addMessage(loopSession.id, "user", JSON.stringify(screenshotMessage.content));
-    }
-  }
-
-  // Session state - track current screenshot for tool execution
-  const sessionState: NavAgentSessionState = {
-    threadId: loopSession.id,
-    steps: [],
-    isComplete: false,
-    lastScreenshotBase64: options.screenshotBase64,
-    lastScreenshotContentType: options.screenshotContentType,
-  };
-  sessionStore.set(sessionId, sessionState);
-
-  // Create tool execution context with screenshot data
+  // Mutable context — execute closures read from this
   const toolContext: ToolExecutionContext = {
     homeAssistantUrl: HOME_ASSISTANT_URL || "",
     homeAssistantToken: HOME_ASSISTANT_TOKEN || "",
@@ -188,217 +141,94 @@ export async function runNavigationAgent(
     activeAgent: "navigation",
   };
 
+  const steps: NavAgentStep[] = [];
+  const tools = buildNavTools(toolContext, steps);
+
+  // Create a fresh agent loop for this invocation
+  const loop = createAgentLoop({
+    systemPrompt: NAV_AGENT_INSTRUCTIONS,
+    tools,
+    maxIterations,
+  });
+
+  // Build initial message
+  let initialMessage = `## Navigation Task\n${options.userMessage}\n\n`;
+  initialMessage += `## Device Configuration\n`;
+  initialMessage += `- Remote Entity ID: ${options.deviceConfig.remoteEntityId}\n`;
+  initialMessage += `- Media Player Entity ID: ${options.deviceConfig.mediaPlayerEntityId}\n\n`;
+
+  if (options.screenshotBase64) {
+    initialMessage += `## Current Screen State\n`;
+    initialMessage += `A screenshot of the current TV screen is available for analysis via the find_search tool.\n`;
+    initialMessage += `Look for:\n`;
+    initialMessage += `- Currently highlighted/selected item (usually has a border or different color)\n`;
+    initialMessage += `- Target element location relative to current position\n`;
+    initialMessage += `- Navigation path needed (up/down/left/right presses)\n\n`;
+  } else {
+    initialMessage += `No screenshot available. Request a screenshot first to see the current TV state.\n\n`;
+  }
+
+  initialMessage += `## Instructions\n`;
+  initialMessage += `Complete the navigation task efficiently. After each navigation action, analyze the result and adjust as needed.`;
+
+  const loopSession = loop.createSession(initialMessage);
+
   try {
-    let iteration = 0;
+    const result = await loop.run(loopSession.id);
 
-    while (iteration < maxIterations) {
-      iteration++;
-      console.log(`[Nav Agent] Iteration ${iteration}/${maxIterations}`);
+    const sessionState: NavAgentSessionState = {
+      threadId: loopSession.id,
+      steps,
+      isComplete: true,
+      lastScreenshotBase64: toolContext.screenshotBase64,
+      lastScreenshotContentType: toolContext.screenshotContentType,
+    };
 
-      // Run a step in the agent loop
-      const stepResult = await loop.runStep(loopSession.id);
-      console.log(`[Nav Agent] Step result type: ${stepResult.type}`);
+    if (result.type === "complete") {
+      console.log(`[Nav Agent] Completed: ${result.message}`);
+      sessionState.completionReason = "success";
+      sessionState.finalMessage = result.message || "Navigation task completed.";
 
-      if (stepResult.type === "error") {
-        console.error(`[Nav Agent] Agent loop error: ${stepResult.error}`);
-        sessionState.isComplete = true;
-        sessionState.completionReason = "error";
-        sessionState.finalMessage = stepResult.error || "Unknown error";
-
-        return {
-          success: false,
-          message: sessionState.finalMessage,
-          steps: sessionState.steps,
-          sessionState,
-          error: stepResult.error,
-        };
-      }
-
-      if (stepResult.type === "complete") {
-        console.log(`[Nav Agent] Agent loop completed: ${stepResult.message}`);
-        sessionState.isComplete = true;
-        sessionState.completionReason = "success";
-        sessionState.finalMessage = stepResult.message || "Navigation task completed.";
-
-        return {
-          success: true,
-          message: sessionState.finalMessage,
-          steps: sessionState.steps,
-          sessionState,
-        };
-      }
-
-      if (stepResult.type === "tool_calls" && stepResult.toolCalls) {
-        console.log(`[Nav Agent] Processing ${stepResult.toolCalls.length} tool calls`);
-
-        const toolResults: AgentToolResult[] = [];
-
-        for (const toolCall of stepResult.toolCalls) {
-          const toolName = toolCall.function.name as NavToolName;
-          let args: NavToolArguments;
-
-          try {
-            args = JSON.parse(toolCall.function.arguments) as NavToolArguments;
-          } catch (parseError) {
-            console.error(`[Nav Agent] Failed to parse tool arguments:`, parseError);
-            toolResults.push({
-              toolCallId: toolCall.id,
-              result: JSON.stringify({
-                success: false,
-                error: "Failed to parse tool arguments",
-              }),
-            });
-            continue;
-          }
-
-          console.log(`[Nav Agent] Tool call:`, { toolName, args });
-
-          // Update tool context with latest screenshot
-          toolContext.screenshotBase64 = sessionState.lastScreenshotBase64;
-          toolContext.screenshotContentType = sessionState.lastScreenshotContentType;
-
-          // Execute the tool
-          const result = await executeTool(toolName, args, toolContext);
-
-          // Track step
-          const step: NavAgentStep = {
-            iteration,
-            toolName,
-            toolArgs: args as unknown as Record<string, unknown>,
-            observation: result.observation,
-            timestamp: new Date(),
-            runId: loopSession.id,
-            threadId: loopSession.id,
-          };
-          sessionState.steps.push(step);
-
-          // Build tool result - include screenshot if tool needs it and we have one
-          const toolResult: AgentToolResult = {
-            toolCallId: toolCall.id,
-            result: result.observation,
-          };
-
-          // If tool needs screenshot feedback and we have a screenshot, include it
-          if (result.needsScreenshot && sessionState.lastScreenshotBase64 && sessionState.lastScreenshotContentType) {
-            toolResult.imageBase64 = sessionState.lastScreenshotBase64;
-            toolResult.imageContentType = sessionState.lastScreenshotContentType;
-            console.log(`[Nav Agent] Including screenshot in tool result for ${toolName}`);
-          }
-
-          toolResults.push(toolResult);
-        }
-
-        // Submit tool results and continue
-        const nextResult = await loop.submitToolResults(loopSession.id, toolResults);
-
-        // Handle the result from submitting tool outputs
-        if (nextResult.type === "error") {
-          console.error(`[Nav Agent] Error after tool submission: ${nextResult.error}`);
-          sessionState.isComplete = true;
-          sessionState.completionReason = "error";
-          sessionState.finalMessage = nextResult.error || "Unknown error";
-
-          return {
-            success: false,
-            message: sessionState.finalMessage,
-            steps: sessionState.steps,
-            sessionState,
-            error: nextResult.error,
-          };
-        }
-
-        if (nextResult.type === "complete") {
-          console.log(`[Nav Agent] Completed after tool submission: ${nextResult.message}`);
-          sessionState.isComplete = true;
-          sessionState.completionReason = "success";
-          sessionState.finalMessage = nextResult.message || "Navigation task completed.";
-
-          return {
-            success: true,
-            message: sessionState.finalMessage,
-            steps: sessionState.steps,
-            sessionState,
-          };
-        }
-
-        // If more tool calls, continue the loop
-        if (nextResult.type === "tool_calls" && nextResult.toolCalls) {
-          // Process in next iteration
-          continue;
-        }
-      }
-
-      // Regular message - continue processing
-      if (stepResult.type === "message") {
-        console.log(`[Nav Agent] Received message: ${stepResult.message}`);
-        // Continue processing
-        continue;
-      }
+      return {
+        success: true,
+        message: sessionState.finalMessage,
+        steps,
+        sessionState,
+      };
     }
 
-    // Max iterations reached
-    console.log(`[Nav Agent] Max iterations (${maxIterations}) reached`);
-    sessionState.isComplete = true;
-    sessionState.completionReason = "max_iterations";
-    sessionState.finalMessage = `Navigation incomplete: Maximum iterations (${maxIterations}) reached. Last state: ${sessionState.steps[sessionState.steps.length - 1]?.observation || "unknown"}`;
+    // error or unexpected tool_calls (shouldn't happen since all tools have execute)
+    const errorMsg = result.error || result.message || "Navigation error";
+    console.error(`[Nav Agent] Error: ${errorMsg}`);
+    sessionState.completionReason = "error";
+    sessionState.finalMessage = errorMsg;
 
     return {
       success: false,
-      message: sessionState.finalMessage,
-      steps: sessionState.steps,
+      message: errorMsg,
+      steps,
       sessionState,
-      error: "Max iterations reached",
+      error: errorMsg,
     };
   } catch (error) {
     console.error("[Nav Agent] Error:", error);
 
-    sessionState.isComplete = true;
-    sessionState.completionReason = "error";
-    sessionState.finalMessage =
-      error instanceof Error ? error.message : "Unknown error";
+    const errorMsg = error instanceof Error ? error.message : "Unknown error";
 
     return {
       success: false,
-      message: sessionState.finalMessage,
-      steps: sessionState.steps,
-      sessionState,
-      error: sessionState.finalMessage,
+      message: errorMsg,
+      steps,
+      sessionState: {
+        threadId: loopSession.id,
+        steps,
+        isComplete: true,
+        completionReason: "error",
+        finalMessage: errorMsg,
+      },
+      error: errorMsg,
     };
   } finally {
-    // Clean up
     loop.deleteSession(loopSession.id);
-    sessionStore.delete(sessionId);
   }
-}
-
-// ============================================================================
-// Utility Functions
-// ============================================================================
-
-export function getSessionState(
-  sessionId: string
-): NavAgentSessionState | undefined {
-  return sessionStore.get(sessionId);
-}
-
-export function clearSession(sessionId: string): void {
-  sessionStore.delete(sessionId);
-}
-
-/**
- * Update the current screenshot for an active navigation session
- * This allows the parent agent to inject new screenshots during delegation
- */
-export function updateSessionScreenshot(
-  sessionId: string,
-  screenshotBase64: string,
-  screenshotContentType: string
-): boolean {
-  const session = sessionStore.get(sessionId);
-  if (!session) {
-    return false;
-  }
-  session.lastScreenshotBase64 = screenshotBase64;
-  session.lastScreenshotContentType = screenshotContentType;
-  return true;
 }

@@ -33,6 +33,8 @@ export const AI_MODEL_MINI = process.env.AI_MODEL_MINI ?? process.env.AI_MODEL_N
 
 /** Advanced: agent loops (TV agent, navigation, typing) */
 export const AI_MODEL_ADVANCED = process.env.AI_MODEL_ADVANCED ?? process.env.AI_MODEL_MINI;
+export const EMBEDDING_MODEL =
+  process.env.EMBEDDING_MODEL ?? "text-embedding-ada-002";
 
 // ============================================================================
 // Azure Speech Service
@@ -68,5 +70,16 @@ export const AZURE_COSMOS_ENDPOINT = process.env.AZURE_COSMOS_ENDPOINT;
 export const AZURE_COSMOS_KEY = process.env.AZURE_COSMOS_KEY;
 export const AZURE_COSMOS_DATABASE = process.env.AZURE_COSMOS_DATABASE;
 export const AZURE_COSMOS_CONTAINER = process.env.AZURE_COSMOS_CONTAINER;
+export const AZURE_COSMOS_TV_FLOW_CONTAINER =
+  process.env.AZURE_COSMOS_TV_FLOW_CONTAINER;
 export const DEVICE_STATE_LOG_CRON =
   process.env.DEVICE_STATE_LOG_CRON || "0 * * * *";
+
+// TV Flow Memory (RAG)
+export const TV_FLOW_MEMORY_MIN_SIMILARITY = Number.parseFloat(
+  process.env.TV_FLOW_MEMORY_MIN_SIMILARITY || "0.65"
+);
+export const TV_FLOW_MEMORY_TOP_K = Number.parseInt(
+  process.env.TV_FLOW_MEMORY_TOP_K || "5",
+  10
+);

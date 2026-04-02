@@ -3,7 +3,7 @@
  * Specialized agent for TV navigation operations
  */
 
-import { ToolDefinition } from "../tv/agentLoop";
+import { ToolDefinition } from "../core/agentLoop";
 
 export const NAV_AGENT_NAME = "tv-navigation-agent";
 

@@ -3,7 +3,7 @@
  * Centralized configuration values for the TV automation agent
  */
 
-import { ToolDefinition } from "./agentLoop";
+import { ToolDefinition } from "../core/agentLoop";
 import fs from "fs";
 import path from "path";
 
@@ -324,6 +324,42 @@ export const TV_TOOLS: ToolDefinition[] = [
   {
     type: "function",
     function: {
+      name: "retrieve_similar_flows",
+      description:
+        "Retrieve up to 5 relevant successful TV-agent flows from memory to guide the current task. Use this when you are uncertain, repeating failed actions, or need proven UI navigation patterns. The tool prioritizes successful flows and backfills with partial flows when needed.",
+      parameters: {
+        type: "object",
+        properties: {
+          current_goal: {
+            type: "string",
+            description:
+              "Current user goal in plain language (e.g., 'open YouTube search and type latest songs').",
+          },
+          current_context: {
+            type: "string",
+            description:
+              "Optional current UI/context details (e.g., app shell, row/column position, highlighted item, menu rail visibility). Avoid dynamic content titles.",
+          },
+          limit: {
+            type: "integer",
+            minimum: 1,
+            maximum: 5,
+            description:
+              "Maximum number of flows to fetch (defaults to 5).",
+          },
+          reason: {
+            type: "string",
+            description:
+              "Why memory retrieval is needed right now.",
+          },
+        },
+        required: ["current_goal", "reason"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "wait",
       description:
         "Wait for a specified duration (in milliseconds) to allow UI transitions, loading screens, or animations to complete. Use this before requesting a screenshot if you expect the UI to change.",
@@ -352,7 +388,7 @@ export const TV_TOOLS: ToolDefinition[] = [
     function: {
       name: "analyze_screenshot",
       description:
-        "Perform detailed AI-powered analysis of the current TV screenshot to identify UI elements, current app, screen context, and navigation options. Use this when you need to understand what's on screen before deciding your next action. Returns structured information about visible UI elements, suggested next actions, and navigation opportunities.",
+        "Perform AI-powered UI-structure analysis of the current TV screenshot. Focus on app shell/layout, row/column structure, left/top navigation rails, and highlighted selection position. Do NOT rely on dynamic content titles. Use this before navigation decisions.",
       parameters: {
         type: "object",
         properties: {
@@ -376,7 +412,7 @@ export const TV_TOOLS: ToolDefinition[] = [
     function: {
       name: "verify_ui_state",
       description:
-        "Verify specific UI state or element visibility on the current TV screen. Use this to confirm that expected UI elements are present before proceeding (e.g., verify search field is focused, confirm app is loaded, check if video is playing). Returns true/false with detailed verification results.",
+        "Verify specific UI state or element visibility on the current TV screen using stable UI structure cues (layout, selection position, navigation landmarks), not dynamic content titles. Returns verified state with normalized UI-context fields.",
       parameters: {
         type: "object",
         properties: {

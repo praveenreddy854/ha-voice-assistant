@@ -7,4 +7,5 @@ export * from "./types";
 export * from "./constants";
 export * from "./utils";
 export * from "./imageProcessor";
-export { runTvAgenticFlow } from "./tvAgent";
+export { runTvAgenticFlow, addMessageToSession, getSessionMessages } from "./tvAgent";
+export { tvAgentDefinition } from "./definition";

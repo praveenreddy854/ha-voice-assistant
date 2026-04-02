@@ -25,6 +25,7 @@ import { classifyIntent } from "./intent";
 import { processReminderRequest } from "./reminder";
 import { startDeviceStateLogging } from "./deviceStateLogger";
 import { runTvAgenticFlow } from "./tvAgent";
+import { runAgent, getRegisteredAgentTypes } from "./agents/core";
 // Teaching mode imports - for recording manual steps and fine-tuning data
 import {
   startTeachingSession,
@@ -166,6 +167,67 @@ app.post("/api/runTvAgenticFlow", (req, res, next) => {
       });
     }
   })();
+});
+
+// ============================================================================
+// Generic Agent API
+// ============================================================================
+
+/**
+ * Run any registered agent. Works for both new sessions and continuations.
+ *
+ * POST /api/agent/run
+ * Body: {
+ *   agentType: string,         // required — which agent to run
+ *   userPrompt?: string,      // required for new sessions
+ *   sessionId?: string,       // to continue an existing session
+ *   maxSteps?: number,
+ *   messageHistory?: Array<{ role: string; content: string }>,
+ *   externalInput?: { type: string; data: Record<string, unknown>; error?: string }
+ * }
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.post("/api/agent/run", (req, res, next) => {
+  (async () => {
+    try {
+      const { agentType, userPrompt, sessionId, maxSteps, messageHistory, externalInput } = req.body;
+
+      if (!agentType) {
+        return res.status(400).json({ error: "agentType is required" });
+      }
+
+      if (!sessionId && !userPrompt) {
+        return res.status(400).json({ error: "userPrompt is required to start a new session" });
+      }
+
+      const result = await runAgent({
+        agentType,
+        userPrompt,
+        sessionId,
+        maxSteps,
+        messageHistory,
+        externalInput,
+      });
+
+      res.json(result);
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error running agent:", err);
+      res.status(500).json({
+        error: "Error running agent",
+        message: err.message,
+      });
+    }
+  })();
+});
+
+/**
+ * List all registered agents.
+ *
+ * GET /api/agent/list
+ */
+app.get("/api/agent/list", (_req, res) => {
+  res.json({ agents: getRegisteredAgentTypes() });
 });
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars

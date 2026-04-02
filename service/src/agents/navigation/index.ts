@@ -11,12 +11,7 @@
  * - wait: Pause for UI animations
  */
 
-export {
-  runNavigationAgent,
-  getSessionState,
-  clearSession,
-  updateSessionScreenshot,
-} from "./navigationAgent";
+export { runNavigationAgent } from "./navigationAgent";
 
 export {
   NAV_AGENT_NAME,

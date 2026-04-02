@@ -5,10 +5,9 @@
 
 import { embed } from "ai";
 import { azureProvider } from "../../../ai";
+import { EMBEDDING_MODEL } from "../../../config";
 import { loadIndex } from "./storage";
 import { SimilarRecording } from "./types";
-
-const EMBEDDING_MODEL = "text-embedding-ada-002";
 
 /**
  * Generate an embedding for a text string

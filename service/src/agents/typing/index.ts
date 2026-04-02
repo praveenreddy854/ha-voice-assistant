@@ -11,7 +11,7 @@
  * - analyze_keyboard: AI-powered keyboard layout analysis
  */
 
-export { runTypingAgent, getSessionState, clearSession } from "./typingAgent";
+export { runTypingAgent } from "./typingAgent";
 
 export {
   TYPING_AGENT_NAME,

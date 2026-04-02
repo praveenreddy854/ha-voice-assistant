@@ -33,19 +33,37 @@ Exports clean, composable functions:
 
 ### Agent System
 
-Hierarchical multi-agent architecture for TV automation:
+Generic agent infrastructure with pluggable agent definitions:
 
 ```
-TV Agent (advanced model)
-├── Navigation Agent (advanced model) — directional pad, home, back, search
-└── Typing Agent (advanced model) — on-screen keyboard text input
+Core Infrastructure (src/agents/core/)
+├── agentLoop.ts      — session-based LLM tool-calling loop (AI SDK)
+├── orchestrator.ts   — generic run engine: sessions, tool dispatch, external-input pause/resume
+├── registry.ts       — register/lookup agent definitions by ID
+└── types.ts          — AgentDefinition, AgentSession, AgentStep, AgentRunResult, etc.
+
+TV Agent (src/agents/tv/)          — implements AgentDefinition
+├── definition.ts                  — buildInitialMessage, executeTool, processExternalInput, onComplete
+├── tvAgent.ts                     — backward-compat public API (wraps orchestrator)
+├── toolExecutors.ts               — 13 TV-specific tool executors
+├── constants.ts                   — system prompt, tool schemas
+├── Navigation Agent (sub-agent)   — directional pad, home, back, search
+└── Typing Agent (sub-agent)       — on-screen keyboard text input
 ```
 
-The agent loop (`src/agents/tv/agentLoop.ts`) is session-based with external tool execution. Tools are defined without `execute` functions — the caller handles execution and returns results. A built-in `complete_task` tool signals loop completion.
+**Adding a new agent:** Implement `AgentDefinition` (system prompt, tools, executeTool, buildInitialMessage) and call `registerAgent(def)`. The orchestrator handles session lifecycle, tool dispatch, and external-input pause/resume automatically.
+
+**API endpoints:**
+- `POST /api/agent/run` — generic endpoint for any registered agent
+- `POST /api/runTvAgenticFlow` — backward-compat TV-specific endpoint
+- `GET /api/agent/list` — list registered agent IDs
+
+The agent loop (`src/agents/core/agentLoop.ts`) is session-based with external tool execution. Tools are defined without `execute` functions — the caller handles execution and returns results. A built-in `complete_task` tool signals loop completion.
 
 ### Key Directories
 
-- `src/agents/tv/` — TV agent: loop, tools, constants, image processing, teaching mode
+- `src/agents/core/` — Generic agent infrastructure: loop, orchestrator, registry, types
+- `src/agents/tv/` — TV agent: definition, tools, constants, image processing, teaching mode
 - `src/agents/navigation/` — Navigation sub-agent
 - `src/agents/typing/` — Typing sub-agent
 - `src/agents/common/` — Shared utilities

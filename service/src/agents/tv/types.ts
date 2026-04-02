@@ -66,6 +66,13 @@ export interface WaitArgs {
   reason: string;
 }
 
+export interface RetrieveSimilarFlowsArgs {
+  current_goal: string;
+  current_context?: string;
+  limit?: number;
+  reason: string;
+}
+
 export interface FindSearchIconArgs {
   remote_entity_id: string;
   reason: string;
@@ -98,6 +105,7 @@ export type TvToolName =
   | "get_device_state"
   | "launch_app"
   | "delegate_to_navigation"
+  | "retrieve_similar_flows"
   | "analyze_screenshot"
   | "verify_ui_state"
   | "wait";
@@ -112,6 +120,7 @@ export type TvToolArguments =
   | GetDeviceStateArgs
   | LaunchAppArgs
   | DelegateToNavigationArgs
+  | RetrieveSimilarFlowsArgs
   | AnalyzeScreenshotArgs
   | VerifyUIStateArgs
   | WaitArgs;
@@ -150,6 +159,15 @@ export interface TvAgentStep {
   screenshotBase64?: string;
   screenshotContentType?: string;
   screenshotError?: string;
+  toolSuccess?: boolean;
+  awaitedScreenshot?: boolean;
+  screenshotOutcome?: "none" | "pending" | "captured" | "error";
+  appUiContext?: {
+    appName?: string;
+    layoutType?: string;
+    selectionPosition?: string;
+    navigationLandmarks?: string[];
+  };
   retryCount?: number; // Track how many times this action has been retried
   maxRetries?: number; // Maximum retries allowed (default 3)
 }
