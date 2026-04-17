@@ -26,7 +26,7 @@ export interface FindSearchArgs {
   reason: string;
 }
 
-export interface RequestScreenshotArgs {
+export interface GetLatestScreenshotArgs {
   media_player_entity_id: string;
   reason: string;
 }
@@ -48,7 +48,7 @@ export type NavToolName =
   | "navigate"
   | "find_search"
   | "click_select_button"
-  | "request_screenshot"
+  | "get_latest_screenshot"
   | "wait";
 
 // Union type of all navigation tool arguments
@@ -58,7 +58,7 @@ export type NavToolArguments =
   | NavigateArgs
   | FindSearchArgs
   | ClickSelectButtonArgs
-  | RequestScreenshotArgs
+  | GetLatestScreenshotArgs
   | WaitArgs;
 
 // Tool execution result

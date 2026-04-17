@@ -9,7 +9,7 @@ import {
   NavigateArgs,
   FindSearchArgs,
   ClickSelectButtonArgs,
-  RequestScreenshotArgs,
+  GetLatestScreenshotArgs,
   WaitArgs,
   ToolExecutionContext,
   ToolExecutionResult,
@@ -368,7 +368,7 @@ IMPORTANT:
 }
 
 export async function executeRequestScreenshot(
-  args: RequestScreenshotArgs,
+  args: GetLatestScreenshotArgs,
   context: ToolExecutionContext
 ): Promise<ToolExecutionResult> {
   // Navigation agent signals it needs a screenshot

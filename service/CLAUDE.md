@@ -69,6 +69,15 @@ The agent loop (`src/agents/core/agentLoop.ts`) is session-based with external t
 - `src/agents/common/` — Shared utilities
 - `src/prompts/` — System prompt templates (INTENT.md, HOMEASSISTANT.md, REMINDER.md)
 
+### Telemetry Logs
+
+Agent telemetry is written to daily JSONL files in `service/logs/`:
+- Filename format: `service-telemetry-YYYY-MM-DD.jsonl` (e.g., `service-telemetry-2026-04-14.jsonl`)
+- Each line is a JSON object with `timestamp`, `traceId`, `spanId`, `name`, `attributes`, etc.
+- Key span types: `agent.step.llm` (LLM steps with tool calls), `agent.tool.execute` (tool executions), `telemetry.event` (lifecycle events)
+- Tool calls are in `attributes["agent.step.tool_calls"]` as a JSON string array
+- To inspect recent agent behavior, read the latest daily log file in `service/logs/`
+
 ## Required Environment Variables
 
 ```

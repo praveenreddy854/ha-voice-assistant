@@ -113,37 +113,6 @@ export async function saveScreenshotToServerFile(
 }
 
 /**
- * Save processed/cropped screenshot with additional metadata
- */
-export async function saveCroppedScreenshotToServerFile(
-  options: SaveScreenshotOptions & {
-    originalSize?: number;
-    croppedSize?: number;
-    cropInfo?: string;
-  }
-): Promise<ScreenshotSaveResult> {
-  const result = await saveScreenshotToServerFile({
-    base64Data: options.base64Data,
-    sessionId: options.sessionId,
-    toolName: `${options.toolName}_cropped`,
-    stepIndex: options.stepIndex,
-  });
-
-  if (result.success && options.originalSize && options.croppedSize) {
-    console.info(`[Screenshot Saver Server] Crop statistics:`, {
-      originalSize: options.originalSize,
-      croppedSize: options.croppedSize,
-      compressionRatio: Math.round(
-        (options.croppedSize / options.originalSize) * 100
-      ),
-      cropInfo: options.cropInfo,
-    });
-  }
-
-  return result;
-}
-
-/**
  * Reset screenshot counters (useful for new sessions)
  */
 export function resetServerScreenshotCounters(): void {

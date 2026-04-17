@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { Message } from "./types/chat";
+import AgentSessionLog, { SessionLogEntry } from "./components/AgentSessionLog";
 
 interface ChatProps {
   messages: Message[];
@@ -8,6 +9,7 @@ interface ChatProps {
 
 const Chat: React.FC<ChatProps> = ({ messages, onSendMessage }) => {
   const [inputText, setInputText] = useState("");
+  const [activeLog, setActiveLog] = useState<SessionLogEntry[] | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -139,10 +141,37 @@ const Chat: React.FC<ChatProps> = ({ messages, onSendMessage }) => {
                           fontWeight: 600,
                           fontSize: '13px',
                           marginBottom: '6px',
-                          color: message.sender === "user" ? '#ecfdf5' : '#0f766e'
+                          color: message.sender === "user" ? '#ecfdf5' : '#0f766e',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
                         }}
                       >
-                        Agentic flow steps
+                        <span>Agentic flow steps</span>
+                        {message.sessionLog && message.sessionLog.length > 0 && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveLog(message.sessionLog!);
+                            }}
+                            style={{
+                              background: message.sender === "user"
+                                ? 'rgba(255,255,255,0.2)'
+                                : 'rgba(15,118,110,0.12)',
+                              border: message.sender === "user"
+                                ? '1px solid rgba(255,255,255,0.4)'
+                                : '1px solid rgba(15,118,110,0.25)',
+                              borderRadius: 6,
+                              padding: '2px 8px',
+                              fontSize: 11,
+                              fontWeight: 600,
+                              color: message.sender === "user" ? '#fff' : '#0f766e',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            View Log
+                          </button>
+                        )}
                       </div>
                       <ol
                         style={{
@@ -158,6 +187,16 @@ const Chat: React.FC<ChatProps> = ({ messages, onSendMessage }) => {
                           <li key={step.index} style={{ lineHeight: 1.4 }}>
                             <div style={{ fontWeight: 600 }}>
                               Step {step.index}: {step.actionSummary}
+                              {step.toolName && (
+                                <span style={{
+                                  marginLeft: 6,
+                                  fontSize: 11,
+                                  fontWeight: 500,
+                                  opacity: 0.7,
+                                }}>
+                                  [{step.toolName}]
+                                </span>
+                              )}
                             </div>
                             <div style={{ color: message.sender === "user" ? '#f0fdf4' : '#0f172a' }}>
                               Reason: {step.reasoning}
@@ -287,6 +326,14 @@ const Chat: React.FC<ChatProps> = ({ messages, onSendMessage }) => {
           </button>
         </form>
       </div>
+
+      {/* Debug Session Log Modal */}
+      {activeLog && (
+        <AgentSessionLog
+          sessionLog={activeLog}
+          onClose={() => setActiveLog(null)}
+        />
+      )}
     </div>
   );
 };

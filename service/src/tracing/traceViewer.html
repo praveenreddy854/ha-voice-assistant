@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Telemetry Viewer</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface2: #21262d;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --text-dim: #8b949e;
+      --accent: #58a6ff;
+      --green: #3fb950;
+      --red: #f85149;
+      --orange: #d29922;
+      --purple: #bc8cff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .header h1 { font-size: 18px; font-weight: 600; }
+    .header .refresh-btn {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 4px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .header .refresh-btn:hover { border-color: var(--accent); }
+    .header .auto-refresh {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: var(--text-dim);
+    }
+    .container { display: flex; height: calc(100vh - 49px); }
+    .sidebar {
+      width: 380px;
+      min-width: 380px;
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+      background: var(--surface);
+    }
+    .sidebar-header {
+      padding: 12px 16px;
+      font-size: 13px;
+      color: var(--text-dim);
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .trace-item {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .trace-item:hover { background: var(--surface2); }
+    .trace-item.active { background: var(--surface2); border-left: 3px solid var(--accent); }
+    .trace-item .prompt {
+      font-size: 14px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 4px;
+    }
+    .trace-item .meta {
+      display: flex;
+      gap: 12px;
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+    .status-badge {
+      display: inline-block;
+      padding: 1px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .status-completed { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+    .status-error { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+    .status-running { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
+    .status-awaiting_external_input { background: rgba(210, 153, 34, 0.15); color: var(--orange); }
+
+    .main { flex: 1; overflow-y: auto; padding: 24px; }
+    .empty-state {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--text-dim);
+      font-size: 16px;
+    }
+
+    .trace-detail h2 { font-size: 20px; margin-bottom: 8px; }
+    .trace-detail .info-row {
+      display: flex;
+      gap: 24px;
+      margin-bottom: 16px;
+      font-size: 13px;
+      color: var(--text-dim);
+    }
+    .trace-detail .info-row span { display: flex; align-items: center; gap: 4px; }
+    .trace-detail .final-message {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 24px;
+      font-size: 14px;
+    }
+
+    .timeline { position: relative; margin-left: 16px; }
+    .timeline::before {
+      content: '';
+      position: absolute;
+      left: 8px;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: var(--border);
+    }
+    .timeline-item {
+      position: relative;
+      padding-left: 32px;
+      margin-bottom: 12px;
+    }
+    .timeline-item::before {
+      content: '';
+      position: absolute;
+      left: 4px;
+      top: 8px;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      border: 2px solid var(--border);
+      background: var(--bg);
+    }
+    .timeline-item.type-agent-session-created::before,
+    .timeline-item.type-http-request-received::before { background: var(--accent); border-color: var(--accent); }
+    .timeline-item.type-agent-tool-started::before,
+    .timeline-item.type-agent-tool-completed::before { background: var(--purple); border-color: var(--purple); }
+    .timeline-item.type-agent-llm-step-completed::before,
+    .timeline-item.type-agent-loop-started::before { background: var(--orange); border-color: var(--orange); }
+    .timeline-item.type-agent-screenshot-received::before,
+    .timeline-item.type-agent-external-input-received::before,
+    .timeline-item.type-http-response-sent::before { background: var(--green); border-color: var(--green); }
+    .timeline-item.type-agent-external-input-requested::before { background: var(--orange); border-color: var(--orange); }
+    .timeline-item.type-agent-session-completed::before { background: var(--green); border-color: var(--green); }
+    .timeline-item.type-agent-session-failed::before,
+    .timeline-item.type-http-response-failed::before,
+    .timeline-item.type-agent-tool-failed::before { background: var(--red); border-color: var(--red); }
+
+    .event-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+    }
+    .event-card .event-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+    .event-card .event-type {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--accent);
+    }
+    .event-card .event-time {
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+    .event-card .event-message {
+      font-size: 13px;
+      margin-bottom: 6px;
+    }
+    .event-card .event-data {
+      background: var(--bg);
+      border-radius: 4px;
+      padding: 8px 10px;
+      font-size: 12px;
+      font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 300px;
+      overflow-y: auto;
+      color: var(--text-dim);
+    }
+    .event-card .event-data.collapsed {
+      max-height: 60px;
+      overflow: hidden;
+      position: relative;
+      cursor: pointer;
+    }
+    .event-card .event-data.collapsed::after {
+      content: 'Click to expand...';
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      padding: 8px 10px 4px;
+      background: linear-gradient(transparent, var(--bg));
+      text-align: center;
+      font-style: italic;
+      color: var(--accent);
+    }
+
+    .screenshots-section {
+      margin-top: 24px;
+    }
+    .screenshots-section h3 {
+      font-size: 16px;
+      margin-bottom: 12px;
+    }
+    .screenshot-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 16px;
+    }
+    .screenshot-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .screenshot-card img {
+      width: 100%;
+      display: block;
+    }
+    .screenshot-card .screenshot-info {
+      padding: 8px 12px;
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+
+    .tool-results-section { margin-top: 24px; }
+    .tool-results-section h3 { font-size: 16px; margin-bottom: 12px; }
+    .tool-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .tool-table th {
+      text-align: left;
+      padding: 8px 12px;
+      border-bottom: 2px solid var(--border);
+      color: var(--text-dim);
+      font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .tool-table td {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    .tool-table tr:hover { background: var(--surface2); }
+    .tool-name { color: var(--purple); font-weight: 500; cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
+    .tool-name:hover { color: var(--accent); }
+    .duration { color: var(--text-dim); }
+
+    .dialog-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(4px);
+      z-index: 10000;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    .dialog-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      width: 90vw;
+      max-width: 700px;
+      max-height: 85vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+    }
+    .dialog-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .dialog-header h3 { font-size: 15px; margin: 0; }
+    .dialog-close {
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      font-size: 18px;
+      cursor: pointer;
+    }
+    .dialog-close:hover { color: var(--text); }
+    .dialog-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 20px;
+    }
+    .dialog-section { margin-bottom: 14px; }
+    .dialog-label {
+      font-size: 11px;
+      color: var(--text-dim);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+    .dialog-value {
+      font-size: 13px;
+      color: var(--text);
+    }
+    .dialog-mono {
+      font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+      font-size: 12px;
+      background: var(--bg);
+      border-radius: 6px;
+      padding: 10px 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 1px solid var(--border);
+      max-height: 300px;
+      overflow-y: auto;
+      color: var(--text-dim);
+    }
+
+    .section-tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .section-tab {
+      padding: 8px 16px;
+      font-size: 13px;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      color: var(--text-dim);
+      background: none;
+      border-top: none;
+      border-left: none;
+      border-right: none;
+    }
+    .section-tab:hover { color: var(--text); }
+    .section-tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Telemetry Viewer</h1>
+    <button class="refresh-btn" onclick="loadTraces()">Refresh</button>
+    <label class="auto-refresh">
+      <input type="checkbox" id="autoRefresh" checked>
+      Auto-refresh (3s)
+    </label>
+  </div>
+  <div class="container">
+    <div class="sidebar">
+      <div class="sidebar-header">Sessions</div>
+      <div id="traceList"></div>
+    </div>
+    <div class="main" id="mainContent">
+      <div class="empty-state">Select a session to view its trace</div>
+    </div>
+  </div>
+
+  <script>
+    let traces = [];
+    let selectedId = null;
+    let autoRefreshInterval = null;
+    let activeTab = 'timeline';
+    let selectedTraceSignature = null;
+    let currentTrace = null;
+
+    const API_BASE = window.location.origin;
+
+    async function loadTraces(options = {}) {
+      const { silent = false } = options;
+      try {
+        const res = await fetch(`${API_BASE}/api/telemetry/sessions`);
+        traces = await res.json();
+        renderTraceList();
+        if (selectedId) {
+          await loadTraceDetail(selectedId, { silent });
+        }
+      } catch (e) {
+        console.error('Failed to load traces:', e);
+      }
+    }
+
+    function renderTraceList() {
+      const list = document.getElementById('traceList');
+      if (traces.length === 0) {
+        list.innerHTML = '<div style="padding: 24px; text-align: center; color: var(--text-dim)">No agent sessions yet</div>';
+        return;
+      }
+      list.innerHTML = traces.map(t => `
+        <div class="trace-item ${t.sessionId === selectedId ? 'active' : ''}"
+             onclick="loadTraceDetail('${t.sessionId}')">
+          <div class="prompt">${escHtml(t.userPrompt || 'No prompt')}</div>
+          <div class="meta">
+            <span class="status-badge status-${t.status}">${t.status}</span>
+            <span>${t.agentType}</span>
+            <span>${t.toolCallCount} tools</span>
+            <span>${t.screenshotCount} screenshots</span>
+            ${t.durationMs ? `<span>${(t.durationMs / 1000).toFixed(1)}s</span>` : ''}
+            <span>${timeAgo(t.startedAt)}</span>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function loadTraceDetail(sessionId, options = {}) {
+      const { silent = false } = options;
+      selectedId = sessionId;
+      renderTraceList();
+      const main = document.getElementById('mainContent');
+      if (!silent) {
+        main.innerHTML = '<div class="empty-state">Loading...</div>';
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/api/telemetry/sessions/${sessionId}`);
+        if (!res.ok) throw new Error('Not found');
+        const trace = await res.json();
+        const nextSignature = buildTraceSignature(trace);
+        if (silent && nextSignature === selectedTraceSignature) {
+          return;
+        }
+        selectedTraceSignature = nextSignature;
+        renderTraceDetail(trace);
+      } catch (e) {
+        main.innerHTML = `<div class="empty-state">Failed to load trace: ${e.message}</div>`;
+      }
+    }
+
+    function renderTraceDetail(trace) {
+      currentTrace = trace;
+      const main = document.getElementById('mainContent');
+      main.innerHTML = `
+        <div class="trace-detail">
+          <h2>${escHtml(trace.userPrompt)}</h2>
+          <div class="info-row">
+            <span class="status-badge status-${trace.status}">${trace.status}</span>
+            <span>Agent: ${trace.agentType}</span>
+            <span>Session: ${trace.sessionId.substring(0, 8)}...</span>
+            <span>Started: ${new Date(trace.startedAt).toLocaleTimeString()}</span>
+            ${trace.durationMs ? `<span>Duration: ${(trace.durationMs / 1000).toFixed(1)}s</span>` : ''}
+          </div>
+          ${trace.finalMessage ? `<div class="final-message"><strong>Result:</strong> ${escHtml(trace.finalMessage)}</div>` : ''}
+
+          <div class="section-tabs">
+            <button class="section-tab ${activeTab === 'timeline' ? 'active' : ''}" onclick="switchTab(this, 'timeline')">Timeline (${trace.events.length})</button>
+            <button class="section-tab ${activeTab === 'tools' ? 'active' : ''}" onclick="switchTab(this, 'tools')">Tool Results (${trace.toolResults.length})</button>
+            <button class="section-tab ${activeTab === 'screenshots' ? 'active' : ''}" onclick="switchTab(this, 'screenshots')">Screenshots (${trace.screenshots.length})</button>
+          </div>
+
+          <div class="tab-content ${activeTab === 'timeline' ? 'active' : ''}" id="tab-timeline">
+            ${renderTimeline(trace.events)}
+          </div>
+
+          <div class="tab-content ${activeTab === 'tools' ? 'active' : ''}" id="tab-tools">
+            ${renderToolResults(trace.toolResults)}
+          </div>
+
+          <div class="tab-content ${activeTab === 'screenshots' ? 'active' : ''}" id="tab-screenshots">
+            ${renderScreenshots(trace.screenshots)}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderTimeline(events) {
+      if (events.length === 0) return '<div style="color: var(--text-dim); padding: 16px;">No events recorded</div>';
+      return `<div class="timeline">${events.map(e => `
+        <div class="timeline-item ${eventClassName(e.type)}">
+          <div class="event-card">
+            <div class="event-header">
+              <span class="event-type">${formatEventType(e.type)}</span>
+              <span class="event-time">${new Date(e.timestamp).toLocaleTimeString()}.${new Date(e.timestamp).getMilliseconds().toString().padStart(3, '0')}</span>
+            </div>
+            <div class="event-message">${escHtml(e.message)}</div>
+            ${e.data ? `<div class="event-data ${needsCollapse(e.data) ? 'collapsed' : ''}" onclick="this.classList.toggle('collapsed')">${escHtml(JSON.stringify(e.data, null, 2))}</div>` : ''}
+          </div>
+        </div>
+      `).join('')}</div>`;
+    }
+
+    function renderToolResults(results) {
+      if (results.length === 0) return '<div style="color: var(--text-dim); padding: 16px;">No tool results recorded</div>';
+      return `
+        <table class="tool-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Tool</th>
+              <th>Duration</th>
+              <th>Success</th>
+              <th>Observation</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${results.map((r, i) => `
+              <tr>
+                <td>${i + 1}</td>
+                <td class="tool-name" onclick='showToolDialog(${escAttr(JSON.stringify(r))})'>${r.toolName}</td>
+                <td class="duration">${r.durationMs}ms</td>
+                <td>${r.toolSuccess === false ? '<span style="color:var(--red)">FAIL</span>' : '<span style="color:var(--green)">OK</span>'}</td>
+                <td style="max-width: 500px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;" title="${escAttr(r.observation)}" onclick='showToolDialog(${escAttr(JSON.stringify(r))})'>${escHtml(r.observation.substring(0, 200))}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+    }
+
+    function renderScreenshots(screenshots) {
+      if (screenshots.length === 0) return '<div style="color: var(--text-dim); padding: 16px;">No screenshots captured</div>';
+      return `<div class="screenshot-grid">${screenshots.map(s => `
+        <div class="screenshot-card">
+          ${s.dataUrl && !s.dataUrl.includes('...') ? `<img src="${s.dataUrl}" alt="Screenshot step ${s.stepIndex}">` : '<div style="padding: 24px; text-align: center; color: var(--text-dim)">Screenshot data truncated in trace</div>'}
+          <div class="screenshot-info">
+            Step ${s.stepIndex} | ${s.outcome} | ${new Date(s.timestamp).toLocaleTimeString()}
+            ${s.error ? ` | Error: ${escHtml(s.error)}` : ''}
+          </div>
+        </div>
+      `).join('')}</div>`;
+    }
+
+    function switchTab(btn, tabId) {
+      activeTab = tabId;
+      btn.parentElement.querySelectorAll('.section-tab').forEach(t => t.classList.remove('active'));
+      btn.classList.add('active');
+      document.querySelectorAll('.trace-detail .tab-content').forEach(t => t.classList.remove('active'));
+      document.getElementById('tab-' + tabId).classList.add('active');
+    }
+
+    function buildTraceSignature(trace) {
+      return JSON.stringify({
+        sessionId: trace.sessionId,
+        status: trace.status,
+        finalMessage: trace.finalMessage,
+        eventCount: trace.events.length,
+        lastEvent: trace.events.length ? trace.events[trace.events.length - 1] : null,
+        toolCount: trace.toolResults.length,
+        lastTool: trace.toolResults.length ? trace.toolResults[trace.toolResults.length - 1] : null,
+        screenshotCount: trace.screenshots.length,
+        lastScreenshot: trace.screenshots.length ? trace.screenshots[trace.screenshots.length - 1] : null,
+      });
+    }
+
+    function eventClassName(type) {
+      return 'type-' + String(type || 'unknown').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase();
+    }
+
+    function formatEventType(type) {
+      return String(type || 'unknown').replace(/[._]+/g, ' ');
+    }
+
+    function needsCollapse(data) {
+      return JSON.stringify(data, null, 2).length > 200;
+    }
+
+    function escHtml(str) {
+      if (!str) return '';
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+    function escAttr(str) {
+      if (!str) return '';
+      return str.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function timeAgo(iso) {
+      const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+      if (secs < 60) return `${secs}s ago`;
+      if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+      return `${Math.floor(secs / 3600)}h ago`;
+    }
+
+    // Tool detail dialog
+    function findMessagesForTool(toolName, toolCallId) {
+      if (!currentTrace || !currentTrace.llmSteps) return null;
+      // Find the LLM step whose toolCalls include this tool
+      for (const step of currentTrace.llmSteps) {
+        if (step.toolCalls.some(tc => tc.toolName === toolName || tc.toolCallId === toolCallId)) {
+          return step.messages || null;
+        }
+      }
+      // Fallback: find by tool name in any step
+      for (const step of currentTrace.llmSteps) {
+        if (step.toolCalls.some(tc => tc.toolName === toolName)) {
+          return step.messages || null;
+        }
+      }
+      return null;
+    }
+
+    function formatMessageContent(content) {
+      if (typeof content === 'string') return escHtml(content);
+      if (Array.isArray(content)) {
+        return content.map(part => {
+          if (part.type === 'text') return escHtml(part.text || '');
+          if (part.type === 'image') return '<em style="color:var(--orange)">[image]</em>';
+          if (part.type === 'tool-call') return `<span style="color:var(--purple)">tool-call: ${escHtml(part.toolName || '')}</span> ${escHtml(JSON.stringify(part.input || part.args || {}, null, 2))}`;
+          if (part.type === 'tool-result') return `<span style="color:var(--green)">tool-result (${escHtml(part.toolName || '')})</span>: ${escHtml(typeof part.output === 'object' ? JSON.stringify(part.output) : String(part.output || ''))}`;
+          return escHtml(JSON.stringify(part, null, 2));
+        }).join('\n');
+      }
+      return escHtml(JSON.stringify(content, null, 2));
+    }
+
+    function renderMessages(messages) {
+      if (!messages || messages.length === 0) return '<div style="color:var(--text-dim);padding:8px;">No messages captured for this step</div>';
+      const roleColors = { system: 'var(--orange)', user: 'var(--accent)', assistant: 'var(--purple)', tool: 'var(--green)' };
+      return messages.map((msg, i) => {
+        const color = roleColors[msg.role] || 'var(--text-dim)';
+        return `
+          <div style="margin-bottom: 8px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden;">
+            <div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--surface2); cursor: pointer;" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'">
+              <span style="color: ${color}; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; min-width: 60px;">${escHtml(msg.role)}</span>
+              <span style="font-size: 11px; color: var(--text-dim);">#${i + 1}</span>
+              <span style="font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escHtml(typeof msg.content === 'string' ? msg.content.substring(0, 80) : Array.isArray(msg.content) ? msg.content.length + ' parts' : '...')}</span>
+              <span style="margin-left: auto; font-size: 10px; color: var(--text-dim);">▼</span>
+            </div>
+            <div style="display: none; padding: 8px 10px; font-family: 'SF Mono', monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow-y: auto; color: var(--text); background: var(--bg);">${formatMessageContent(msg.content)}</div>
+          </div>`;
+      }).join('');
+    }
+
+    function showToolDialog(toolResult) {
+      let r;
+      try { r = typeof toolResult === 'string' ? JSON.parse(toolResult) : toolResult; } catch { return; }
+      const messages = findMessagesForTool(r.toolName, r.toolCallId);
+      const overlay = document.createElement('div');
+      overlay.className = 'dialog-overlay';
+      overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+      // Tab state
+      let dialogActiveTab = 'details';
+
+      function renderDialogContent() {
+        return `
+        <div class="dialog-panel" style="max-width: 800px;">
+          <div class="dialog-header">
+            <h3 style="color: var(--purple);">${escHtml(r.toolName)} <span style="color: var(--text-dim); font-weight: 400; font-size: 13px;">#${r.stepIndex ?? ''}</span></h3>
+            <button class="dialog-close" onclick="this.closest('.dialog-overlay').remove()">&times;</button>
+          </div>
+          <div style="display: flex; gap: 4px; padding: 0 20px; border-bottom: 1px solid var(--border);">
+            <button class="section-tab ${dialogActiveTab === 'details' ? 'active' : ''}" onclick="switchDialogTab(this, 'details')">Details</button>
+            <button class="section-tab ${dialogActiveTab === 'messages' ? 'active' : ''}" onclick="switchDialogTab(this, 'messages')">Messages${messages ? ' (' + messages.length + ')' : ''}</button>
+            <button class="section-tab ${dialogActiveTab === 'raw' ? 'active' : ''}" onclick="switchDialogTab(this, 'raw')">Raw</button>
+          </div>
+          <div class="dialog-body">
+            <div id="dialog-tab-details" style="display: ${dialogActiveTab === 'details' ? 'block' : 'none'};">
+              <div class="dialog-section">
+                <div style="display: flex; gap: 16px; font-size: 13px;">
+                  <span>Duration: <strong>${r.durationMs}ms</strong></span>
+                  <span>Success: ${r.toolSuccess === false ? '<strong style="color:var(--red)">FAIL</strong>' : '<strong style="color:var(--green)">OK</strong>'}</span>
+                </div>
+              </div>
+              ${r.args ? `
+                <div class="dialog-section">
+                  <div class="dialog-label">Arguments</div>
+                  <div class="dialog-mono">${escHtml(JSON.stringify(r.args, null, 2))}</div>
+                </div>
+              ` : ''}
+              ${r.observation ? `
+                <div class="dialog-section">
+                  <div class="dialog-label">Observation</div>
+                  <div class="dialog-mono">${escHtml(r.observation)}</div>
+                </div>
+              ` : ''}
+            </div>
+            <div id="dialog-tab-messages" style="display: ${dialogActiveTab === 'messages' ? 'block' : 'none'};">
+              ${renderMessages(messages)}
+            </div>
+            <div id="dialog-tab-raw" style="display: ${dialogActiveTab === 'raw' ? 'block' : 'none'};">
+              <div class="dialog-mono">${escHtml(JSON.stringify(r, null, 2))}</div>
+            </div>
+          </div>
+        </div>`;
+      }
+
+      overlay.innerHTML = renderDialogContent();
+      document.body.appendChild(overlay);
+
+      // Make switchDialogTab available
+      window.switchDialogTab = function(btn, tabId) {
+        dialogActiveTab = tabId;
+        const panel = btn.closest('.dialog-panel');
+        panel.querySelectorAll('.section-tab').forEach(t => t.classList.remove('active'));
+        btn.classList.add('active');
+        panel.querySelectorAll('[id^="dialog-tab-"]').forEach(t => t.style.display = 'none');
+        panel.querySelector('#dialog-tab-' + tabId).style.display = 'block';
+      };
+    }
+
+    // Auto-refresh
+    function startAutoRefresh() {
+      if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+      autoRefreshInterval = setInterval(() => {
+        if (document.getElementById('autoRefresh').checked) {
+          loadTraces({ silent: true });
+        }
+      }, 3000);
+    }
+
+    // Init
+    loadTraces();
+    startAutoRefresh();
+  </script>
+</body>
+</html>

@@ -8,6 +8,20 @@ import { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
 import fs from "fs";
 import path from "path";
 
+export const TELEMETRY_LOG_BASENAME = "service-telemetry";
+
+export function getTelemetryLogFilename(date = new Date()): string {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${TELEMETRY_LOG_BASENAME}-${year}-${month}-${day}.jsonl`;
+}
+
+export function isTelemetryLogFilename(filename: string): boolean {
+  // Match both daily (YYYY-MM-DD) and legacy monthly (YYYY-MM) formats
+  return new RegExp(`^${TELEMETRY_LOG_BASENAME}-\\d{4}-\\d{2}(-\\d{2})?\\.jsonl$`).test(filename);
+}
+
 export interface FileExporterOptions {
   logDirectory: string;
   filename?: string;
@@ -15,11 +29,11 @@ export interface FileExporterOptions {
 
 export class FileSpanExporter implements SpanExporter {
   private logDirectory: string;
-  private filename: string;
+  private filenamePrefix: string;
 
   constructor(options: FileExporterOptions) {
     this.logDirectory = options.logDirectory;
-    this.filename = options.filename || "traces.jsonl";
+    this.filenamePrefix = options.filename || TELEMETRY_LOG_BASENAME;
 
     // Ensure log directory exists
     if (!fs.existsSync(this.logDirectory)) {
@@ -32,7 +46,12 @@ export class FileSpanExporter implements SpanExporter {
     resultCallback: (result: ExportResult) => void
   ): Promise<void> {
     try {
-      const filePath = path.join(this.logDirectory, this.filename);
+      const filePath = path.join(
+        this.logDirectory,
+        this.filenamePrefix === TELEMETRY_LOG_BASENAME
+          ? getTelemetryLogFilename()
+          : `${this.filenamePrefix}-${getTelemetryLogFilename().replace(`${TELEMETRY_LOG_BASENAME}-`, "")}`
+      );
 
       for (const span of spans) {
         const traceData = {
@@ -46,6 +65,7 @@ export class FileSpanExporter implements SpanExporter {
           endTime: span.endTime,
           duration: span.duration,
           attributes: span.attributes,
+          resourceAttributes: span.resource.attributes,
           events: span.events,
           links: span.links,
         };

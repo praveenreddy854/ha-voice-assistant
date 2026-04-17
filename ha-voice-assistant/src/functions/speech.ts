@@ -1,7 +1,7 @@
 import { getIntent, Intent, processReminder } from "./intent";
 import { postHaCommand } from "./ha";
 import { Message } from "../types/chat";
-import { runAgenticFlow } from "./agentic";
+import { runTvAgenticFlow, getLastSessionLog } from "./tvAgent";
 import {
   runTeachingMode,
   continueTeachingWithTask,
@@ -158,7 +158,8 @@ export const processRecognizedText = async (
         });
       }
     } else if (intent === Intent.AgenticFlow) {
-      const agenticResult = await runAgenticFlow(text);
+      const agenticResult = await runTvAgenticFlow(text);
+      const sessionLog = getLastSessionLog();
       if (agenticResult.success && agenticResult.data) {
         const { message, steps, finalCommand } = agenticResult.data;
         handleRecognizedText({
@@ -171,6 +172,7 @@ export const processRecognizedText = async (
             "I completed the requested TV interaction.",
           agenticSteps: steps,
           finalCommand,
+          sessionLog,
         });
       } else {
         const errorMessage =
@@ -180,6 +182,7 @@ export const processRecognizedText = async (
           sender: "assistant",
           text: errorMessage,
           messageToAnnounce: errorMessage,
+          sessionLog,
         });
       }
     } else if (intent === Intent.TeachingMode) {

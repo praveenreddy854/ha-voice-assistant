@@ -14,13 +14,13 @@ const agents = new Map<AgentType, AgentDefinition>();
  * Throws if an agent with the same ID is already registered.
  */
 export function registerAgent(definition: AgentDefinition): void {
-  if (agents.has(definition.id)) {
+  if (agents.has(definition.agentType)) {
     throw new Error(
-      `Agent "${definition.id}" is already registered. Use a unique ID.`
+      `Agent "${definition.agentType}" is already registered. Use a unique ID.`
     );
   }
-  agents.set(definition.id, definition);
-  console.log(`[AgentRegistry] Registered agent: ${definition.id} (${definition.name})`);
+  agents.set(definition.agentType, definition);
+  console.log(`[AgentRegistry] Registered agent: ${definition.agentType} (${definition.name})`);
 }
 
 /**

@@ -265,6 +265,56 @@ async function executeSingleHACommand(
 }
 
 /**
+ * Call a Home Assistant service directly without LLM translation.
+ * Use this for known, specific commands where domain/service/entity are already determined
+ * (e.g., remote.send_command with wakeup/suspend).
+ */
+export async function callHAServiceDirect(
+  domain: string,
+  service: string,
+  entityId: string,
+  serviceData?: Record<string, unknown>
+): Promise<{ success: boolean; message: string; data?: any }> {
+  try {
+    const requestBody: Record<string, unknown> = { entity_id: entityId };
+    if (serviceData) {
+      Object.assign(requestBody, serviceData);
+    }
+
+    const response = await axios.post(
+      `${HOME_ASSISTANT_URL}/api/services/${domain}/${service}`,
+      requestBody,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
+        },
+      }
+    );
+
+    if (response.status < 200 || response.status >= 300) {
+      return {
+        success: false,
+        message: `HA API returned status ${response.status}`,
+        data: response.data,
+      };
+    }
+
+    return {
+      success: true,
+      message: `${domain}.${service} called on ${entityId}`,
+      data: response.data,
+    };
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    return {
+      success: false,
+      message: `Direct HA service call failed: ${err.message}`,
+    };
+  }
+}
+
+/**
  * Execute multiple Home Assistant commands in sequence
  * Used for multi-step operations like "scroll left 3 times then click select"
  */

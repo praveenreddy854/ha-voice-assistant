@@ -4,7 +4,7 @@
  * Drives any AgentDefinition through its lifecycle:
  *   1. Create or resume a session
  *   2. Run the ToolLoopAgent (auto-loops through tools with execute functions)
- *   3. When a tool without execute is called (e.g. request_screenshot),
+ *   3. When a tool without execute is called (e.g. get_latest_screenshot),
  *      the loop breaks and we pause for external input
  *   4. Resume when the client provides external input
  *   5. Clean up on completion or error
@@ -33,7 +33,18 @@ import {
 } from "./types";
 import { getAgent } from "./registry";
 import { resolveMaxSteps } from "../common/utils";
+import { getLatestScreenshot } from "../common/screenshotStore";
 import type { ModelMessage } from "ai";
+import {
+  createTrace,
+  addEvent,
+  addLLMStep,
+  addScreenshot,
+  completeTrace,
+  updateTraceStatus,
+  setActiveSession,
+  getActiveSessionId,
+} from "../../tracing/agentTraceStore";
 
 // ============================================================================
 // Session Store
@@ -41,11 +52,11 @@ import type { ModelMessage } from "ai";
 
 const sessionStore = new Map<string, AgentSession>();
 
-/** One AgentLoop instance per agent ID (shared across sessions). */
+/** One AgentLoop instance per agent type (shared across sessions). */
 const agentLoops = new Map<string, AgentLoop>();
 
 function getOrCreateLoop(def: AgentDefinition): AgentLoop {
-  let loop = agentLoops.get(def.id);
+  let loop = agentLoops.get(def.agentType);
   if (!loop) {
     // Build ToolDefinitions — tools with execute auto-run inside ToolLoopAgent,
     // tools without execute break the loop for external handling
@@ -56,6 +67,7 @@ function getOrCreateLoop(def: AgentDefinition): AgentLoop {
           name: t.function.name,
           description: t.function.description,
           parameters: t.function.parameters as Record<string, unknown>,
+          inputSchema: t.function.inputSchema,
         },
       };
 
@@ -72,8 +84,41 @@ function getOrCreateLoop(def: AgentDefinition): AgentLoop {
       tools,
       maxIterations: def.maxIterations,
       model: def.model,
+      onStepFinish: (event) => {
+        const toolNames = event.toolCalls.map((tc) => tc.toolName).join(", ") || "none";
+        console.log(
+          `[AgentLoop] Step ${event.stepNumber} finished (reason: ${event.finishReason}, tools: [${toolNames}])`
+        );
+        const traceSessionId = getActiveSessionId();
+        if (traceSessionId) {
+          addLLMStep(traceSessionId, {
+            stepNumber: event.stepNumber,
+            timestamp: new Date().toISOString(),
+            finishReason: event.finishReason,
+            text: event.text || "",
+            toolCalls: event.toolCalls.map((toolCall) => ({
+              toolName: toolCall.toolName,
+              toolCallId: "",
+              args:
+                typeof toolCall.args === "object" &&
+                toolCall.args !== null &&
+                !Array.isArray(toolCall.args)
+                  ? (toolCall.args as Record<string, unknown>)
+                  : {},
+              actionSummary: "",
+            })),
+            messages: event.messages as Array<{ role: string; content: unknown }>,
+          });
+        }
+        if (event.text) {
+          console.log(`[AgentLoop]   LLM text: ${event.text.substring(0, 300)}`);
+        }
+        for (const tc of event.toolCalls) {
+          console.log(`[AgentLoop]   Tool call: ${tc.toolName}(${JSON.stringify(tc.args)})`);
+        }
+      },
     });
-    agentLoops.set(def.id, loop);
+    agentLoops.set(def.agentType, loop);
   }
   return loop;
 }
@@ -102,7 +147,7 @@ async function createSession(
 
   const session: AgentSession = {
     id: randomUUID(),
-    agentType: def.id,
+    agentType: def.agentType,
     agentLoopSessionId: loopSession.id,
     steps: [],
     pendingExternalInput: undefined,
@@ -116,9 +161,13 @@ async function createSession(
 
   sessionStore.set(session.id, session);
 
+  // Create trace for this session
+  createTrace(session.id, def.agentType, options.userPrompt!);
+
   console.log(
-    `[Orchestrator] Session created for agent "${def.id}": ${session.id} (loop: ${loopSession.id}, max: ${maxSteps})`
+    `[Orchestrator] Session created for agent "${def.agentType}": ${session.id} (loop: ${loopSession.id}, max: ${maxSteps})`
   );
+  console.log(`[Orchestrator] User prompt: "${options.userPrompt}"`);
 
   return session;
 }
@@ -171,12 +220,22 @@ async function processLoop(
   const loop = getOrCreateLoop(def);
 
   console.log(
-    `[Orchestrator] Running agent "${def.id}" session ${session.id}`
+    `[Orchestrator] Running agent "${def.agentType}" session ${session.id}`
   );
+  addEvent(session.id, "agent.loop.started", `Running agent loop for session ${session.id}`);
+  setActiveSession(session.id);
 
   const stepResult = await loop.run(session.agentLoopSessionId);
+  setActiveSession(null);
 
   console.log(`[Orchestrator] Agent result type: ${stepResult.type}`);
+  if (stepResult.type === "tool_calls") {
+    const toolNames = stepResult.toolCalls?.map((tc) => tc.function.name).join(", ") || "none";
+    console.log(`[Orchestrator] Unresolved tool calls: ${toolNames}`);
+  }
+  if (stepResult.type === "error") {
+    console.error(`[Orchestrator] Agent loop error: ${stepResult.error}`);
+  }
 
   return handleResult(session, def, stepResult);
 }
@@ -204,6 +263,7 @@ async function handleError(
   message: string
 ): Promise<AgentRunResult> {
   console.error(`[Orchestrator] Agent error: ${message}`);
+  completeTrace(session.id, false, message, "error");
   const result = buildResult(session, "error", false, message);
   if (def.onComplete) await def.onComplete(session, result);
   await cleanupSession(session, def);
@@ -216,6 +276,7 @@ async function handleComplete(
   message: string
 ): Promise<AgentRunResult> {
   console.log(`[Orchestrator] Agent completed: ${message}`);
+  completeTrace(session.id, true, message, "completed");
   session.completed = true;
   session.agentData.finalMessage = message;
   const result = buildResult(session, "completed", true, message);
@@ -230,10 +291,18 @@ async function handleToolCalls(
   toolCalls: AgentToolCall[]
 ): Promise<AgentRunResult> {
   // These are tool calls without execute functions (loop broke).
-  // Typically this is request_screenshot or similar external-input tools.
+  // Typically this is get_latest_screenshot or similar external-input tools.
+  const externalToolNames = toolCalls.map((tc) => tc.function.name).join(", ");
   console.log(
-    `[Orchestrator] Loop broke for ${toolCalls.length} tool call(s) needing external input`
+    `[Orchestrator] Loop broke for ${toolCalls.length} tool call(s) needing external input: ${externalToolNames}`
   );
+  updateTraceStatus(session.id, "awaiting_external_input");
+  addEvent(session.id, "agent.external_input.requested", `Paused for external input: ${externalToolNames}`, {
+    toolCalls: toolCalls.map((tc) => ({
+      name: tc.function.name,
+      args: tc.function.arguments,
+    })),
+  });
 
   // Track steps for each tool call
   for (const tc of toolCalls) {
@@ -286,6 +355,23 @@ async function handleToolCalls(
     retryCount: 0,
   };
 
+  // Auto-fulfill get_latest_screenshot by reading from disk
+  if (primaryCall.function.name === "get_latest_screenshot") {
+    const screenshot = await getLatestScreenshot(session.id);
+    if (screenshot) {
+      console.log(
+        `[Orchestrator] Auto-fulfilling get_latest_screenshot from disk: ${screenshot.filePath}`
+      );
+      return handleExternalInput(session, def, {
+        type: "screenshot",
+        data: { base64: screenshot.base64, contentType: screenshot.contentType },
+      });
+    }
+    console.warn(
+      `[Orchestrator] No screenshot on disk for session ${session.id}, falling back to client`
+    );
+  }
+
   return buildResult(
     session,
     "awaiting_external_input",
@@ -314,8 +400,43 @@ async function handleExternalInput(
 
   const loop = getOrCreateLoop(def);
 
-  // Let the agent definition process the external input (e.g. crop screenshot)
+  const hasImage = !!(input.data?.base64);
+  console.log(
+    `[Orchestrator] Processing external input for tool "${pending.toolName}" (hasImage: ${hasImage}, error: ${input.error || "none"})`
+  );
+  addEvent(session.id, "agent.external_input.received", `Received external input for "${pending.toolName}"`, {
+    hasImage,
+    error: input.error,
+  });
+
+  // If screenshot received, record it in trace
+  if (hasImage) {
+    const contentType = (input.data.contentType as string) || "image/jpeg";
+    const base64 = input.data.base64 as string;
+    addScreenshot(session.id, {
+      stepIndex: pending.stepIndex,
+      dataUrl: `data:${contentType};base64,${base64}`,
+      timestamp: new Date().toISOString(),
+      outcome: "captured",
+    });
+    addEvent(session.id, "agent.screenshot.received", `Screenshot captured for step ${pending.stepIndex}`, {
+      stepIndex: pending.stepIndex,
+      contentType,
+      sizeBytes: base64.length,
+    });
+  } else if (input.error) {
+    addScreenshot(session.id, {
+      stepIndex: pending.stepIndex,
+      timestamp: new Date().toISOString(),
+      outcome: "error",
+      error: input.error,
+    });
+  }
+
+  // Let the agent definition process the external input (e.g. screenshot)
   let toolOutput: unknown;
+  let imageBase64: string | undefined;
+  let imageContentType: string | undefined;
 
   if (def.processExternalInput) {
     const processed = await def.processExternalInput(session, input);
@@ -333,6 +454,9 @@ async function handleExternalInput(
       observation: processed.observation,
       external_input_received: true,
     };
+
+    imageBase64 = processed.imageBase64;
+    imageContentType = processed.imageContentType;
   } else if (input.error) {
     toolOutput = {
       success: false,
@@ -351,15 +475,19 @@ async function handleExternalInput(
   const toolName = pending.toolName;
   session.pendingExternalInput = undefined;
 
-  // Submit the tool result and re-run the agent
+  // Submit the tool result (with image if available) and re-run the agent
+  setActiveSession(session.id);
   const nextResult = await loop.submitToolResults(
     session.agentLoopSessionId,
     [{
       toolCallId,
       toolName,
       result: toolOutput,
+      imageBase64,
+      imageContentType,
     }]
   );
+  setActiveSession(null);
 
   return handleResult(session, def, nextResult);
 }

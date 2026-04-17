@@ -42,8 +42,8 @@ const TV_TOOLS = [
     args: ["text", "remote_entity_id", "reason"]
   },
   { 
-    name: "request_screenshot", 
-    label: "Request Screenshot",
+    name: "get_latest_screenshot",
+    label: "Get Latest Screenshot",
     args: ["reason"]
   },
   { 

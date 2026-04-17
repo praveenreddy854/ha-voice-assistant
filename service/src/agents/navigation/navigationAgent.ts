@@ -27,7 +27,7 @@ import {
   NavigateArgs,
   FindSearchArgs,
   ClickSelectButtonArgs,
-  RequestScreenshotArgs,
+  GetLatestScreenshotArgs,
   WaitArgs,
   ToolExecutionContext,
   ToolExecutionResult,
@@ -69,8 +69,8 @@ async function executeTool(
       return executeFindSearch(args as FindSearchArgs, context);
     case "click_select_button":
       return executeClickSelectButton(args as ClickSelectButtonArgs, context);
-    case "request_screenshot":
-      return executeRequestScreenshot(args as RequestScreenshotArgs, context);
+    case "get_latest_screenshot":
+      return executeRequestScreenshot(args as GetLatestScreenshotArgs, context);
     case "wait":
       return executeWait(args as WaitArgs);
     default:

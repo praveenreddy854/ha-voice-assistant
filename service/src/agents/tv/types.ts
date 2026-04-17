@@ -45,9 +45,8 @@ export interface DelegateToTypingArgs {
   reason: string;
 }
 
-export interface RequestScreenshotArgs {
+export interface GetLatestScreenshotArgs {
   reason: string;
-  target_agent?: "tv" | "navigation" | "auto";
 }
 
 export interface GetDeviceStateArgs {
@@ -73,6 +72,12 @@ export interface RetrieveSimilarFlowsArgs {
   reason: string;
 }
 
+export interface WebSearchArgs {
+  query: string;
+  url?: string;
+  reason: string;
+}
+
 export interface FindSearchIconArgs {
   remote_entity_id: string;
   reason: string;
@@ -85,29 +90,18 @@ export interface DelegateToNavigationArgs {
   reason: string;
 }
 
-export interface AnalyzeScreenshotArgs {
-  query: string;
-  reason: string;
-}
-
-export interface VerifyUIStateArgs {
-  expected_state: string;
-  reason: string;
-}
-
 export type TvToolName =
   | "click_power_button"
   | "media_control"
   | "click_select_button"
   | "open_menu"
   | "delegate_to_typing"
-  | "request_screenshot"
+  | "get_latest_screenshot"
   | "get_device_state"
   | "launch_app"
   | "delegate_to_navigation"
   | "retrieve_similar_flows"
-  | "analyze_screenshot"
-  | "verify_ui_state"
+  | "web_search"
   | "wait";
 
 export type TvToolArguments =
@@ -116,13 +110,12 @@ export type TvToolArguments =
   | ClickSelectButtonArgs
   | OpenMenuArgs
   | DelegateToTypingArgs
-  | RequestScreenshotArgs
+  | GetLatestScreenshotArgs
   | GetDeviceStateArgs
   | LaunchAppArgs
   | DelegateToNavigationArgs
   | RetrieveSimilarFlowsArgs
-  | AnalyzeScreenshotArgs
-  | VerifyUIStateArgs
+  | WebSearchArgs
   | WaitArgs;
 
 // Legacy types - keeping for backward compatibility
@@ -237,18 +230,6 @@ export interface ScreenshotPayload {
 export interface ToolOutputPayload {
   toolCallId: string;
   output: string;
-}
-
-export interface BoundingBox {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-export interface CroppedImage {
-  base64: string;
-  contentType: string;
 }
 
 export function isPerformActionType(

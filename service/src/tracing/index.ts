@@ -6,7 +6,8 @@
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { trace, SpanKind, SpanStatusCode } from "@opentelemetry/api";
-import { FileSpanExporter } from "./fileExporter";
+import { FileSpanExporter, TELEMETRY_LOG_BASENAME } from "./fileExporter";
+import { telemetrySpanExporter } from "./agentTraceStore";
 import path from "path";
 
 const LOG_DIRECTORY = path.join(__dirname, "../../logs");
@@ -14,12 +15,15 @@ const LOG_DIRECTORY = path.join(__dirname, "../../logs");
 // Initialize the file exporter
 const fileExporter = new FileSpanExporter({
   logDirectory: LOG_DIRECTORY,
-  filename: "tv-agent-traces.jsonl",
+  filename: TELEMETRY_LOG_BASENAME,
 });
 
 // Create the SDK with file exporter (using SimpleSpanProcessor for immediate export)
 const sdk = new NodeSDK({
-  spanProcessors: [new SimpleSpanProcessor(fileExporter)],
+  spanProcessors: [
+    new SimpleSpanProcessor(fileExporter),
+    new SimpleSpanProcessor(telemetrySpanExporter),
+  ],
   serviceName: "tv-agent-service",
 });
 
@@ -99,3 +103,21 @@ export function shutdownTracing(): Promise<void> {
 }
 
 export { SpanKind, SpanStatusCode };
+
+// Re-export agent trace store and API router
+export {
+  createTrace,
+  getTrace,
+  getAllTraces,
+  addEvent,
+  addLLMStep,
+  addToolResult,
+  addScreenshot,
+  completeTrace,
+  updateTraceStatus,
+  setActiveSession,
+  getActiveSessionId,
+  getSessionTraceContext,
+} from "./agentTraceStore";
+export type { AgentTrace, TraceEvent, TraceToolCall, TraceToolResult, TraceScreenshot, TraceLLMStep } from "./agentTraceStore";
+export { traceRouter } from "./traceApi";

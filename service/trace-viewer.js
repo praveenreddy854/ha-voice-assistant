@@ -1,25 +1,36 @@
 #!/usr/bin/env node
 /**
- * TV Agent Trace Viewer
- * Simple utility to view and analyze TV Agent traces
+ * Service Telemetry Viewer
+ * Simple utility to view and analyze persisted service telemetry
  */
 
 const fs = require("fs");
 const path = require("path");
 
-const TRACE_FILE = path.join(__dirname, "logs", "tv-agent-traces.jsonl");
+const LOG_DIR = path.join(__dirname, "logs");
+const TELEMETRY_FILE_PATTERN = /^service-telemetry-\d{4}-\d{2}\.jsonl$/;
 
 function readTraces() {
-  if (!fs.existsSync(TRACE_FILE)) {
-    console.log("❌ No trace file found at:", TRACE_FILE);
+  if (!fs.existsSync(LOG_DIR)) {
+    console.log("❌ No telemetry log directory found at:", LOG_DIR);
     return [];
   }
 
-  const content = fs.readFileSync(TRACE_FILE, "utf8");
-  const lines = content
-    .trim()
-    .split("\n")
-    .filter((line) => line.length > 0);
+  const files = fs.readdirSync(LOG_DIR)
+    .filter((filename) => TELEMETRY_FILE_PATTERN.test(filename))
+    .sort();
+
+  if (files.length === 0) {
+    console.log("❌ No monthly telemetry files found in:", LOG_DIR);
+    return [];
+  }
+
+  const lines = files.flatMap((filename) => {
+    const content = fs.readFileSync(path.join(LOG_DIR, filename), "utf8");
+    return content
+      .split("\n")
+      .filter((line) => line.trim().length > 0);
+  });
 
   return lines
     .map((line, index) => {
@@ -40,7 +51,7 @@ function formatDuration(durationNs) {
 }
 
 function displayTraceSummary(traces) {
-  console.log("\n📊 TV Agent Trace Summary\n");
+  console.log("\n📊 Service Telemetry Summary\n");
   console.log(`Total Traces: ${traces.length}`);
 
   const operations = {};
@@ -125,7 +136,7 @@ function main() {
   const args = process.argv.slice(2);
   const command = args[0] || "summary";
 
-  console.log("🔍 TV Agent Trace Viewer\n");
+  console.log("🔍 Service Telemetry Viewer\n");
 
   const traces = readTraces();
 

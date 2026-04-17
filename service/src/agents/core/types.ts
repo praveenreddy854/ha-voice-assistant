@@ -203,7 +203,7 @@ export interface AgentRunResult {
  */
 export interface AgentDefinition {
   /** Unique identifier, e.g. "tv". */
-  id: AgentType;
+  agentType: AgentType;
   /** Human-readable name. */
   name: string;
   /** What this agent does. */

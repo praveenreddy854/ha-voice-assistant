@@ -1,5 +1,11 @@
 // Initialize tracing first
-import { initializeTracing, shutdownTracing } from "./tracing";
+import { context as otelContext, trace as otelTrace, SpanStatusCode } from "@opentelemetry/api";
+import {
+  initializeTracing,
+  shutdownTracing,
+  getTracer,
+  getSessionTraceContext,
+} from "./tracing";
 initializeTracing();
 
 import express from "express";
@@ -24,8 +30,11 @@ import { fetchAllStates, getHACommandBody } from "./ha";
 import { classifyIntent } from "./intent";
 import { processReminderRequest } from "./reminder";
 import { startDeviceStateLogging } from "./deviceStateLogger";
-import { runTvAgenticFlow } from "./tvAgent";
 import { runAgent, getRegisteredAgentTypes } from "./agents/core";
+// Import TV agent to trigger registration via side-effect
+import "./agents/tv/tvAgent";
+import { saveScreenshot } from "./agents/common/screenshotStore";
+import { traceRouter } from "./tracing/traceApi";
 // Teaching mode imports - for recording manual steps and fine-tuning data
 import {
   startTeachingSession,
@@ -95,6 +104,18 @@ const payloadTooLargeHandler: ErrorRequestHandler = (
 
 app.use(payloadTooLargeHandler);
 
+// ── Trace viewer routes ──
+app.use(traceRouter);
+
+// Serve telemetry viewer HTML
+app.get("/telemetry", (_req, res) => {
+  res.sendFile(path.join(__dirname, "./tracing/traceViewer.html"));
+});
+
+app.get("/traces", (_req, res) => {
+  res.redirect("/telemetry");
+});
+
 startDeviceStateLogging();
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -124,53 +145,8 @@ app.post("/api/classifyIntent", (req, res, next) => {
   })();
 });
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-app.post("/api/runTvAgenticFlow", (req, res, next) => {
-  (async () => {
-    try {
-      const {
-        userPrompt,
-        messageHistory,
-        maxSteps,
-        sessionId,
-        screenshotDataUrl,
-        screenshotBase64,
-        screenshotContentType,
-        screenshotError,
-      } = req.body;
-
-      if (!sessionId && !userPrompt) {
-        return res
-          .status(400)
-          .json({ error: "User prompt is required to start a new session" });
-      }
-
-      const result = await runTvAgenticFlow({
-        userPrompt,
-        maxSteps,
-        messageHistory,
-        sessionId,
-        screenshotDataUrl,
-        screenshotBase64,
-        screenshotContentType,
-        screenshotError,
-      });
-
-      res.json(result);
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      console.error("Error executing TV agentic flow:", err);
-      res.status(500).json({
-        error: "Error executing TV agentic flow",
-        message: err.message,
-        stack: err.stack,
-      });
-    }
-  })();
-});
-
 // ============================================================================
-// Generic Agent API
+// Agent API
 // ============================================================================
 
 /**
@@ -189,30 +165,102 @@ app.post("/api/runTvAgenticFlow", (req, res, next) => {
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.post("/api/agent/run", (req, res, next) => {
   (async () => {
-    try {
-      const { agentType, userPrompt, sessionId, maxSteps, messageHistory, externalInput } = req.body;
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const requestedSessionId = typeof req.body?.sessionId === "string" ? req.body.sessionId : undefined;
+    const requestedAgentType = typeof req.body?.agentType === "string" ? req.body.agentType : "unknown";
+    const requestParentContext = requestedSessionId
+      ? getSessionTraceContext(requestedSessionId) || otelContext.active()
+      : otelContext.active();
+    const requestSpan = getTracer().startSpan(
+      "http.request.agent.run",
+      {
+        attributes: {
+          "telemetry.kind": "http_request",
+          "http.request_id": requestId,
+          "http.method": req.method,
+          "http.route": "/api/agent/run",
+          "agent.type": requestedAgentType,
+          "agent.session.id": requestedSessionId || "",
+          "agent.session.resume": Boolean(requestedSessionId),
+        },
+      },
+      requestParentContext
+    );
+    const requestContext = otelTrace.setSpan(requestParentContext, requestSpan);
 
-      if (!agentType) {
-        return res.status(400).json({ error: "agentType is required" });
+    let responseSettled = false;
+    const finalizeRequestSpan = (): void => {
+      if (responseSettled) {
+        return;
       }
-
-      if (!sessionId && !userPrompt) {
-        return res.status(400).json({ error: "userPrompt is required to start a new session" });
-      }
-
-      const result = await runAgent({
-        agentType,
-        userPrompt,
-        sessionId,
-        maxSteps,
-        messageHistory,
-        externalInput,
+      responseSettled = true;
+      requestSpan.addEvent("http.response.sent", {
+        "http.request_id": requestId,
+        "http.status_code": res.statusCode,
       });
+      requestSpan.end();
+    };
 
-      res.json(result);
+    res.once("finish", finalizeRequestSpan);
+    res.once("close", finalizeRequestSpan);
+
+    try {
+      await otelContext.with(requestContext, async () => {
+        requestSpan.addEvent("http.request.received", {
+          "http.request_id": requestId,
+          "agent.type": requestedAgentType,
+          "agent.session.requested_id": requestedSessionId || "",
+        });
+
+        const { agentType, userPrompt, sessionId, maxSteps, messageHistory, externalInput } = req.body;
+
+        if (!agentType) {
+          requestSpan.setStatus({ code: SpanStatusCode.ERROR, message: "agentType is required" });
+          requestSpan.setAttribute("http.status_code", 400);
+          res.status(400).json({ error: "agentType is required" });
+          return;
+        }
+
+        if (!sessionId && !userPrompt) {
+          requestSpan.setStatus({ code: SpanStatusCode.ERROR, message: "userPrompt is required to start a new session" });
+          requestSpan.setAttribute("http.status_code", 400);
+          res.status(400).json({ error: "userPrompt is required to start a new session" });
+          return;
+        }
+
+        const result = await runAgent({
+          agentType,
+          userPrompt,
+          sessionId,
+          maxSteps,
+          messageHistory,
+          externalInput,
+        });
+
+        requestSpan.setAttribute("agent.session.id", result.sessionId);
+        requestSpan.setAttribute("agent.type", agentType);
+        requestSpan.setAttribute("agent.result.status", result.status);
+        requestSpan.setAttribute("agent.result.message", result.message);
+        requestSpan.setAttribute("http.status_code", 200);
+        requestSpan.setStatus({
+          code: result.success ? SpanStatusCode.OK : SpanStatusCode.ERROR,
+          message: result.message,
+        });
+
+        requestSpan.addEvent("http.response.ready", {
+          "agent.session.id": result.sessionId,
+          "agent.result.status": result.status,
+          "agent.result.success": result.success,
+        });
+
+        res.json(result);
+      });
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       console.error("Error running agent:", err);
+      requestSpan.recordException(err);
+      requestSpan.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
+      requestSpan.setAttribute("http.status_code", 500);
       res.status(500).json({
         error: "Error running agent",
         message: err.message,
@@ -228,6 +276,47 @@ app.post("/api/agent/run", (req, res, next) => {
  */
 app.get("/api/agent/list", (_req, res) => {
   res.json({ agents: getRegisteredAgentTypes() });
+});
+
+// ============================================================================
+// Screenshot — SSE subscription + upload endpoint
+// ============================================================================
+
+const SCREENSHOT_CAPTURE_INTERVAL_MS = 1000;
+
+app.get("/api/screenshot/subscribe", (req, res) => {
+  const sessionId = typeof req.query.sessionId === "string" ? req.query.sessionId : undefined;
+  if (!sessionId) {
+    res.status(400).json({ error: "sessionId query param is required" });
+    return;
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  // Send a capture event at a regular interval
+  const timer = setInterval(() => {
+    res.write(`event: capture\ndata: ${Date.now()}\n\n`);
+  }, SCREENSHOT_CAPTURE_INTERVAL_MS);
+
+  req.on("close", () => {
+    clearInterval(timer);
+    console.log(`[Screenshot SSE] Client disconnected (session ${sessionId})`);
+  });
+});
+
+app.post("/api/screenshot", (req, res) => {
+  const { sessionId, base64 } = req.body;
+  if (!sessionId || !base64) {
+    res.status(400).json({ error: "sessionId and base64 are required" });
+    return;
+  }
+  saveScreenshot(sessionId, base64)
+    .then((filePath) => res.json({ saved: true, filePath }))
+    .catch((err) => res.status(500).json({ error: err.message }));
 });
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -534,6 +623,91 @@ app.get("/api/get-speech-credentials", (req, res, next) => {
         error: "Error retrieving speech credentials",
         message: err.message,
         stack: err.stack,
+      });
+    }
+  })();
+});
+
+// MAI-Transcribe-1: Speech-to-text via Azure LLM Speech API
+app.post("/api/transcribe", (req, res, next) => {
+  (async () => {
+    try {
+      if (!SPEECH_KEY || !SPEECH_REGION) {
+        return res.status(400).json({
+          error: "Azure Speech Service key or region is not configured",
+        });
+      }
+
+      const { audio, mimeType } = req.body;
+      if (!audio) {
+        return res.status(400).json({ error: "No audio data provided" });
+      }
+
+      const audioBuffer = Buffer.from(audio, "base64");
+
+      // Build multipart form data for the Azure LLM Speech API
+      const boundary = `----FormBoundary${Date.now()}`;
+      const definition = JSON.stringify({
+        locales: ["en-US"],
+        enhancedMode: {
+          enabled: true,
+          model: "mai-transcribe-1",
+        },
+      });
+
+      // Determine file extension from MIME type
+      const ext = (mimeType || "audio/webm").includes("ogg") ? "ogg" : "webm";
+
+      // Construct multipart body manually
+      const parts: Buffer[] = [];
+      // Definition part
+      parts.push(
+        Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="definition"\r\nContent-Type: application/json\r\n\r\n${definition}\r\n`
+        )
+      );
+      // Audio part
+      parts.push(
+        Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="audio"; filename="audio.${ext}"\r\nContent-Type: ${mimeType || "audio/webm"}\r\n\r\n`
+        )
+      );
+      parts.push(audioBuffer);
+      parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+
+      const body = Buffer.concat(parts);
+
+      const apiUrl = `https://${SPEECH_REGION}.api.cognitive.microsoft.com/speechtotext/transcriptions:transcribe?api-version=2024-11-15`;
+      const response = await axios.post<{
+        combinedPhrases?: { text: string }[];
+        phrases?: { text: string }[];
+      }>(apiUrl, body, {
+        headers: {
+          "Ocp-Apim-Subscription-Key": SPEECH_KEY,
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        },
+        maxBodyLength: Infinity,
+      } as any);
+
+      // Extract text from response
+      const combinedText =
+        response.data?.combinedPhrases?.[0]?.text ||
+        response.data?.phrases?.map((p) => p.text).join(" ") ||
+        "";
+
+      res.json({ text: combinedText, raw: response.data });
+    } catch (error) {
+      const err =
+        error instanceof Error
+          ? error
+          : new Error(String(error));
+      console.error(
+        "Transcription error:",
+        (error as any)?.response?.data || err.message
+      );
+      res.status((error as any)?.response?.status || 500).json({
+        error: "Transcription failed",
+        message: (error as any)?.response?.data?.error?.message || err.message,
       });
     }
   })();
@@ -1553,7 +1727,7 @@ app.post("/api/teaching/save-finetune", (req, res, next) => {
 - click_select_button: Press SELECT/OK to confirm
 - open_menu: Open menus
 - delegate_to_typing: Type text into input fields via specialized typing agent
-- request_screenshot: Get visual feedback
+- get_latest_screenshot: Get visual feedback
 - get_device_state: Check device status
 - launch_app: Open apps like YouTube, Netflix
 - delegate_to_navigation: Navigate with directional buttons, go home, go back
@@ -1621,6 +1795,7 @@ app.post("/api/teaching/cleanup", (req, res, next) => {
 app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
   console.log(`Visit http://localhost:${port} to access the application`);
+  console.log(`Telemetry Viewer: http://localhost:${port}/telemetry`);
 });
 
 // Graceful shutdown

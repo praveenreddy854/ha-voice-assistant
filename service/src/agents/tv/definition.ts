@@ -4,7 +4,7 @@
  * Implements AgentDefinition for the TV automation agent.
  *
  * Tools WITH execute functions auto-loop inside ToolLoopAgent.
- * The `request_screenshot` tool has NO execute — it breaks the loop
+ * The `get_latest_screenshot` tool has NO execute — it breaks the loop
  * and the orchestrator pauses for external input from the client.
  */
 
@@ -19,37 +19,82 @@ import { ToolDefinition } from "../core/agentLoop";
 import {
   TV_AGENT_INSTRUCTIONS,
   TV_AGENT_MAX_ITERATIONS_CAP,
-  TV_TOOLS,
   TV_AGENT_NAME,
   TV_AGENT_DESCRIPTION,
 } from "./constants";
 import {
   executeTool as executeTvTool,
   ToolExecutionContext as TvToolContext,
-} from "./toolExecutors";
+  TV_TOOLS,
+  TOOLS_NEEDING_EXTERNAL_INPUT,
+  getToolActionSummary,
+} from "./tools";
 import { TvToolName, TvToolArguments, TvAgentStep } from "./types";
-import { getKnownDeviceStates } from "../../ha";
+import { getKnownDeviceStates, callHAServiceDirect } from "../../ha";
 import {
   HOME_ASSISTANT_TOKEN,
   HOME_ASSISTANT_URL,
   TV_AGENT_DEVICES,
 } from "../../config";
-import { cropImageToTv } from "./imageProcessor";
+import { delay } from "../common/utils";
 import { saveScreenshotToServerFile } from "./screenshotSaver";
 import { saveTvFlowMemory } from "./flowMemory";
 import { HassState } from "../../types/ha";
+import { loadSkillsForDevices } from "./skills/skillLoader";
+import {
+  addEvent,
+  addToolResult,
+  getActiveSessionId,
+} from "../../tracing/agentTraceStore";
 
 // ============================================================================
 // Helpers
 // ============================================================================
 
 async function getTvAgentDeviceStates(): Promise<HassState[]> {
-  return (await getKnownDeviceStates()).filter((s) =>
-    TV_AGENT_DEVICES.includes(s.entity_id.split(".")[1])
-  );
+  return (await getKnownDeviceStates()).filter((s) => {
+    const entityName = s.entity_id.split(".")[1];
+    return TV_AGENT_DEVICES.some((d) => entityName === d || entityName.startsWith(d + "_"));
+  });
 }
 
-function getTvToolContext(): TvToolContext {
+/**
+ * Check if any TV agent device is in standby/off and wake it.
+ * Returns info about whether a wake was performed.
+ */
+async function ensureDeviceAwake(): Promise<{ woken: boolean; state: string }> {
+  const states = await getTvAgentDeviceStates();
+  const mediaPlayer = states.find((s) => s.entity_id.startsWith("media_player."));
+  const remoteEntity = states.find((s) => s.entity_id.startsWith("remote."));
+
+  if (!mediaPlayer) {
+    return { woken: false, state: "unknown" };
+  }
+
+  if (mediaPlayer.state === "standby" || mediaPlayer.state === "off") {
+    if (remoteEntity) {
+      console.log(
+        `[TV Agent] Device in ${mediaPlayer.state}, sending wakeup to ${remoteEntity.entity_id}`
+      );
+      await callHAServiceDirect("remote", "send_command", remoteEntity.entity_id, {
+        command: "wakeup",
+      });
+      await delay(2500);
+
+      // Verify state after wake
+      const updatedStates = await getTvAgentDeviceStates();
+      const updated = updatedStates.find((s) => s.entity_id === mediaPlayer.entity_id);
+      return { woken: true, state: updated?.state || "unknown" };
+    }
+  }
+
+  return { woken: false, state: mediaPlayer.state };
+}
+
+/** Latest screenshot captured by processExternalInput, shared with sub-agents. */
+let latestScreenshot: { base64: string; contentType: string } | null = null;
+
+function getTvToolContext(sessionId?: string): TvToolContext {
   if (!HOME_ASSISTANT_URL || !HOME_ASSISTANT_TOKEN) {
     throw new Error(
       "Home Assistant connection is not configured. Set HOME_ASSISTANT_URL and HOME_ASSISTANT_TOKEN."
@@ -58,54 +103,28 @@ function getTvToolContext(): TvToolContext {
   return {
     homeAssistantUrl: HOME_ASSISTANT_URL,
     homeAssistantToken: HOME_ASSISTANT_TOKEN,
+    sessionId: sessionId || getActiveSessionId() || undefined,
     activeAgent: "tv",
+    screenshotBase64: latestScreenshot?.base64,
+    screenshotContentType: latestScreenshot?.contentType,
   };
 }
 
-function getToolActionSummary(
-  toolName: string,
-  args: Record<string, unknown>
-): string {
-  switch (toolName) {
-    case "click_power_button":
-      return "Press power";
-    case "media_control":
-      return `Media control: ${args.action || "action"}`;
-    case "click_select_button":
-      return "Press select";
-    case "open_menu":
-      return "Open menu";
-    case "delegate_to_typing":
-      return `Delegate typing: "${args.text_to_type || "text"}"`;
-    case "request_screenshot":
-      return "Request screenshot";
-    case "get_device_state":
-      return "Get device state";
-    case "launch_app":
-      return `Launch ${args.app_name || "app"}`;
-    case "analyze_screenshot":
-      return `Analyze: ${args.query || "screenshot"}`;
-    case "verify_ui_state":
-      return `Verify: ${args.expected_state || "UI state"}`;
-    case "retrieve_similar_flows":
-      return `Retrieve similar flows: ${args.current_goal || "goal"}`;
-    case "wait":
-      return `Wait ${args.duration_ms || 1000}ms`;
-    default:
-      return `Execute ${toolName}`;
-  }
-}
-
-// ============================================================================
-// Tools without execute (break the loop for external input)
-// ============================================================================
-
-/** Tools that break the loop — they need external input from the client. */
-const TOOLS_WITHOUT_EXECUTE = new Set<string>(["request_screenshot"]);
 
 // ============================================================================
 // Build tools with execute functions
 // ============================================================================
+
+/**
+ * Step-level concurrency guard.
+ *
+ * When the LLM emits multiple tool calls in a single response, the AI SDK
+ * fires all execute functions concurrently. We only allow the first tool to
+ * run; the rest get a rejection message telling the LLM to call them one at
+ * a time. Node.js is single-threaded, so the synchronous check+set before
+ * the first `await` is atomic — no race condition.
+ */
+let stepGuardOwner: string | null = null;
 
 function buildTools(): ToolDefinition[] {
   return TV_TOOLS.map((t): ToolDefinition => {
@@ -117,23 +136,89 @@ function buildTools(): ToolDefinition[] {
         name: toolName,
         description: t.function.description,
         parameters: t.function.parameters as Record<string, unknown>,
+        inputSchema: t.function.inputSchema,
       },
     };
 
-    if (!TOOLS_WITHOUT_EXECUTE.has(toolName)) {
+    if (!TOOLS_NEEDING_EXTERNAL_INPUT.has(toolName)) {
       // Auto-execute: the ToolLoopAgent runs this inside its loop
       def.execute = async (args: Record<string, unknown>) => {
-        const context = getTvToolContext();
-        const result = await executeTvTool(
-          toolName as TvToolName,
-          args as unknown as TvToolArguments,
-          context
-        );
-        return {
-          observation: result.observation,
-          toolSuccess: result.toolSuccess ?? true,
-          appUiContext: result.appUiContext,
-        };
+        // ── Concurrency guard: one tool per step ──
+        if (stepGuardOwner !== null) {
+          console.warn(
+            `[TV Agent] BLOCKED parallel tool call: "${toolName}" rejected (step already running "${stepGuardOwner}")`
+          );
+          return {
+            observation:
+              `⚠️ REJECTED: "${toolName}" was called in parallel with "${stepGuardOwner}". ` +
+              `Only ONE tool is allowed per turn. Call "${toolName}" alone in your next response.`,
+            toolSuccess: false,
+          };
+        }
+        stepGuardOwner = toolName;
+
+        const startTime = Date.now();
+        console.log(`[TV Agent] ▶ Tool call: ${toolName}`, JSON.stringify(args, null, 2));
+        const traceSessionId = getActiveSessionId();
+        if (traceSessionId) {
+          addEvent(traceSessionId, "agent.tool.started", `${toolName} started`, {
+            toolName,
+            args,
+          });
+        }
+
+        try {
+          const context = getTvToolContext();
+          const result = await executeTvTool(
+            toolName as TvToolName,
+            args as unknown as TvToolArguments,
+            context
+          );
+          const durationMs = Date.now() - startTime;
+          const success = result.toolSuccess ?? true;
+
+          console.log(
+            `[TV Agent] ${success ? "✓" : "✗"} Tool result: ${toolName} (${durationMs}ms) → ${result.observation.substring(0, 200)}`
+          );
+
+          // Record in trace store
+          if (traceSessionId) {
+            addToolResult(traceSessionId, {
+              toolCallId: "",
+              toolName,
+              observation: result.observation,
+              toolSuccess: success,
+              durationMs,
+              args,
+            });
+          }
+
+          return {
+            observation: result.observation,
+            toolSuccess: success,
+            appUiContext: result.appUiContext,
+          };
+        } catch (error) {
+          const durationMs = Date.now() - startTime;
+          const errMsg = error instanceof Error ? error.message : String(error);
+          console.error(`[TV Agent] ✗ Tool error: ${toolName} (${durationMs}ms) → ${errMsg}`);
+          if (traceSessionId) {
+            addToolResult(traceSessionId, {
+              toolCallId: "",
+              toolName,
+              observation: `Tool "${toolName}" failed: ${errMsg}`,
+              toolSuccess: false,
+              durationMs,
+              args,
+            });
+          }
+          return {
+            observation: `Tool "${toolName}" failed: ${errMsg}`,
+            toolSuccess: false,
+          };
+        } finally {
+          stepGuardOwner = null;
+        }
       };
     }
     // else: no execute → loop breaks, orchestrator asks client for screenshot
@@ -147,7 +232,7 @@ function buildTools(): ToolDefinition[] {
 // ============================================================================
 
 export const tvAgentDefinition: AgentDefinition = {
-  id: "tv",
+  agentType: "tv",
   name: TV_AGENT_NAME,
   description: TV_AGENT_DESCRIPTION,
   systemPrompt: TV_AGENT_INSTRUCTIONS,
@@ -161,11 +246,17 @@ export const tvAgentDefinition: AgentDefinition = {
     let msg = `The user asked: "${userPrompt}"\n\n`;
     msg +=
       "You will now be provided with current state of all TVs in home assistant network.\n\n";
+    const deviceStates = await getTvAgentDeviceStates();
     msg += `Current device states:\n${JSON.stringify(
-      await getTvAgentDeviceStates(),
+      deviceStates,
       null,
       2
     )}\n\n`;
+
+    const skills = loadSkillsForDevices(deviceStates);
+    if (skills) {
+      msg += `${skills}\n\n`;
+    }
 
     if (options.messageHistory && options.messageHistory.length > 0) {
       msg += `Previous conversation context:\n${JSON.stringify(
@@ -199,7 +290,7 @@ export const tvAgentDefinition: AgentDefinition = {
   getToolActionSummary,
 
   buildToolContext(session) {
-    return getTvToolContext() as unknown as import("../core/types").ToolExecutionContext;
+    return getTvToolContext(session.id) as unknown as import("../core/types").ToolExecutionContext;
   },
 
   async processExternalInput(
@@ -263,31 +354,27 @@ export const tvAgentDefinition: AgentDefinition = {
       console.warn("[TV Agent] Error saving screenshot file:", saveError);
     }
 
-    // Try to crop to TV
-    console.log("[TV Agent] Processing screenshot - attempting to crop to TV...");
-    const croppedImage = await cropImageToTv(
-      base64,
-      contentType,
-      session.id,
-      pending.stepIndex,
-      pending.toolName
-    );
-
-    let finalBase64: string;
-    let finalContentType: string;
-    let observation: string;
-
-    if (croppedImage) {
-      console.log("[TV Agent] Using cropped image focused on TV");
-      finalBase64 = croppedImage.base64;
-      finalContentType = croppedImage.contentType;
-      observation = `Screenshot captured and cropped to TV screen. Analyze the image to determine the next action.`;
-    } else {
-      console.log("[TV Agent] Using original screenshot (cropping skipped)");
-      finalBase64 = base64;
-      finalContentType = contentType;
-      observation = `Screenshot captured. Analyze the image to determine the next action.`;
+    // Check if device went to standby during the screenshot round-trip
+    const wakeResult = await ensureDeviceAwake();
+    let standbyWarning = "";
+    if (wakeResult.woken) {
+      console.log(
+        `[TV Agent] Device was in standby when screenshot arrived — auto-woke, now: ${wakeResult.state}`
+      );
+      standbyWarning =
+        "\n⚠️ IMPORTANT: The device went to STANDBY during the screenshot capture. " +
+        "It has been automatically re-awakened (current state: " + wakeResult.state + "). " +
+        "This screenshot likely shows a BLACK SCREEN because the TV was asleep when captured. " +
+        "You MUST request a new screenshot before making any navigation decisions. " +
+        "Do NOT interpret a black screenshot as a valid TV state.";
     }
+
+    const finalBase64 = base64;
+    const finalContentType = contentType;
+    const observation = `Screenshot captured. Analyze the image to determine the next action.${standbyWarning}`;
+
+    // Store latest screenshot so sub-agents (typing, navigation) can access it
+    latestScreenshot = { base64: finalBase64, contentType: finalContentType };
 
     // Update step metadata
     if (step) {

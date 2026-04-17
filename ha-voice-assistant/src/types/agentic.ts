@@ -1,24 +1,26 @@
-export interface AgenticToolArguments {
-  actionType: "press" | "scroll" | "type" | "wait" | "home" | "back";
-  button?: string;
-  direction?: "up" | "down" | "left" | "right";
-  count?: number;
-  text?: string;
-  holdMs?: number;
-  waitMs?: number;
-  reason: string;
-}
-
 export interface AgenticStep {
   index: number;
   actionSummary: string;
   reasoning: string;
   observation: string;
-  toolArguments: AgenticToolArguments;
+  toolName?: string;
+  toolCallId?: string;
+  toolArguments: Record<string, unknown>;
+  toolSuccess?: boolean;
+  awaitedScreenshot?: boolean;
+  screenshotOutcome?: "none" | "pending" | "captured" | "error";
   screenshotDataUrl?: string;
   screenshotBase64?: string;
   screenshotContentType?: string;
   screenshotError?: string;
+  appUiContext?: {
+    appName?: string;
+    layoutType?: string;
+    selectionPosition?: string;
+    navigationLandmarks?: string[];
+  };
+  retryCount?: number;
+  maxRetries?: number;
 }
 
 export type AgenticFlowStatus =

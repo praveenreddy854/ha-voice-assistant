@@ -4,63 +4,36 @@
  */
 
 // Typing tool-specific argument types
-export interface NavigateArgs {
-  direction: "up" | "down" | "left" | "right";
-  count: number;
-  remote_entity_id: string;
-  reason: string;
-}
 
-export interface ClickSelectButtonArgs {
-  remote_entity_id: string;
-  reason: string;
-}
-
-export interface TypeCharacterArgs {
-  character: string;
-  remote_entity_id: string;
-  reason: string;
-}
-
-export interface RequestScreenshotArgs {
+export interface GetLatestScreenshotArgs {
   media_player_entity_id: string;
   reason: string;
 }
 
-export interface GoBackArgs {
+export interface DeleteTypedTextArgs {
   remote_entity_id: string;
   reason: string;
 }
 
-export interface WaitArgs {
-  duration_ms?: number;
-  reason: string;
-}
-
-export interface AnalyzeKeyboardArgs {
-  target_text: string;
+export interface DeterministicTypingArgs {
+  text: string;
+  current_cursor_position: string;
+  remote_entity_id: string;
+  media_player_entity_id: string;
   reason: string;
 }
 
 // Union type of all typing tool names
 export type TypingToolName =
-  | "navigate"
-  | "click_select_button"
-  | "type_character"
-  | "request_screenshot"
-  | "go_back"
-  | "wait"
-  | "analyze_keyboard";
+  | "get_latest_screenshot"
+  | "delete_typed_text"
+  | "deterministic_typing";
 
 // Union type of all typing tool arguments
 export type TypingToolArguments =
-  | NavigateArgs
-  | ClickSelectButtonArgs
-  | TypeCharacterArgs
-  | RequestScreenshotArgs
-  | GoBackArgs
-  | WaitArgs
-  | AnalyzeKeyboardArgs;
+  | GetLatestScreenshotArgs
+  | DeleteTypedTextArgs
+  | DeterministicTypingArgs;
 
 // Tool execution result
 export interface ToolExecutionResult {
@@ -74,10 +47,12 @@ export interface ToolExecutionContext {
   homeAssistantToken: string;
   screenshotBase64?: string;
   screenshotContentType?: string;
+  keyboardHints?: string;
   sessionId?: string;
   activeAgent?: "tv" | "navigation" | "typing";
   targetText?: string; // The full text being typed
   typedSoFar?: string; // Characters already typed
+  currentCursorPosition?: number; // Current cursor position index on the keyboard strip
 }
 
 // Typing agent step tracking
@@ -102,6 +77,11 @@ export interface TypingAgentSessionState {
   finalMessage?: string;
   targetText?: string;
   typedText?: string;
+  resumeSessionKey?: string;
+  pendingToolCallId?: string;
+  pendingToolName?: string;
+  awaitingScreenshot?: boolean;
+  awaitingValidation?: boolean;
 }
 
 // Typing agent result
@@ -116,6 +96,8 @@ export interface TypingAgenticFlowResult {
 export interface RunTypingAgenticFlowOptions {
   userMessage: string;
   textToType: string;
+  keyboardHints?: string;
+  resumeSessionKey?: string;
   deviceConfig: {
     remoteEntityId: string;
     mediaPlayerEntityId: string;
@@ -123,28 +105,4 @@ export interface RunTypingAgenticFlowOptions {
   screenshotBase64?: string;
   screenshotContentType?: string;
   maxIterations?: number;
-}
-
-// Keyboard layout information
-export interface KeyboardLayout {
-  type: "qwerty" | "alphabetical" | "numeric" | "custom";
-  rows: string[][];
-  specialKeys?: {
-    [key: string]: { row: number; col: number };
-  };
-}
-
-// Character position on keyboard
-export interface CharacterPosition {
-  row: number;
-  col: number;
-  isSpecialKey?: boolean;
-}
-
-// Navigation path between characters
-export interface NavigationPath {
-  from: CharacterPosition;
-  to: CharacterPosition;
-  moves: Array<{ direction: "up" | "down" | "left" | "right"; count: number }>;
-  totalMoves: number;
 }

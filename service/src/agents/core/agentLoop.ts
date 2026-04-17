@@ -3,7 +3,7 @@
  *
  * Key design:
  * - Tools WITH execute functions: auto-loop inside ToolLoopAgent
- * - Tools WITHOUT execute (e.g. request_screenshot): loop breaks, returns to caller
+ * - Tools WITHOUT execute (e.g. get_latest_screenshot): loop breaks, returns to caller
  * - complete_task: stop condition via hasToolCall
  * - Session stores messages so the orchestrator can resume after external input
  */
@@ -20,6 +20,7 @@ import type {
   ModelMessage,
   ToolSet,
 } from "ai";
+import type { z } from "zod";
 import { AI_MODEL_ADVANCED } from "../../config";
 import { azureProvider } from "../../ai";
 
@@ -32,7 +33,10 @@ export interface ToolDefinition {
   function: {
     name: string;
     description?: string;
+    /** Raw JSON schema (legacy). Ignored when `inputSchema` is provided. */
     parameters: Record<string, unknown>;
+    /** Zod schema (preferred). When present, used instead of `parameters`. */
+    inputSchema?: z.ZodType;
   };
   /**
    * If provided, the tool auto-executes inside the ToolLoopAgent loop.
@@ -56,6 +60,8 @@ export interface StepEvent {
   text: string;
   toolCalls: Array<{ toolName: string; args: unknown }>;
   finishReason: string;
+  /** Snapshot of the conversation messages at the time of this step. */
+  messages: ModelMessage[];
 }
 
 // ---- Result types ----
@@ -123,6 +129,29 @@ export interface ToolResultInput {
   toolCallId: string;
   toolName: string;
   result: unknown;
+  /** Optional image to inject into conversation so the LLM can see it directly. */
+  imageBase64?: string;
+  imageContentType?: string;
+}
+
+
+interface GenerateResultShape {
+  readonly text: string;
+  readonly finishReason: string;
+  readonly steps: ReadonlyArray<{
+    readonly toolCalls: ReadonlyArray<{
+      readonly toolCallId: string;
+      readonly toolName: string;
+      readonly input?: unknown;
+    }>;
+    readonly toolResults: ReadonlyArray<{
+      readonly toolCallId: string;
+    }>;
+    readonly finishReason: string;
+  }>;
+  readonly response: {
+    readonly messages: ReadonlyArray<ModelMessage>;
+  };
 }
 
 // ============================================================================
@@ -137,19 +166,20 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
   // Build AI SDK tool set from our definitions
   const aiTools: ToolSet = {};
   for (const def of config.tools) {
+    const desc = def.function.description ?? "";
+    const schema = def.function.inputSchema ?? jsonSchema(def.function.parameters as any);
+
     if (def.execute) {
-      // Tool with execute — auto-loops inside ToolLoopAgent
       const executeFn = def.execute;
       aiTools[def.function.name] = tool({
-        description: def.function.description ?? "",
-        inputSchema: jsonSchema(def.function.parameters as any),
+        description: desc,
+        inputSchema: schema as any,
         execute: async (args: any) => executeFn(args),
       });
     } else {
-      // Tool without execute — loop breaks, returns to caller
       aiTools[def.function.name] = tool({
-        description: def.function.description ?? "",
-        inputSchema: jsonSchema(def.function.parameters as any),
+        description: desc,
+        inputSchema: schema as any,
       });
     }
   }
@@ -174,6 +204,9 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
     } as any),
   });
 
+  // Track which session is currently running so onStepFinish can snapshot messages
+  let activeRunSessionId: string | null = null;
+
   const agent = new ToolLoopAgent({
     model: azureProvider(model ?? ""),
     tools: aiTools,
@@ -184,14 +217,16 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
     ],
     onStepFinish: config.onStepFinish
       ? ({ stepNumber, text, toolCalls, finishReason }) => {
+          const currentSession = activeRunSessionId ? sessions.get(activeRunSessionId) : undefined;
           config.onStepFinish!({
             stepNumber,
             text: text || "",
-            toolCalls: (toolCalls || []).map((tc: any) => ({
+            toolCalls: (toolCalls || []).map((tc) => ({
               toolName: tc.toolName,
-              args: tc.input ?? tc.args,
+              args: (tc as { input?: unknown }).input,
             })),
             finishReason: finishReason || "unknown",
+            messages: currentSession ? [...currentSession.messages] : [],
           });
         }
       : undefined,
@@ -207,23 +242,12 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
     const messages: ModelMessage[] = [];
 
     if (messageHistory && messageHistory.length > 0) {
-      messages.push({
-        role: "user",
-        content: "The following is the conversation history from our previous interactions:",
-      });
-
       for (const msg of messageHistory) {
-        const prefix = msg.role === "user" ? "[User]:" : "[Assistant]:";
         messages.push({
-          role: "assistant",
-          content: `${prefix} ${msg.content}`,
+          role: msg.role === "user" ? "user" : "assistant",
+          content: msg.content,
         });
       }
-
-      messages.push({
-        role: "assistant",
-        content: "I understand the conversation history above. I'll continue from where we left off.",
-      });
     }
 
     messages.push({ role: "user", content: userPrompt });
@@ -254,12 +278,15 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
     }
 
     try {
+      activeRunSessionId = sessionId;
       const result = await agent.generate({
         messages: session.messages,
       });
+      activeRunSessionId = null;
 
-      return processResult(session, result as any);
+      return processResult(session, result as GenerateResultShape);
     } catch (error) {
+      activeRunSessionId = null;
       console.error("[AgentLoop] Error in run:", error);
       return {
         type: "error",
@@ -270,29 +297,29 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
 
   function processResult(
     session: AgentLoopSession,
-    result: any
+    result: GenerateResultShape
   ): AgentStepResult {
     // Append all response messages to session for continuity
-    for (const step of result.steps) {
+    for (const _step of result.steps) {
       session.currentIteration++;
     }
 
     // Store the response messages so we can resume
     const responseMessages = result.response.messages;
-    session.messages.push(...responseMessages);
+    session.messages.push(...(responseMessages as ModelMessage[]));
 
     // Check if complete_task was called
-    const allToolCalls = result.steps.flatMap((s: any) => s.toolCalls);
+    const allToolCalls = result.steps.flatMap((s) => s.toolCalls);
     const completeCall = allToolCalls.find(
-      (tc: any) => tc.toolName === "complete_task"
+      (tc) => tc.toolName === "complete_task"
     );
 
     if (completeCall) {
       session.isComplete = true;
-      const args = (completeCall as any).input ?? (completeCall as any).args ?? {};
+      const args = (completeCall.input ?? {}) as Record<string, unknown>;
       return {
         type: "complete",
-        message: args.message || "Task completed",
+        message: (args.message as string) || "Task completed",
       };
     }
 
@@ -301,22 +328,29 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
     const lastStep = result.steps[result.steps.length - 1];
     if (lastStep && lastStep.finishReason === "tool-calls") {
       // Find tool calls that don't have results (no execute function)
-      const unresolvedToolCalls = lastStep.toolCalls.filter((tc: any) => {
+      const unresolvedToolCalls = lastStep.toolCalls.filter((tc) => {
         const hasResult = lastStep.toolResults.some(
-          (tr: any) => tr.toolCallId === tc.toolCallId
+          (tr) => tr.toolCallId === tc.toolCallId
         );
         return !hasResult;
       });
 
-      if (unresolvedToolCalls.length > 0) {
+      const fallbackToolCalls =
+        unresolvedToolCalls.length > 0
+          ? unresolvedToolCalls
+          : lastStep.toolCalls.length > 0
+            ? lastStep.toolCalls
+            : allToolCalls.slice(-1);
+
+      if (fallbackToolCalls.length > 0) {
         return {
           type: "tool_calls",
-          toolCalls: unresolvedToolCalls.map((tc: any) => ({
+          toolCalls: fallbackToolCalls.map((tc) => ({
             id: tc.toolCallId,
             type: "function" as const,
             function: {
               name: tc.toolName,
-              arguments: JSON.stringify(tc.input ?? tc.args),
+              arguments: JSON.stringify(tc.input ?? {}),
             },
           })),
         };
@@ -364,6 +398,31 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
     };
 
     session.messages.push(toolResultMessage);
+
+    // If any result includes an image, inject it as a user message so the LLM
+    // can see the screenshot directly in the conversation.
+    const imageResult = results.find((r) => r.imageBase64);
+    if (imageResult?.imageBase64) {
+      const imageMessage: ModelMessage = {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "Here is the screenshot from the TV. Analyze this image to decide your next action.",
+          },
+          {
+            type: "image",
+            image: imageResult.imageBase64,
+            mediaType: (imageResult.imageContentType || "image/jpeg") as
+              | "image/jpeg"
+              | "image/png"
+              | "image/gif"
+              | "image/webp",
+          },
+        ],
+      };
+      session.messages.push(imageMessage);
+    }
 
     // Re-run the agent with the updated messages
     return run(sessionId);

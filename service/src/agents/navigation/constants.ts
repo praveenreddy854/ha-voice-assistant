@@ -232,7 +232,7 @@ export const NAV_TOOLS: ToolDefinition[] = [
   {
     type: "function",
     function: {
-      name: "request_screenshot",
+      name: "get_latest_screenshot",
       description:
         "Request a fresh screenshot of the TV display. The screenshot will be included in the next tool response for analysis. Use this when: (1) you need to see current TV state, (2) verifying a navigation action worked, (3) the previous screenshot is stale after multiple actions.",
       parameters: {

@@ -7,7 +7,7 @@
  * - navigate: Move in directional patterns (up/down/left/right)
  * - find_search: Intelligently locate and activate search using vision AI
  * - click_select_button: Press select to activate highlighted item
- * - request_screenshot: Request screenshot for visual feedback
+ * - get_latest_screenshot: Get latest screenshot for visual feedback
  * - wait: Pause for UI animations
  */
 
@@ -27,7 +27,7 @@ export type {
   NavigateArgs,
   FindSearchArgs,
   ClickSelectButtonArgs,
-  RequestScreenshotArgs,
+  GetLatestScreenshotArgs,
   WaitArgs,
   NavToolName,
   NavToolArguments,
