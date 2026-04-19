@@ -3,7 +3,7 @@
 ## Folders
 
 • ha-voice-assistant/ – React (front-end)
-• server/ – Node.js (back-end)
+• service/ – Node.js (back-end) — see `service/CLAUDE.md` for architecture details
 
 ## Run
 

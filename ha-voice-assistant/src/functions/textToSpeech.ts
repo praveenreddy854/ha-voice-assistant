@@ -11,8 +11,6 @@ interface TextToSpeechOptions {
   text: string;
   fileName?: string;
   voice?: string;
-  rate?: string;
-  pitch?: string;
 }
 
 interface TextToSpeechResult {
@@ -22,15 +20,16 @@ interface TextToSpeechResult {
   filePath?: string;
 }
 
+// Default Dragon HD voice (MAI-Voice-1)
+const DEFAULT_VOICE = "en-US-Ava:DragonHDLatestNeural";
+
 export const synthesizeTextToSpeech = async (
   options: TextToSpeechOptions
 ): Promise<TextToSpeechResult> => {
   const {
     text,
     fileName = `speech.mp3`,
-    voice = "en-US-AriaNeural",
-    rate = "0%",
-    pitch = "0%",
+    voice = DEFAULT_VOICE,
   } = options;
 
   try {
@@ -46,27 +45,15 @@ export const synthesizeTextToSpeech = async (
 
     const speechConfig = SpeechConfig.fromSubscription(speechKey, speechRegion);
 
-    // Set the output format to MP3
     speechConfig.speechSynthesisOutputFormat =
       SpeechSynthesisOutputFormat.Audio16Khz128KBitRateMonoMp3;
 
-    // Set the voice
     speechConfig.speechSynthesisVoiceName = voice;
 
-    // Create SSML text with rate and pitch control
-    const ssmlText = `
-      <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">
-        <voice name="${voice}">
-          <prosody rate="${rate}" pitch="${pitch}">
-            ${text}
-          </prosody>
-        </voice>
-      </speak>
-    `;
+    // Dragon HD voices don't support <prosody> — use simple SSML with <voice> only
+    const ssmlText = `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US"><voice name="${voice}">${text}</voice></speak>`;
 
-    // Create audio config for file output
     const audioConfig = AudioConfig.fromAudioFileOutput(fileName);
-
     const synthesizer = new SpeechSynthesizer(speechConfig, audioConfig);
 
     return new Promise((resolve) => {
@@ -111,15 +98,13 @@ export const synthesizeTextToSpeech = async (
   }
 };
 
-// Alternative function to get audio buffer without saving to file
+// Synthesize to in-memory buffer (no file output)
 export const synthesizeTextToBuffer = async (
   options: Omit<TextToSpeechOptions, "fileName">
 ): Promise<TextToSpeechResult> => {
   const {
     text,
-    voice = "en-US-AriaNeural",
-    rate = "0%",
-    pitch = "0%",
+    voice = DEFAULT_VOICE,
   } = options;
 
   try {
@@ -135,23 +120,13 @@ export const synthesizeTextToBuffer = async (
 
     const speechConfig = SpeechConfig.fromSubscription(speechKey, speechRegion);
 
-    // Set the output format to MP3
     speechConfig.speechSynthesisOutputFormat =
       SpeechSynthesisOutputFormat.Audio16Khz128KBitRateMonoMp3;
 
-    // Set the voice
     speechConfig.speechSynthesisVoiceName = voice;
 
-    // Create SSML text with rate and pitch control
-    const ssmlText = `
-      <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">
-        <voice name="${voice}">
-          <prosody rate="${rate}" pitch="${pitch}">
-            ${text}
-          </prosody>
-        </voice>
-      </speak>
-    `;
+    // Dragon HD voices don't support <prosody> — use simple SSML with <voice> only
+    const ssmlText = `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US"><voice name="${voice}">${text}</voice></speak>`;
 
     const synthesizer = new SpeechSynthesizer(speechConfig);
 
@@ -194,7 +169,7 @@ export const synthesizeTextToBuffer = async (
   }
 };
 
-// Helper function to play audio from buffer (for web environments)
+// Play audio from buffer using Web Audio API
 export const playAudioFromBuffer = (audioBuffer: ArrayBuffer): void => {
   const audioContext = new (window.AudioContext ||
     (window as any).webkitAudioContext)();
@@ -212,25 +187,17 @@ export const playAudioFromBuffer = (audioBuffer: ArrayBuffer): void => {
     });
 };
 
-// Available voices for reference
+// Dragon HD voices available for MAI-Voice-1
 export const availableVoices = {
   "en-US": [
-    "en-US-AriaNeural",
-    "en-US-JennyNeural",
-    "en-US-GuyNeural",
-    "en-US-AmberNeural",
-    "en-US-AnaNeural",
-    "en-US-AndrewNeural",
-    "en-US-AshleyNeural",
-    "en-US-BrandonNeural",
-    "en-US-ChristopherNeural",
-    "en-US-CoraNeural",
-    "en-US-ElizabethNeural",
-    "en-US-EricNeural",
-    "en-US-JacobNeural",
-    "en-US-MichelleNeural",
-    "en-US-MonicaNeural",
-    "en-US-RogerNeural",
-    "en-US-SteffanNeural",
+    "en-US-Ava:DragonHDLatestNeural",
+    "en-US-Andrew:DragonHDLatestNeural",
+    "en-US-Aria:DragonHDLatestNeural",
+    "en-US-Brian:DragonHDLatestNeural",
+    "en-US-Davis:DragonHDLatestNeural",
+    "en-US-Emma:DragonHDLatestNeural",
+    "en-US-Jenny:DragonHDLatestNeural",
+    "en-US-Nova:DragonHDLatestNeural",
+    "en-US-Steffan:DragonHDLatestNeural",
   ],
 };
