@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Hands } from "@mediapipe/hands";
 import { Camera } from "@mediapipe/camera_utils";
+import { isCameraOnDevice } from "../../utils/tvCamera";
 
 interface GestureEvent {
   type: string;
@@ -20,6 +21,7 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
   const [recentGestures, setRecentGestures] = useState<GestureEvent[]>([]);
   const [debugMode, setDebugMode] = useState(false);
   const [handDistance, setHandDistance] = useState("Unknown");
+  const [cameraDisabled, setCameraDisabled] = useState(false);
 
   // ALL internal state as refs - NO re-renders
   const handsRef = useRef<Hands | null>(null);
@@ -466,10 +468,22 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
       return;
     }
 
+    let cancelled = false;
+
+    // In RTSP mode there is no local camera for hand tracking — skip init.
+    isCameraOnDevice().then((onDevice) => {
+      if (cancelled) return;
+      if (!onDevice) {
+        setCameraDisabled(true);
+        return;
+      }
+      setCameraDisabled(false);
+      initCamera();
+    });
+
+    function initCamera() {
     const videoElement = videoRef.current;
     if (!videoElement) return;
-
-    let cancelled = false;
 
     gestureEngineRef.current = new GestureEngine(handleGestureDetected);
 
@@ -531,6 +545,7 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
       cancelled = true;
       cleanupResources();
     }
+    } // end initCamera
 
     return () => {
       cancelled = true;
@@ -615,7 +630,19 @@ export default function HandGestureDetector({ active }: HandGestureDetectorProps
             playsInline
             muted
           />
-          {!active && (
+          {cameraDisabled && (
+            <div className="camera-disabled">
+              <span
+                className="camera-icon"
+                role="img"
+                aria-label="no camera"
+              >
+                📷
+              </span>
+              <p>Gesture detection requires an on-device camera.</p>
+            </div>
+          )}
+          {!active && !cameraDisabled && (
             <div className="camera-disabled">
               <span
                 className="camera-icon"

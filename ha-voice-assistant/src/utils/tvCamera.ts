@@ -1,4 +1,4 @@
-import { httpGet } from "../functions/httpUtils";
+import { httpGet, BASE_URL } from "../functions/httpUtils";
 
 interface ScreenshotCapture {
   dataUrl?: string;
@@ -33,6 +33,10 @@ class TvCameraController {
   private videoElement?: HTMLVideoElement;
   private canvasElement?: HTMLCanvasElement;
   private initPromise?: Promise<void>;
+
+  // RTSP mode state
+  private rtspSessionId?: string;
+  private rtspEventSource?: EventSource;
 
   private isBrowser(): boolean {
     return typeof window !== "undefined" && typeof document !== "undefined";
@@ -117,10 +121,25 @@ class TvCameraController {
     );
   }
 
+  private startRtspSubscription(): void {
+    if (this.rtspEventSource) return;
+
+    this.rtspSessionId = `rtsp-${Date.now()}`;
+    const url = `${BASE_URL}/screenshot/subscribe?sessionId=${encodeURIComponent(this.rtspSessionId)}`;
+    this.rtspEventSource = new EventSource(url);
+
+    this.rtspEventSource.onerror = () => {
+      // EventSource auto-reconnects
+    };
+
+    console.info(`[TV Agentic Flow] RTSP mode — subscribed for session ${this.rtspSessionId}`);
+  }
+
   async ensureCamera(): Promise<void> {
     const onDevice = await fetchCameraOnDevice();
     if (!onDevice) {
-      // RTSP mode — server captures frames; no local camera needed.
+      // RTSP mode — start subscription so the server captures frames.
+      this.startRtspSubscription();
       return;
     }
 
@@ -142,8 +161,7 @@ class TvCameraController {
   async capture(stepIndex: number, compress: boolean = true): Promise<ScreenshotCapture> {
     const onDevice = await fetchCameraOnDevice();
     if (!onDevice) {
-      // RTSP mode — server captures frames directly; nothing to capture locally.
-      return {};
+      return this.captureFromRtsp(stepIndex);
     }
 
     try {
@@ -224,7 +242,7 @@ class TvCameraController {
       if (!base64) {
         throw new Error("Failed to encode the captured frame.");
       }
-      
+
       const sizeKB = Math.round((base64.length * 3) / 4 / 1024);
       console.info(
         `[TV Agentic Flow] Captured screenshot for step ${stepIndex} (${targetWidth}x${targetHeight}, ~${sizeKB}KB${compress ? ', compressed' : ''})`
@@ -245,8 +263,29 @@ class TvCameraController {
     }
   }
 
+  private async captureFromRtsp(stepIndex: number): Promise<ScreenshotCapture> {
+    if (!this.rtspSessionId) {
+      this.startRtspSubscription();
+      // Give ffmpeg a moment to produce the first frame
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+
+    try {
+      const res = await httpGet<{ base64: string; contentType: string }>(
+        `/screenshot/latest?sessionId=${encodeURIComponent(this.rtspSessionId!)}`
+      );
+      const { base64, contentType } = res.data;
+      const dataUrl = `data:${contentType};base64,${base64}`;
+      const sizeKB = Math.round((base64.length * 3) / 4 / 1024);
+      console.info(`[TV Agentic Flow] RTSP screenshot for step ${stepIndex} (~${sizeKB}KB)`);
+      return { dataUrl, base64, contentType };
+    } catch {
+      return { error: "No RTSP screenshot available yet. The camera may still be starting." };
+    }
+  }
+
   isActive(): boolean {
-    return Boolean(this.stream);
+    return Boolean(this.stream) || Boolean(this.rtspEventSource);
   }
 
   async stop(): Promise<void> {
@@ -257,6 +296,14 @@ class TvCameraController {
     }
     if (this.videoElement) {
       this.videoElement.srcObject = null;
+    }
+
+    // Clean up RTSP subscription
+    if (this.rtspEventSource) {
+      this.rtspEventSource.close();
+      this.rtspEventSource = undefined;
+      this.rtspSessionId = undefined;
+      console.info("[TV Agentic Flow] Closed RTSP subscription.");
     }
 
     this.stream = null;

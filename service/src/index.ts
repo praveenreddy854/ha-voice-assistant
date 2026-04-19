@@ -33,7 +33,7 @@ import { startDeviceStateLogging } from "./deviceStateLogger";
 import { runAgent, getRegisteredAgentTypes } from "./agents/core";
 // Import TV agent to trigger registration via side-effect
 import "./agents/tv/tvAgent";
-import { saveScreenshot } from "./agents/common/screenshotStore";
+import { saveScreenshot, getLatestScreenshot } from "./agents/common/screenshotStore";
 import { isRtspMode, startRtspCapture, stopRtspCapture } from "./agents/common/rtspCapture";
 import { traceRouter } from "./tracing/traceApi";
 // Teaching mode imports - for recording manual steps and fine-tuning data
@@ -327,6 +327,20 @@ app.get("/api/screenshot/subscribe", (req, res) => {
       console.log(`[Screenshot SSE] Client disconnected (session ${sessionId})`);
     });
   }
+});
+
+app.get("/api/screenshot/latest", async (req, res) => {
+  const sessionId = typeof req.query.sessionId === "string" ? req.query.sessionId : undefined;
+  if (!sessionId) {
+    res.status(400).json({ error: "sessionId query param is required" });
+    return;
+  }
+  const result = await getLatestScreenshot(sessionId);
+  if (!result) {
+    res.status(404).json({ error: "No screenshot available" });
+    return;
+  }
+  res.json({ base64: result.base64, contentType: result.contentType });
 });
 
 app.post("/api/screenshot", (req, res) => {
