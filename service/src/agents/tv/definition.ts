@@ -40,7 +40,7 @@ import { delay } from "../common/utils";
 import { saveScreenshotToServerFile } from "./screenshotSaver";
 import { saveTvFlowMemory } from "./flowMemory";
 import { HassState } from "../../types/ha";
-import { loadSkillsForDevices } from "./skills/skillLoader";
+import { getAvailableSkills, formatSkillSummaries } from "./skills/skillRegistry";
 import {
   addEvent,
   addToolResult,
@@ -253,7 +253,7 @@ export const tvAgentDefinition: AgentDefinition = {
       2
     )}\n\n`;
 
-    const skills = loadSkillsForDevices(deviceStates);
+    const skills = formatSkillSummaries(getAvailableSkills(deviceStates));
     if (skills) {
       msg += `${skills}\n\n`;
     }

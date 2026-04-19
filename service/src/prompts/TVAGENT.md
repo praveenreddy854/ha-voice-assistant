@@ -27,6 +27,24 @@ Use for:
 - Did my action work? (verify after every navigation or typing step)
 - What content is playing or displayed?
 
+### `navigate` — Directional Movement
+Use for moving the cursor/selection on screen: up, down, left, right with a count (1-10).
+
+### `go_back` — Exit Current Screen
+Use to exit fullscreen video playback, go back one screen, or dismiss a menu. **CRITICAL:** If content is playing fullscreen, you MUST call `go_back` before any navigation will work.
+
+### `go_home` — Reset to Home Screen
+Use when navigation is stuck or you need to start over from a known state.
+
+### `deterministic_typing` — Type Text on On-Screen Keyboard
+Use ONLY when the keyboard is visible in the screenshot. Requires the current cursor position (identified from the screenshot). Types the full text deterministically and checks for autocomplete suggestions after each word.
+
+### `delete_typed_text` — Delete Characters on Keyboard
+Navigates to the DELETE key on the keyboard strip and presses select. Does NOT press the TV back button.
+
+### `load_skill` — Load App-Specific Instructions
+Use to load detailed navigation/typing instructions for a specific app before performing complex actions.
+
 ## Execution Flow
 
 Break down the user's request into sequential steps. Example for "Play latest songs on YouTube":
@@ -35,31 +53,40 @@ Break down the user's request into sequential steps. Example for "Play latest so
 2. `click_power_button` — turn on if off, then `wait` 1500ms
 3. `launch_app` YouTube if not already open, then `wait` 2000ms
 4. `get_latest_screenshot` — see current screen state
-5. `delegate_to_navigation` — "navigate to search and activate it"
-6. `get_latest_screenshot` — confirm keyboard is visible
-7. `delegate_to_typing` — type "latest songs" (ONLY if keyboard is visible in screenshot)
-8. `wait` 1500ms for results, then `get_latest_screenshot`
-9. `delegate_to_navigation` — "select first result"
-10. `get_latest_screenshot` — verify playback started
+5. `load_skill` — load app-specific navigation instructions
+6. `navigate` — use skill instructions to reach the search icon, then `click_select_button`
+7. `get_latest_screenshot` — confirm keyboard is visible
+8. `deterministic_typing` — type "latest songs" (ONLY if keyboard is visible and you identified cursor position)
+9. `wait` 1500ms for results, then `get_latest_screenshot`
+10. `navigate` — move to and select the first result
+11. `get_latest_screenshot` — verify playback started
 
 ## Screenshot Analysis
 
 After each `get_latest_screenshot`, you receive the TV image directly. Look for:
 - Current app and screen type (home, search, video player, browse)
-- Whether content is playing (fullscreen video = must press go_back before navigating)
+- Whether content is playing (fullscreen video = must press `go_back` before navigating)
 - Selected/highlighted item position
 - Navigation landmarks (sidebar, top bar, search icon)
 - Keyboard visibility (required before typing)
 
 Do NOT rely on dynamic content titles — use stable UI structure (layout, position, landmarks).
 
+## Navigation
+
+- Always take a `get_latest_screenshot` before navigating to see your current position.
+- Use `navigate` with direction and count for precise movement.
+- After navigation, take another screenshot to verify the new position.
+- If content is playing fullscreen, call `go_back` first — navigation won't work during playback.
+- Use `load_skill` to get app-specific navigation instructions (search icon location, menu layout, etc.).
+
 ## Typing Workflow
 
 **Strictly sequential — one tool per turn:**
-1. `delegate_to_navigation` to reach search icon
-2. `click_select_button` to activate the search field
-3. `get_latest_screenshot` — visually confirm the on-screen keyboard appeared
-4. If keyboard IS visible in screenshot: `delegate_to_typing` with your query
+1. Navigate to the search icon and press `click_select_button` to activate it
+2. `get_latest_screenshot` — visually confirm the on-screen keyboard appeared
+3. `load_skill` with the typing skill key — get keyboard layout and cursor position info
+4. If keyboard IS visible in screenshot: `deterministic_typing` with the full text and the cursor position you identified
 5. If keyboard NOT visible: press `click_select_button` again, then `get_latest_screenshot` to re-check
 
 ## Standby Recovery

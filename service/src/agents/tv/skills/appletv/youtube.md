@@ -51,7 +51,7 @@ If you are deeper in the sidebar (e.g., on Library), press **Up** multiple times
 3. Press Up until Search icon is highlighted
 4. Press select to open search
 5. Verify keyboard appeared with screenshot
-6. delegate_to_typing to type the search query
+6. Use `deterministic_typing` to type the search query
 7. Navigate Down to results and select
 
 ### "Play something from subscriptions"

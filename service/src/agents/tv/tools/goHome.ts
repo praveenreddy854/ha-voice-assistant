@@ -9,29 +9,31 @@ export const inputSchema = z.object({
     "Home Assistant entity ID of the remote control to use."
   ),
   reason: z.string().describe(
-    "Why you're opening menu (e.g., 'to access settings', 'to find additional options')."
+    "Why you're pressing HOME (e.g., 'to reset to home screen', 'to start navigation from a known state')."
   ),
 });
 
-export type OpenMenuInput = z.infer<typeof inputSchema>;
+export type GoHomeInput = z.infer<typeof inputSchema>;
 
 async function execute(
-  args: OpenMenuInput,
+  args: GoHomeInput,
   context: ToolExecutionContext
 ): Promise<ToolExecutionResult> {
   const parsed = inputSchema.parse(args);
   const defaultWait = Number.isFinite(TV_DEFAULT_WAIT_MS)
-    ? Math.max(250, TV_DEFAULT_WAIT_MS)
+    ? Math.max(500, TV_DEFAULT_WAIT_MS)
     : 1500;
 
   const deviceName = parsed.remote_entity_id.replace("remote.", "");
-  const plainCommand = `Open menu on ${deviceName}`;
+  const plainCommand = `Go home on ${deviceName}`;
+
+  console.log(`[TV Agent] Executing go_home: ${plainCommand}`);
 
   const result = await executeHACommand(plainCommand);
 
   if (!result.success) {
     return {
-      observation: `Failed to execute "${plainCommand}": ${result.message}. Use web_search to find the correct service call for this device.`,
+      observation: `❌ Failed to go home: ${result.message}. Try again or use an alternative approach.`,
       needsScreenshot: false,
       toolSuccess: false,
     };
@@ -39,15 +41,15 @@ async function execute(
 
   await delay(defaultWait);
   return {
-    observation: `Successfully executed "${plainCommand}". ${parsed.reason}`,
-    needsScreenshot: false,
+    observation: `✅ Successfully pressed HOME button on ${deviceName}.\n📍 Reason: ${parsed.reason}\n➡️ The TV should now show the home screen.`,
+    needsScreenshot: true,
   };
 }
 
 export const definition: TvToolDefinition = {
-  name: "open_menu",
+  name: "go_home",
   description:
-    "Open the main menu, settings menu, or context menu depending on the current screen. Use this to access device settings, additional options, or when you need to find menu-specific functionality.",
+    "Press the HOME button to return to the device's home screen. Use this to reset to a known state when navigation gets stuck or you need to start over.",
   inputSchema,
   execute,
 };

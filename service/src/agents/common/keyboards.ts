@@ -18,7 +18,7 @@ export interface KeyboardLayoutMap {
 }
 
 /**
- * YouTube Apple TV horizontal alphabetical strip.
+ * Apple TV horizontal alphabetical strip (shared across YouTube, Netflix, etc.).
  *
  * Layout:
  *   Position:  0             1      2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27     28
@@ -29,8 +29,8 @@ export interface KeyboardLayoutMap {
  *     - 2nd click: switches to special characters
  *     - 3rd click: returns to alphabets (a-z)
  */
-export const YOUTUBE_APPLETV_KEYBOARD: KeyboardLayoutMap = {
-  name: "YouTube Apple TV Horizontal Strip",
+export const APPLETV_KEYBOARD: KeyboardLayoutMap = {
+  name: "Apple TV Horizontal Strip",
   defaultPosition: 2, // 'a'
   defaultChar: "a",
   positions: {
@@ -74,7 +74,7 @@ export function resolveKeyboardLayout(
   appHint?: string
 ): KeyboardLayoutMap {
   // Currently only one layout — extend this when adding Samsung, Netflix, etc.
-  return YOUTUBE_APPLETV_KEYBOARD;
+  return APPLETV_KEYBOARD;
 }
 
 export interface NavigationStep {

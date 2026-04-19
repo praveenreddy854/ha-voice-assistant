@@ -167,21 +167,18 @@ export const processRecognizedText = async (
           text:
             message ||
             "Completed the requested TV task using the on-screen agent.",
-          messageToAnnounce:
-            message ||
-            "I completed the requested TV interaction.",
+          messageToAnnounce: "Done",
           agenticSteps: steps,
           finalCommand,
           sessionLog,
         });
       } else {
-        const errorMessage =
-          agenticResult.errorMessage ||
-          "I couldn't complete that TV task right now.";
         handleRecognizedText({
           sender: "assistant",
-          text: errorMessage,
-          messageToAnnounce: errorMessage,
+          text:
+            agenticResult.errorMessage ||
+            "I couldn't complete that TV task right now.",
+          messageToAnnounce: "Something went wrong",
           sessionLog,
         });
       }

@@ -6,7 +6,7 @@ import {
 } from "../types/agentic";
 import { Response } from "../types/response";
 import { messageHistoryManager } from "../utils/sessionManager";
-import { captureTvScreenshot, tvCameraController } from "../utils/tvCamera";
+import { captureTvScreenshot, tvCameraController, isCameraOnDevice } from "../utils/tvCamera";
 import { SessionLogEntry } from "../components/AgentSessionLog";
 import { AgentRunResult, formatToolArgs, logStepDelta } from "./agentic";
 
@@ -162,6 +162,9 @@ class ScreenshotSubscription {
 
   private async handleCaptureEvent(): Promise<void> {
     if (!this.sessionId || this.capturing) return;
+    // In RTSP mode, the server saves frames directly — no local capture needed.
+    const onDevice = await isCameraOnDevice();
+    if (!onDevice) return;
     this.capturing = true;
     try {
       const capture = await captureTvScreenshot(-1);

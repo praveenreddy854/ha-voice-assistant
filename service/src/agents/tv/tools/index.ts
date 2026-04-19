@@ -7,14 +7,17 @@ import { ToolExecutionContext, ToolExecutionResult, TvToolDefinition } from "./t
 import * as clickPowerButton from "./clickPowerButton";
 import * as mediaControl from "./mediaControl";
 import * as clickSelectButton from "./clickSelectButton";
-import * as openMenu from "./openMenu";
-import * as delegateToTyping from "./delegateToTyping";
+import * as goBack from "./goBack";
+import * as goHome from "./goHome";
+import * as navigate from "./navigate";
+import * as deterministicTyping from "./deterministicTyping";
+import * as deleteTypedText from "./deleteTypedText";
 import * as getLatestScreenshot from "./getLatestScreenshot";
 import * as getDeviceState from "./getDeviceState";
 import * as launchApp from "./launchApp";
-import * as delegateToNavigation from "./delegateToNavigation";
 import * as retrieveSimilarFlows from "./retrieveSimilarFlows";
 import * as webSearch from "./webSearch";
+import * as loadSkill from "./loadSkill";
 import * as wait from "./wait";
 
 // ============================================================================
@@ -25,14 +28,17 @@ const ALL_TOOLS = [
   clickPowerButton,
   mediaControl,
   clickSelectButton,
-  openMenu,
-  delegateToTyping,
+  goBack,
+  goHome,
+  navigate,
+  deterministicTyping,
+  deleteTypedText,
   getLatestScreenshot,
   getDeviceState,
   launchApp,
-  delegateToNavigation,
   retrieveSimilarFlows,
   webSearch,
+  loadSkill,
   wait,
 ] as const;
 
@@ -104,10 +110,16 @@ export function getToolActionSummary(
       return `Media control: ${args.action || "action"}`;
     case "click_select_button":
       return "Press select";
-    case "open_menu":
-      return "Open menu";
-    case "delegate_to_typing":
-      return `Delegate typing: "${args.text_to_type || "text"}"`;
+    case "go_back":
+      return "Press back";
+    case "go_home":
+      return "Press home";
+    case "navigate":
+      return `Navigate ${args.direction || "?"} x${args.count || 1}`;
+    case "deterministic_typing":
+      return `Type: "${args.text || "text"}"`;
+    case "delete_typed_text":
+      return "Delete typed text";
     case "get_latest_screenshot":
       return "Get latest screenshot";
     case "get_device_state":
@@ -118,6 +130,8 @@ export function getToolActionSummary(
       return `Retrieve similar flows: ${args.current_goal || "goal"}`;
     case "web_search":
       return `Search HA docs: ${args.query || args.url || "query"}`;
+    case "load_skill":
+      return `Load skill: ${args.skill_key || "skill"}`;
     case "wait":
       return `Wait ${args.duration_ms || 1000}ms`;
     default:

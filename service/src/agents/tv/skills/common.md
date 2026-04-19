@@ -12,7 +12,7 @@
 ## Search Workflow
 1. Navigate to the search icon and press select to activate the search field.
 2. Request a screenshot to confirm the on-screen keyboard appeared.
-3. Only delegate_to_typing AFTER verifying the keyboard is visible.
+3. Only use `deterministic_typing` AFTER verifying the keyboard is visible.
 4. If no keyboard appears, press select again or navigate to the input field first.
 
 ## App Launch

@@ -1,8 +1,31 @@
+import { httpGet } from "../functions/httpUtils";
+
 interface ScreenshotCapture {
   dataUrl?: string;
   base64?: string;
   contentType?: string;
   error?: string;
+}
+
+/** Cached result of GET /api/camera/config */
+let _cameraOnDevice: boolean | null = null;
+
+/** Fetch camera config from the server (cached after first call). */
+async function fetchCameraOnDevice(): Promise<boolean> {
+  if (_cameraOnDevice !== null) return _cameraOnDevice;
+  try {
+    const res = await httpGet<{ onDevice: boolean }>("/camera/config");
+    _cameraOnDevice = res.data.onDevice;
+  } catch {
+    // Default to on-device if server is unreachable
+    _cameraOnDevice = true;
+  }
+  return _cameraOnDevice;
+}
+
+/** Exposed so other modules can check without re-fetching. */
+export async function isCameraOnDevice(): Promise<boolean> {
+  return fetchCameraOnDevice();
 }
 
 class TvCameraController {
@@ -95,6 +118,12 @@ class TvCameraController {
   }
 
   async ensureCamera(): Promise<void> {
+    const onDevice = await fetchCameraOnDevice();
+    if (!onDevice) {
+      // RTSP mode — server captures frames; no local camera needed.
+      return;
+    }
+
     if (this.stream) {
       return;
     }
@@ -111,6 +140,12 @@ class TvCameraController {
   }
 
   async capture(stepIndex: number, compress: boolean = true): Promise<ScreenshotCapture> {
+    const onDevice = await fetchCameraOnDevice();
+    if (!onDevice) {
+      // RTSP mode — server captures frames directly; nothing to capture locally.
+      return {};
+    }
+
     try {
       await this.ensureCamera();
     } catch (error) {

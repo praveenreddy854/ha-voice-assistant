@@ -34,6 +34,7 @@ import {
 import { getAgent } from "./registry";
 import { resolveMaxSteps } from "../common/utils";
 import { getLatestScreenshot } from "../common/screenshotStore";
+import { isRtspMode, startRtspCapture } from "../common/rtspCapture";
 import type { ModelMessage } from "ai";
 import {
   createTrace,
@@ -357,19 +358,41 @@ async function handleToolCalls(
 
   // Auto-fulfill get_latest_screenshot by reading from disk
   if (primaryCall.function.name === "get_latest_screenshot") {
-    const screenshot = await getLatestScreenshot(session.id);
-    if (screenshot) {
-      console.log(
-        `[Orchestrator] Auto-fulfilling get_latest_screenshot from disk: ${screenshot.filePath}`
+    // In RTSP mode, ensure capture is running and wait for the first frame
+    if (isRtspMode()) {
+      await startRtspCapture(session.id);
+      // Wait up to 3 seconds for the first frame to appear
+      for (let i = 0; i < 6; i++) {
+        const screenshot = await getLatestScreenshot(session.id);
+        if (screenshot) {
+          console.log(
+            `[Orchestrator] Auto-fulfilling get_latest_screenshot from RTSP: ${screenshot.filePath}`
+          );
+          return handleExternalInput(session, def, {
+            type: "screenshot",
+            data: { base64: screenshot.base64, contentType: screenshot.contentType },
+          });
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      console.warn(
+        `[Orchestrator] RTSP capture failed to produce a frame for session ${session.id}`
       );
-      return handleExternalInput(session, def, {
-        type: "screenshot",
-        data: { base64: screenshot.base64, contentType: screenshot.contentType },
-      });
+    } else {
+      const screenshot = await getLatestScreenshot(session.id);
+      if (screenshot) {
+        console.log(
+          `[Orchestrator] Auto-fulfilling get_latest_screenshot from disk: ${screenshot.filePath}`
+        );
+        return handleExternalInput(session, def, {
+          type: "screenshot",
+          data: { base64: screenshot.base64, contentType: screenshot.contentType },
+        });
+      }
+      console.warn(
+        `[Orchestrator] No screenshot on disk for session ${session.id}, falling back to client`
+      );
     }
-    console.warn(
-      `[Orchestrator] No screenshot on disk for session ${session.id}, falling back to client`
-    );
   }
 
   return buildResult(

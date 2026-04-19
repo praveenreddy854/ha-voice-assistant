@@ -34,6 +34,7 @@ import { runAgent, getRegisteredAgentTypes } from "./agents/core";
 // Import TV agent to trigger registration via side-effect
 import "./agents/tv/tvAgent";
 import { saveScreenshot } from "./agents/common/screenshotStore";
+import { isRtspMode, startRtspCapture, stopRtspCapture } from "./agents/common/rtspCapture";
 import { traceRouter } from "./tracing/traceApi";
 // Teaching mode imports - for recording manual steps and fine-tuning data
 import {
@@ -279,6 +280,14 @@ app.get("/api/agent/list", (_req, res) => {
 });
 
 // ============================================================================
+// Camera config — tells the client whether to use the on-device camera
+// ============================================================================
+
+app.get("/api/camera/config", (_req, res) => {
+  res.json({ onDevice: !isRtspMode() });
+});
+
+// ============================================================================
 // Screenshot — SSE subscription + upload endpoint
 // ============================================================================
 
@@ -297,15 +306,27 @@ app.get("/api/screenshot/subscribe", (req, res) => {
     Connection: "keep-alive",
   });
 
-  // Send a capture event at a regular interval
-  const timer = setInterval(() => {
-    res.write(`event: capture\ndata: ${Date.now()}\n\n`);
-  }, SCREENSHOT_CAPTURE_INTERVAL_MS);
+  if (isRtspMode()) {
+    // RTSP mode: server captures frames directly from the RTSP stream
+    startRtspCapture(sessionId).catch((err) => {
+      console.error(`[RTSP] Failed to start capture for session ${sessionId}:`, err.message);
+    });
 
-  req.on("close", () => {
-    clearInterval(timer);
-    console.log(`[Screenshot SSE] Client disconnected (session ${sessionId})`);
-  });
+    req.on("close", () => {
+      stopRtspCapture(sessionId);
+      console.log(`[Screenshot SSE] Client disconnected, RTSP stopped (session ${sessionId})`);
+    });
+  } else {
+    // On-device camera mode: tell client to capture at a regular interval
+    const timer = setInterval(() => {
+      res.write(`event: capture\ndata: ${Date.now()}\n\n`);
+    }, SCREENSHOT_CAPTURE_INTERVAL_MS);
+
+    req.on("close", () => {
+      clearInterval(timer);
+      console.log(`[Screenshot SSE] Client disconnected (session ${sessionId})`);
+    });
+  }
 });
 
 app.post("/api/screenshot", (req, res) => {
@@ -1725,12 +1746,16 @@ app.post("/api/teaching/save-finetune", (req, res, next) => {
 - click_power_button: Turn TV on/off
 - media_control: Play, pause, volume, etc.
 - click_select_button: Press SELECT/OK to confirm
-- open_menu: Open menus
-- delegate_to_typing: Type text into input fields via specialized typing agent
+- go_back: Go back to previous screen
+- go_home: Return to home screen
+- navigate: Move cursor in a direction (up/down/left/right)
+- find_search: Locate and activate search using vision AI
+- deterministic_typing: Type text on on-screen keyboard
+- delete_typed_text: Delete typed characters
 - get_latest_screenshot: Get visual feedback
 - get_device_state: Check device status
 - launch_app: Open apps like YouTube, Netflix
-- delegate_to_navigation: Navigate with directional buttons, go home, go back
+- load_skill: Load detailed skill instructions when needed
 
 Given a task and screen state, call the appropriate tool with correct arguments.`,
             },

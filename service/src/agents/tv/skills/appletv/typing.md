@@ -32,5 +32,5 @@ deterministic_typing(text="latest telugu songs", current_cursor_position="a")
 
 ### If the tool reports an error:
 1. It tells you what it expected vs what it actually saw on screen.
-2. Use `go_back` to delete the incorrect characters.
+2. Use delete key on the keyboard to remove the incorrect characters.
 3. Call `deterministic_typing` again with the remaining text and current cursor position.

@@ -9,8 +9,6 @@ This document provides comprehensive documentation for the service package's age
 - [Core Components](#core-components)
 - [Agents](#agents)
   - [TV Agent](#tv-agent)
-  - [Navigation Agent](#navigation-agent)
-  - [Typing Agent](#typing-agent)
 - [Common Utilities](#common-utilities)
 - [Teaching System](#teaching-system)
 - [Custom Agent Loop](#custom-agent-loop)
@@ -50,13 +48,12 @@ The service package is a Node.js/Express backend that provides:
 │  │                 (OpenAI Chat Completions)                      │ │
 │  └────────────────────────────────────────────────────────────────┘ │
 │                              │                                       │
-│     ┌────────────────────────┼────────────────────────┐             │
-│     │                        │                        │             │
-│     ▼                        ▼                        ▼             │
-│  ┌──────────┐          ┌──────────┐          ┌──────────┐          │
-│  │ TV Agent │◄────────►│Navigation│◄────────►│ Typing   │          │
-│  │ (Parent) │ delegate │  Agent   │ delegate │  Agent   │          │
-│  └──────────┘          └──────────┘          └──────────┘          │
+│                              │                                       │
+│                              ▼                                       │
+│                        ┌──────────┐                                  │
+│                        │ TV Agent │                                  │
+│                        │  + Skills│                                  │
+│                        └──────────┘                                  │
 │                                                                      │
 ├─────────────────────────────────────────────────────────────────────┤
 │                    Supporting Systems                                │
@@ -99,7 +96,7 @@ Handles reminder-related operations:
 
 ## Agents
 
-The agent system uses a hierarchical architecture with specialized sub-agents:
+The agent system uses a single TV agent with on-demand skill loading:
 
 ### TV Agent
 
@@ -109,7 +106,7 @@ The TV Agent is the primary orchestrator for smart TV automation tasks.
 
 #### Purpose
 - Execute complex, multi-step TV control sequences
-- Coordinate sub-agents for specialized tasks
+- Load device/app-specific skill instructions on demand
 - Process visual feedback for intelligent decision-making
 
 #### Tools
@@ -119,13 +116,18 @@ The TV Agent is the primary orchestrator for smart TV automation tasks.
 | `click_power_button` | Turn TV on/off |
 | `media_control` | Play, pause, volume, seek operations |
 | `click_select_button` | Confirm selections |
-| `open_menu` | Access menus and settings |
-| `delegate_to_typing` | Hand off text input to Typing Agent |
-| `request_screenshot` | Capture current screen state |
+| `go_back` | Go back to previous screen |
+| `go_home` | Return to home screen |
+| `navigate` | Move cursor in a direction (up/down/left/right) |
+| `find_search` | Locate and activate search using vision AI |
+| `deterministic_typing` | Type text on on-screen keyboard |
+| `delete_typed_text` | Delete typed characters on keyboard |
+| `get_latest_screenshot` | Capture current screen state |
 | `get_device_state` | Query device status |
 | `launch_app` | Open specific applications |
-| `analyze_screenshot` | AI-powered visual analysis |
-| `verify_ui_state` | Validate expected UI state |
+| `load_skill` | Load detailed skill instructions on demand |
+| `retrieve_similar_flows` | Find similar past automation flows |
+| `web_search` | Search for documentation or info |
 | `wait` | Pause for UI transitions |
 
 #### Configuration
@@ -148,121 +150,20 @@ const result = await runTvAgenticFlow({
 });
 ```
 
----
+#### Skill System
 
-### Navigation Agent
+The TV agent discovers available skills at startup and shows summaries in its initial message. When the agent needs detailed guidance (e.g., keyboard layout before typing, app-specific navigation), it calls `load_skill` to load full instructions on demand.
 
-**Location**: `src/agents/navigation/`
-
-A specialized sub-agent for TV UI navigation operations. The Navigation Agent uses visual feedback (screenshots) to intelligently navigate TV interfaces.
-
-#### Purpose
-- Navigate TV interfaces using directional controls with visual verification
-- Locate and activate search functionality using AI vision
-- Reset navigation state when lost or confused
-- Provide clear step-by-step feedback about navigation actions
-
-#### Screenshot-Based Navigation Strategy
-The Navigation Agent follows a rigorous visual verification approach:
-1. **Analyze**: Examine screenshot to understand current UI state (what's highlighted)
-2. **Plan**: Calculate efficient navigation path to target
-3. **Execute**: Send navigation commands (limited steps at a time)
-4. **Verify**: Request new screenshot to confirm position
-5. **Adjust**: Modify approach if needed
-
-#### Tools
-
-| Tool | Description |
-|------|-------------|
-| `go_home` | Press HOME button to reset to main screen |
-| `go_back` | Press BACK to return to previous screen |
-| `navigate` | Directional movement (up/down/left/right) with count |
-| `find_search` | AI-powered search detection, navigation, and activation |
-| `click_select_button` | Press SELECT to activate highlighted item |
-| `request_screenshot` | Request fresh screenshot for visual feedback |
-| `wait` | Pause for UI animations (100-10000ms) |
-
-#### Configuration
-
-```typescript
-NAV_AGENT_MAX_ITERATIONS_CAP = 12  // Increased for complex navigation
-MIN_RUN_CREATION_INTERVAL_MS = 2000  // Rate limiting between API calls
-```
-
-#### Usage
-
-```typescript
-import { runNavigationAgent, updateSessionScreenshot } from "./agents/navigation";
-
-const result = await runNavigationAgent({
-  userMessage: "Find and activate the search function",
-  deviceConfig: {
-    remoteEntityId: "remote.appletv",
-    mediaPlayerEntityId: "media_player.appletv",
-  },
-  screenshotBase64: "...",  // Initial screenshot for context
-  screenshotContentType: "image/jpeg",
-  maxIterations: 12,
-});
-
-// Result includes detailed step history
-console.log(result.steps);  // Array of navigation steps taken
-console.log(result.success);  // true if navigation completed successfully
-```
-
-#### Common App Navigation Patterns
-| App | Search Location | Typical Navigation |
-|-----|----------------|-------------------|
-| YouTube | Top-left | UP to menu bar, LEFT to search icon |
-| Netflix | Top navigation bar | UP to top bar, look for magnifying glass |
-| Prime Video | Top-left | UP + LEFT to search |
-| Disney+ | Top navigation | UP to reach top menu |
-| Hulu | Top-left | Similar to YouTube |
-
----
-
-### Typing Agent
-
-**Location**: `src/agents/typing/`
-
-A specialized sub-agent for text input on smart TV on-screen keyboards.
-
-#### Purpose
-- Navigate on-screen keyboards efficiently
-- Type text character-by-character
-- Handle various keyboard layouts
-
-#### Tools
-
-| Tool | Description |
-|------|-------------|
-| `navigate` | Move cursor on keyboard |
-| `click_select_button` | Select highlighted character |
-| `type_character` | Direct character input (where supported) |
-| `request_screenshot` | Verify keyboard state |
-| `go_back` | Delete characters / exit keyboard |
-| `wait` | Wait for input processing |
-| `analyze_keyboard` | AI-powered keyboard layout analysis |
-
-#### Configuration
-
-```typescript
-TYPING_AGENT_MAX_ITERATIONS_CAP = 15  // More iterations for longer text
-MIN_RUN_CREATION_INTERVAL_MS = 1500  // Faster for character input
-```
-
-
-#### Keyboard Navigation Strategy
-
-The agent calculates efficient navigation paths:
+Skill files are organized under `src/agents/tv/skills/`:
 
 ```
-Example: Type "hello"
-Navigate RIGHT x7 → Click SELECT  # h
-Navigate LEFT x3 → Click SELECT   # e
-Navigate RIGHT x7 → Click SELECT  # l
-Click SELECT                       # l (same position)
-Navigate RIGHT x3 → Click SELECT  # o
+skills/
+├── common.md                    # Always available (navigation best practices)
+├── skillRegistry.ts             # Skill discovery and loading
+└── appletv/
+    ├── general.md               # Apple TV remote mapping, states, entities
+    ├── typing.md                # Keyboard layout, deterministic typing guide
+    └── youtube.md               # YouTube-specific navigation patterns
 ```
 
 ---
@@ -527,12 +428,12 @@ npm run traces
 service/
 ├── src/
 │   ├── agents/
-│   │   ├── common/         # Shared utilities
-│   │   ├── navigation/     # Navigation sub-agent
-│   │   ├── tv/             # TV agent (main orchestrator)
-│   │   │   ├── teaching/   # Teaching system
-│   │   │   └── ...
-│   │   └── typing/         # Typing sub-agent
+│   │   ├── common/         # Shared utilities (keyboards, errors, utils)
+│   │   ├── core/           # Agent loop infrastructure
+│   │   └── tv/             # TV agent
+│   │       ├── skills/     # Skill files and registry
+│   │       ├── teaching/   # Teaching system
+│   │       └── tools/      # All TV control tools
 │   ├── prompts/            # LLM prompt templates
 │   ├── tracing/            # OpenTelemetry setup
 │   ├── types/              # TypeScript type definitions

@@ -19,7 +19,7 @@ All AI calls use the Vercel AI SDK (`ai` + `@ai-sdk/azure`). Models are configur
 |---|---|---|
 | `AI_MODEL_NANO` | Nano | Intent classification, simple JSON extraction (reminders) |
 | `AI_MODEL_MINI` | Mini | HA commands, vision helpers (TV detection, screenshot analysis) |
-| `AI_MODEL_ADVANCED` | Advanced | Agent loops (TV agent, navigation agent, typing agent) |
+| `AI_MODEL_ADVANCED` | Advanced | Agent loops (TV agent) |
 
 Each tier falls back to the one below: `AI_MODEL_ADVANCED` → `AI_MODEL_MINI` → `AI_MODEL_NANO`.
 
@@ -45,10 +45,9 @@ Core Infrastructure (src/agents/core/)
 TV Agent (src/agents/tv/)          — implements AgentDefinition
 ├── definition.ts                  — buildInitialMessage, executeTool, processExternalInput, onComplete
 ├── tvAgent.ts                     — backward-compat public API (wraps orchestrator)
-├── toolExecutors.ts               — 13 TV-specific tool executors
-├── constants.ts                   — system prompt, tool schemas
-├── Navigation Agent (sub-agent)   — directional pad, home, back, search
-└── Typing Agent (sub-agent)       — on-screen keyboard text input
+├── tools/                         — all TV control tools (navigate, type, search, etc.)
+├── skills/                        — on-demand skill files + registry
+└── constants.ts                   — system prompt, tool schemas
 ```
 
 **Adding a new agent:** Implement `AgentDefinition` (system prompt, tools, executeTool, buildInitialMessage) and call `registerAgent(def)`. The orchestrator handles session lifecycle, tool dispatch, and external-input pause/resume automatically.
@@ -63,10 +62,8 @@ The agent loop (`src/agents/core/agentLoop.ts`) is session-based with external t
 ### Key Directories
 
 - `src/agents/core/` — Generic agent infrastructure: loop, orchestrator, registry, types
-- `src/agents/tv/` — TV agent: definition, tools, constants, image processing, teaching mode
-- `src/agents/navigation/` — Navigation sub-agent
-- `src/agents/typing/` — Typing sub-agent
-- `src/agents/common/` — Shared utilities
+- `src/agents/tv/` — TV agent: definition, tools, skills, constants, image processing, teaching mode
+- `src/agents/common/` — Shared utilities (keyboards, errors, screenshot store)
 - `src/prompts/` — System prompt templates (INTENT.md, HOMEASSISTANT.md, REMINDER.md)
 
 ### Telemetry Logs

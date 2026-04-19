@@ -33,15 +33,33 @@ export interface ClickSelectButtonArgs {
   reason: string;
 }
 
-export interface OpenMenuArgs {
+export interface GoBackArgs {
   remote_entity_id: string;
   reason: string;
 }
 
-export interface DelegateToTypingArgs {
-  text_to_type: string;
+export interface GoHomeArgs {
   remote_entity_id: string;
-  media_player_entity_id: string;
+  reason: string;
+}
+
+export interface NavigateArgs {
+  direction: "up" | "down" | "left" | "right";
+  count: number;
+  remote_entity_id: string;
+  reason: string;
+}
+
+export interface DeterministicTypingArgs {
+  text: string;
+  current_cursor_position: string;
+  remote_entity_id: string;
+  reason: string;
+}
+
+export interface DeleteTypedTextArgs {
+  remote_entity_id: string;
+  current_cursor_position: string;
   reason: string;
 }
 
@@ -78,15 +96,8 @@ export interface WebSearchArgs {
   reason: string;
 }
 
-export interface FindSearchIconArgs {
-  remote_entity_id: string;
-  reason: string;
-}
-
-export interface DelegateToNavigationArgs {
-  task_description: string;
-  remote_entity_id: string;
-  media_player_entity_id: string;
+export interface LoadSkillArgs {
+  skill_key: string;
   reason: string;
 }
 
@@ -94,28 +105,34 @@ export type TvToolName =
   | "click_power_button"
   | "media_control"
   | "click_select_button"
-  | "open_menu"
-  | "delegate_to_typing"
+  | "go_back"
+  | "go_home"
+  | "navigate"
+  | "deterministic_typing"
+  | "delete_typed_text"
   | "get_latest_screenshot"
   | "get_device_state"
   | "launch_app"
-  | "delegate_to_navigation"
   | "retrieve_similar_flows"
   | "web_search"
+  | "load_skill"
   | "wait";
 
 export type TvToolArguments =
   | ClickPowerButtonArgs
   | MediaControlArgs
   | ClickSelectButtonArgs
-  | OpenMenuArgs
-  | DelegateToTypingArgs
+  | GoBackArgs
+  | GoHomeArgs
+  | NavigateArgs
+  | DeterministicTypingArgs
+  | DeleteTypedTextArgs
   | GetLatestScreenshotArgs
   | GetDeviceStateArgs
   | LaunchAppArgs
-  | DelegateToNavigationArgs
   | RetrieveSimilarFlowsArgs
   | WebSearchArgs
+  | LoadSkillArgs
   | WaitArgs;
 
 // Legacy types - keeping for backward compatibility
