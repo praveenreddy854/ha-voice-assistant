@@ -3,7 +3,7 @@ import { TvToolDefinition, ToolExecutionContext, ToolExecutionResult } from "./t
 import { callHAServiceDirect } from "../../../ha";
 import { delay } from "../../common/utils";
 import { AI_MODEL_MINI } from "../../../config";
-import { resolveKeyboardLayout, computeTypingSequence } from "../../common/keyboards";
+import { resolveKeyboardLayout, computeTypingSequence, KeyboardLayoutMap } from "../../common/keyboards";
 import { generateVisionText } from "../../../ai";
 import { getLatestScreenshot } from "../../common/screenshotStore";
 
@@ -11,8 +11,8 @@ import { getLatestScreenshot } from "../../common/screenshotStore";
 // Constants
 // ============================================================================
 
-const NAV_WAIT_MS = 100;
-const SELECT_WAIT_MS = 100;
+const NAV_WAIT_MS = 10;
+const SELECT_WAIT_MS = 10;
 const SCREENSHOT_SETTLE_MS = 1000;
 
 // ============================================================================
@@ -21,7 +21,6 @@ const SCREENSHOT_SETTLE_MS = 1000;
 
 let typingCursorPosition: number | undefined;
 
-/** Reset typing state — call when a new typing session starts. */
 export function resetTypingState(): void {
   typingCursorPosition = undefined;
 }
@@ -40,6 +39,9 @@ export const inputSchema = z.object({
   remote_entity_id: z.string().describe(
     "Home Assistant entity ID of the remote control to use."
   ),
+  already_typed: z.string().optional().describe(
+    "Text already visible in the search field (read from the screenshot). If provided, the tool will reuse the matching prefix, delete any extra characters, and only type the remaining text."
+  ),
   reason: z.string().describe(
     "Why this text is being typed."
   ),
@@ -48,27 +50,60 @@ export const inputSchema = z.object({
 export type DeterministicTypingInput = z.infer<typeof inputSchema>;
 
 // ============================================================================
-// Internal helpers
+// Remote helpers
 // ============================================================================
 
-async function readLatestScreenshot(
-  sessionId: string
-): Promise<{ base64: string; contentType: string } | undefined> {
-  const result = await getLatestScreenshot(sessionId);
-  if (!result) return undefined;
-  console.log(`[TV Agent] Read screenshot from disk: ${result.filePath} (${Math.round((result.base64.length * 3) / 4 / 1024)}KB)`);
-  return { base64: result.base64, contentType: result.contentType };
+/** Send a remote command, return an error string on failure or undefined on success. */
+async function sendRemote(
+  entityId: string,
+  command: string,
+  repeats?: number,
+): Promise<string | undefined> {
+  const data: Record<string, unknown> = { command };
+  if (repeats && repeats > 1) data.num_repeats = repeats;
+  const r = await callHAServiceDirect("remote", "send_command", entityId, data);
+  return r.success ? undefined : r.message;
 }
 
-async function canUseSuggestion(
-  screenshot: { base64: string; contentType: string },
+/** Navigate on the keyboard strip and press select for each step. */
+async function runSteps(
+  steps: ReturnType<typeof computeTypingSequence>["steps"],
+  entityId: string,
+): Promise<{ error?: string; typed: string[]; actions: number }> {
+  const typed: string[] = [];
+  let actions = 0;
+  for (const step of steps) {
+    if (step.action === "navigate" && step.direction && step.count) {
+      const err = await sendRemote(entityId, step.direction, step.count);
+      if (err) return { error: `Navigation failed at '${step.character}': ${err}`, typed, actions };
+      await delay(NAV_WAIT_MS);
+    } else if (step.action === "select") {
+      const err = await sendRemote(entityId, "select");
+      if (err) return { error: `Select failed for '${step.character}': ${err}`, typed, actions };
+      typed.push(step.character);
+      await delay(SELECT_WAIT_MS);
+    }
+    actions++;
+  }
+  return { typed, actions };
+}
+
+// ============================================================================
+// Suggestion detection
+// ============================================================================
+
+async function checkSuggestion(
+  sessionId: string,
   targetText: string,
-  typedSoFar: string
-): Promise<{ found: boolean; position?: number; text?: string }> {
+  typedSoFar: string,
+): Promise<{ position: number; text: string } | undefined> {
+  await delay(SCREENSHOT_SETTLE_MS);
+  const shot = await getLatestScreenshot(sessionId);
+  if (!shot) return undefined;
+
   try {
-    const visionModel = AI_MODEL_MINI || "gpt-4o-mini";
-    const result = await generateVisionText({
-      model: visionModel,
+    const raw = await generateVisionText({
+      model: AI_MODEL_MINI || "gpt-4o-mini",
       prompt: `Look at this TV screen showing a search keyboard with a horizontal strip of letters.
 Below the keyboard strip there is a row of suggestion pills (small text bubbles with autocomplete suggestions).
 
@@ -83,50 +118,193 @@ IMPORTANT: Only match if the suggestion text is essentially the same as "${targe
 Reply with ONLY a JSON object (no markdown):
 - If a matching suggestion exists: {"found": true, "position": <0-based index from left>, "text": "<exact suggestion text>"}
 - If no matching suggestion or no suggestions visible: {"found": false}`,
-      imageBase64: screenshot.base64,
-      imageContentType: screenshot.contentType,
+      imageBase64: shot.base64,
+      imageContentType: shot.contentType,
       maxTokens: 100,
       temperature: 0,
     });
 
-    const cleaned = result.replace(/```json\s*|\s*```/g, "").trim();
-    const parsed = JSON.parse(cleaned);
-    return {
-      found: Boolean(parsed.found),
-      position: parsed.position,
-      text: parsed.text,
-    };
-  } catch (error) {
-    console.warn(`[TV Agent] Suggestion check failed:`, error instanceof Error ? error.message : error);
-    return { found: false };
-  }
-}
-
-async function executeStep(
-  step: { action: string; direction?: string; count?: number; character: string },
-  entityId: string
-): Promise<string | undefined> {
-  if (step.action === "navigate" && step.direction && step.count) {
-    const command = step.direction === "left" ? "left" : "right";
-    const result = await callHAServiceDirect(
-      "remote", "send_command", entityId,
-      { command, num_repeats: step.count }
-    );
-    if (!result.success) {
-      return `Navigation failed at '${step.character}': ${result.message}`;
+    const parsed = JSON.parse(raw.replace(/```json\s*|\s*```/g, "").trim());
+    if (parsed.found && parsed.position !== undefined) {
+      return { position: parsed.position, text: parsed.text || "" };
     }
-    await delay(NAV_WAIT_MS);
-  } else if (step.action === "select") {
-    const result = await callHAServiceDirect(
-      "remote", "send_command", entityId,
-      { command: "select" }
-    );
-    if (!result.success) {
-      return `Select failed for '${step.character}': ${result.message}`;
-    }
-    await delay(SELECT_WAIT_MS);
+  } catch (err) {
+    console.warn(`[Typing] Suggestion check failed:`, err instanceof Error ? err.message : err);
   }
   return undefined;
+}
+
+async function selectSuggestion(
+  entityId: string,
+  position: number,
+): Promise<string | undefined> {
+  // Down from keyboard strip → suggestion row
+  let err = await sendRemote(entityId, "down");
+  if (err) return `Failed to navigate down to suggestions: ${err}`;
+
+  // Right to the correct pill
+  if (position > 0) {
+    await delay(NAV_WAIT_MS);
+    err = await sendRemote(entityId, "right", position);
+    if (err) return `Failed to navigate right to suggestion: ${err}`;
+  }
+
+  // Select the pill
+  await delay(NAV_WAIT_MS);
+  err = await sendRemote(entityId, "select");
+  if (err) return `Failed to select suggestion: ${err}`;
+
+  return undefined;
+}
+
+// ============================================================================
+// Reconcile already-typed text
+// ============================================================================
+
+/** Delete chars from the end and return remaining text to type. */
+async function reconcileExistingText(
+  alreadyTyped: string,
+  fullText: string,
+  entityId: string,
+  cursorPos: number,
+  layout: KeyboardLayoutMap,
+): Promise<{ textToType: string; cursorPos: number; actions: number; error?: string }> {
+  // Find common prefix
+  let commonLen = 0;
+  while (
+    commonLen < alreadyTyped.length &&
+    commonLen < fullText.length &&
+    alreadyTyped[commonLen] === fullText[commonLen]
+  ) {
+    commonLen++;
+  }
+
+  const charsToDelete = alreadyTyped.length - commonLen;
+  const textToType = fullText.slice(commonLen);
+  let actions = 0;
+
+  console.log(
+    `[Typing] Already typed: "${alreadyTyped}", prefix match: ${commonLen} chars, ` +
+    `deleting: ${charsToDelete}, remaining: "${textToType}"`
+  );
+
+  if (charsToDelete > 0) {
+    const deletePos = layout.positions["delete"];
+    const diff = deletePos - cursorPos;
+
+    // Navigate to DELETE key
+    if (diff !== 0) {
+      const err = await sendRemote(entityId, diff > 0 ? "right" : "left", Math.abs(diff));
+      if (err) return { textToType, cursorPos, actions, error: `Failed to navigate to DELETE: ${err}` };
+      await delay(NAV_WAIT_MS);
+      actions++;
+    }
+
+    // Press select N times to delete N chars
+    for (let i = 0; i < charsToDelete; i++) {
+      const err = await sendRemote(entityId, "select");
+      if (err) return { textToType, cursorPos: deletePos, actions, error: `Failed to delete char ${i + 1}/${charsToDelete}: ${err}` };
+      await delay(SELECT_WAIT_MS);
+      actions++;
+    }
+
+    cursorPos = deletePos;
+  }
+
+  return { textToType, cursorPos, actions };
+}
+
+// ============================================================================
+// Word-by-word typing loop
+// ============================================================================
+
+interface TypeWordsResult {
+  typed: string[];
+  cursorPos: number;
+  actions: number;
+  error?: string;
+  suggestion?: { position: number; text: string };
+}
+
+async function typeWords(
+  text: string,
+  startPos: number,
+  entityId: string,
+  layout: KeyboardLayoutMap,
+  sessionId: string,
+  fullTargetText: string,
+  prefixLen: number,
+): Promise<TypeWordsResult> {
+  const words = text.split(" ").filter((w) => w.length > 0);
+  const typed: string[] = [];
+  let pos = startPos;
+  let actions = 0;
+  let pendingCheck: Promise<void> | undefined;
+  let match: { position: number; text: string } | undefined;
+
+  // If the remaining text starts with a space, type it first
+  if (text.startsWith(" ")) {
+    const { steps, finalPosition } = computeTypingSequence(" ", pos, layout);
+    const result = await runSteps(steps, entityId);
+    if (result.error) return { typed: result.typed, cursorPos: pos, actions: result.actions, error: result.error };
+    typed.push(...result.typed);
+    actions += result.actions;
+    pos = finalPosition;
+    text = text.slice(1);
+  }
+
+  for (let i = 0; i < words.length; i++) {
+    // Check if a prior background suggestion check found a match
+    if (match) break;
+    if (pendingCheck) {
+      await pendingCheck;
+      pendingCheck = undefined;
+      if (match) break;
+    }
+
+    // Type inter-word space
+    if (i > 0) {
+      const { steps, finalPosition } = computeTypingSequence(" ", pos, layout);
+      const r = await runSteps(steps, entityId);
+      if (r.error) return { typed: [...typed, ...r.typed], cursorPos: pos, actions: actions + r.actions, error: r.error };
+      typed.push(...r.typed);
+      actions += r.actions;
+      pos = finalPosition;
+    }
+
+    // Type the word
+    const { steps, finalPosition } = computeTypingSequence(words[i], pos, layout);
+    const r = await runSteps(steps, entityId);
+    typed.push(...r.typed);
+    actions += r.actions;
+    if (r.error) return { typed, cursorPos: pos, actions, error: r.error };
+    pos = finalPosition;
+
+    // Launch background suggestion check
+    const typedSoFar = fullTargetText.slice(0, prefixLen) + typed.join("");
+    pendingCheck = (async () => {
+      console.log(`[Typing] Checking suggestions after word "${words[i]}" (typed: "${typedSoFar}")`);
+      const found = await checkSuggestion(sessionId, fullTargetText, typedSoFar);
+      if (found) {
+        console.log(`[Typing] Suggestion match: "${found.text}" at position ${found.position}`);
+        match = found;
+      }
+    })();
+  }
+
+  // Wait for any final pending check
+  if (pendingCheck) await pendingCheck;
+
+  return { typed, cursorPos: pos, actions, suggestion: match };
+}
+
+// ============================================================================
+// Result builders
+// ============================================================================
+
+function cursorLabel(pos: number, layout: KeyboardLayoutMap): string {
+  const char = Object.entries(layout.positions).find(([, p]) => p === pos)?.[0] || "?";
+  return char === " " ? "SPACE" : char;
 }
 
 // ============================================================================
@@ -135,7 +313,7 @@ async function executeStep(
 
 async function execute(
   args: DeterministicTypingInput,
-  context: ToolExecutionContext
+  context: ToolExecutionContext,
 ): Promise<ToolExecutionResult> {
   const parsed = inputSchema.parse(args);
   const layout = resolveKeyboardLayout();
@@ -145,137 +323,92 @@ async function execute(
   if (startPos === undefined) {
     return {
       observation:
-        `❌ Unknown cursor position "${parsed.current_cursor_position}". ` +
-        `Valid positions: ${Object.keys(layout.positions).map(k => k === " " ? "SPACE" : k).join(", ")}`,
+        `Unknown cursor position "${parsed.current_cursor_position}". ` +
+        `Valid: ${Object.keys(layout.positions).map((k) => (k === " " ? "SPACE" : k)).join(", ")}`,
       needsScreenshot: false,
     };
   }
 
   const fullText = parsed.text.toLowerCase();
-  const words = fullText.split(" ");
   const entityId = parsed.remote_entity_id;
-  const allTypedChars: string[] = [];
-  let currentPos = startPos;
-  let totalActions = 0;
-  let abortReason: string | undefined;
+  const sessionId = context.sessionId || "typing";
+  let cursorPos = startPos;
 
-  let pendingSuggestion: Promise<void> | undefined;
-  const suggestion: { match?: { position: number; text: string } } = {};
+  // --- Reconcile already-typed text ---
+  let textToType = fullText;
+  let prefixLen = 0;
 
-  console.log(`[TV Agent] Deterministic typing "${fullText}" (${words.length} words) from '${cursorChar}' (pos ${startPos})`);
-
-  for (let wordIdx = 0; wordIdx < words.length; wordIdx++) {
-    if (suggestion.match) break;
-    if (pendingSuggestion) {
-      await pendingSuggestion;
-      pendingSuggestion = undefined;
-      if (suggestion.match) break;
+  if (parsed.already_typed) {
+    const reconciled = await reconcileExistingText(
+      parsed.already_typed.toLowerCase(), fullText, entityId, cursorPos, layout,
+    );
+    if (reconciled.error) {
+      return { observation: `❌ ${reconciled.error}`, needsScreenshot: true, toolSuccess: false };
     }
+    textToType = reconciled.textToType;
+    cursorPos = reconciled.cursorPos;
+    prefixLen = fullText.length - textToType.length;
 
-    const word = words[wordIdx];
-
-    // Type space before each word (except the first)
-    if (wordIdx > 0) {
-      const { steps: spaceSteps, finalPosition: spaceEnd } =
-        computeTypingSequence(" ", currentPos, layout);
-
-      for (const step of spaceSteps) {
-        const err = await executeStep(step, entityId);
-        if (err) { abortReason = err; break; }
-        if (step.action === "select") allTypedChars.push(step.character);
-        totalActions++;
-      }
-      if (abortReason) break;
-      currentPos = spaceEnd;
+    if (textToType.length === 0) {
+      return {
+        observation: `✅ Search field already contains "${fullText}". No typing needed.`,
+        needsScreenshot: true,
+      };
     }
-
-    // Type the word
-    const { steps: wordSteps, finalPosition: wordEnd } =
-      computeTypingSequence(word, currentPos, layout);
-
-    for (const step of wordSteps) {
-      const err = await executeStep(step, entityId);
-      if (err) { abortReason = err; break; }
-      if (step.action === "select") allTypedChars.push(step.character);
-      totalActions++;
-    }
-    if (abortReason) break;
-    currentPos = wordEnd;
-
-    // Launch background suggestion check
-    const typedSoFar = allTypedChars.join("");
-    const sessionId = context.sessionId || "typing";
-    pendingSuggestion = (async () => {
-      await delay(SCREENSHOT_SETTLE_MS);
-      const screenshot = await readLatestScreenshot(sessionId);
-      if (!screenshot) return;
-      console.log(`[TV Agent] Checking suggestions after word "${word}" (typed: "${typedSoFar}")`);
-      const result = await canUseSuggestion(screenshot, fullText, typedSoFar);
-      if (result.found && result.position !== undefined) {
-        console.log(`[TV Agent] Suggestion match: "${result.text}" at position ${result.position}`);
-        suggestion.match = { position: result.position, text: result.text || "" };
-      }
-    })();
   }
 
-  if (pendingSuggestion) {
-    await pendingSuggestion;
-  }
+  console.log(`[Typing] Typing "${textToType}" (prefix reused: ${prefixLen} chars) from pos ${cursorPos}`);
 
-  // Update module-level cursor position
-  typingCursorPosition = currentPos;
+  // --- Type remaining text ---
+  const result = await typeWords(textToType, cursorPos, entityId, layout, sessionId, fullText, prefixLen);
+  cursorPos = result.cursorPos;
+  typingCursorPosition = cursorPos;
 
-  if (abortReason) {
-    const finalChar =
-      Object.entries(layout.positions).find(([, pos]) => pos === currentPos)?.[0] || "?";
-    const finalCharDisplay = finalChar === " " ? "SPACE" : finalChar;
-
+  if (result.error) {
     return {
       observation:
-        `⚠️ Deterministic typing stopped: ${abortReason}\n` +
-        `📝 Typed so far: "${allTypedChars.join("")}"\n` +
-        `📍 Cursor is on '${finalCharDisplay}' (position ${currentPos})\n` +
-        `🔧 Use delete_typed_text to delete incorrect characters, then call deterministic_typing again with current_cursor_position="delete".`,
+        `⚠️ Typing stopped: ${result.error}\n` +
+        `Typed so far: "${result.typed.join("")}"\n` +
+        `Cursor on '${cursorLabel(cursorPos, layout)}' (pos ${cursorPos})`,
       needsScreenshot: true,
     };
   }
 
-  if (suggestion.match) {
-    const pos = suggestion.match.position;
-    const rightSteps = pos > 0 ? `then navigate RIGHT ${pos} time(s) to reach it, ` : "";
+  // --- Auto-select suggestion if found ---
+  if (result.suggestion) {
+    const { position, text } = result.suggestion;
+    console.log(`[Typing] Auto-selecting suggestion "${text}" at position ${position}`);
+
+    const err = await selectSuggestion(entityId, position);
+    if (err) {
+      return {
+        observation: `⚠️ Found suggestion "${text}" but failed to select it: ${err}\nTyped: "${result.typed.join("")}"`,
+        needsScreenshot: true,
+      };
+    }
+
     return {
-      observation:
-        `✅ Typing paused — autocomplete suggestion found!\n` +
-        `📝 Typed so far: "${allTypedChars.join("")}"\n` +
-        `💡 Suggestion "${suggestion.match.text}" detected at position ${pos} (0-based from left).\n` +
-        `\n🔧 TO SELECT THIS SUGGESTION:\n` +
-        `1. Navigate DOWN 1 time to move from the keyboard strip to the suggestion row\n` +
-        `2. ${rightSteps ? `Navigate RIGHT ${pos} time(s) to reach the suggestion at position ${pos}` : "The suggestion is already at position 0 (leftmost)"}\n` +
-        `3. Press SELECT (click_select_button) to choose it\n` +
-        `4. Take a screenshot to verify the suggestion was selected\n` +
-        `\n⚠️ Use get_latest_screenshot AFTER selecting to verify. If the wrong suggestion was picked, use go_back and retry.`,
+      observation: `✅ Autocomplete suggestion "${text}" selected! Typed "${result.typed.join("")}", then picked suggestion at position ${position}.`,
       needsScreenshot: true,
     };
   }
-
-  const finalChar =
-    Object.entries(layout.positions).find(([, pos]) => pos === currentPos)?.[0] || "?";
-  const finalCharDisplay = finalChar === " " ? "SPACE" : finalChar;
 
   return {
     observation:
-      `✅ Deterministic typing complete: "${allTypedChars.join("")}"\n` +
-      `📝 ${totalActions} HA commands executed (${allTypedChars.length} characters typed)\n` +
-      `📍 Cursor is now on '${finalCharDisplay}' (position ${currentPos})\n` +
-      `✅ All words typed successfully.`,
+      `✅ Typing complete: "${result.typed.join("")}" (${result.actions} commands)\n` +
+      `Cursor on '${cursorLabel(cursorPos, layout)}' (pos ${cursorPos})`,
     needsScreenshot: true,
   };
 }
 
+// ============================================================================
+// Definition
+// ============================================================================
+
 export const definition: TvToolDefinition = {
   name: "deterministic_typing",
   description:
-    "Type text on the on-screen keyboard using deterministic navigation. Pass the FULL text and the current cursor position (identified from the screenshot). Types word by word, checking for autocomplete suggestions after each word. If a suggestion matches, it selects it automatically. You MUST identify the current cursor position from a screenshot before calling this tool.",
+    "Type text on the on-screen keyboard using deterministic navigation. Pass the FULL text and the current cursor position (identified from the screenshot). If text is already in the search field, pass it as already_typed — the tool will reuse the matching prefix, delete extras, and type only the remainder. Types word by word, checking for autocomplete suggestions after each word. If a suggestion matches, it selects it automatically.",
   inputSchema,
   execute,
 };
