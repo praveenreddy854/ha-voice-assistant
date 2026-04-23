@@ -43,7 +43,7 @@ import { HassState } from "../../types/ha";
 import { getAvailableSkills, formatSkillSummaries } from "./skills/skillRegistry";
 import {
   addEvent,
-  addToolResult,
+  trackToolResult,
   getActiveSessionId,
 } from "../../tracing/agentTraceStore";
 
@@ -94,6 +94,9 @@ async function ensureDeviceAwake(): Promise<{ woken: boolean; state: string }> {
 /** Latest screenshot captured by processExternalInput, shared with sub-agents. */
 let latestScreenshot: { base64: string; contentType: string } | null = null;
 
+/** The current user request — used by background monitor and validate_screen tool. */
+let currentUserPrompt: string | null = null;
+
 function getTvToolContext(sessionId?: string): TvToolContext {
   if (!HOME_ASSISTANT_URL || !HOME_ASSISTANT_TOKEN) {
     throw new Error(
@@ -107,9 +110,9 @@ function getTvToolContext(sessionId?: string): TvToolContext {
     activeAgent: "tv",
     screenshotBase64: latestScreenshot?.base64,
     screenshotContentType: latestScreenshot?.contentType,
+    userPrompt: currentUserPrompt || undefined,
   };
 }
-
 
 // ============================================================================
 // Build tools with execute functions
@@ -183,7 +186,7 @@ function buildTools(): ToolDefinition[] {
 
           // Record in trace store
           if (traceSessionId) {
-            addToolResult(traceSessionId, {
+            trackToolResult(traceSessionId, {
               toolCallId: "",
               toolName,
               observation: result.observation,
@@ -203,7 +206,7 @@ function buildTools(): ToolDefinition[] {
           const errMsg = error instanceof Error ? error.message : String(error);
           console.error(`[TV Agent] ✗ Tool error: ${toolName} (${durationMs}ms) → ${errMsg}`);
           if (traceSessionId) {
-            addToolResult(traceSessionId, {
+            trackToolResult(traceSessionId, {
               toolCallId: "",
               toolName,
               observation: `Tool "${toolName}" failed: ${errMsg}`,
@@ -243,6 +246,8 @@ export const tvAgentDefinition: AgentDefinition = {
     userPrompt: string,
     options: AgentRunOptions
   ): Promise<string> {
+    currentUserPrompt = userPrompt;
+
     let msg = `The user asked: "${userPrompt}"\n\n`;
     msg +=
       "You will now be provided with current state of all TVs in home assistant network.\n\n";

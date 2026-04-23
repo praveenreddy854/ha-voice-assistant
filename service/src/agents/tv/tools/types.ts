@@ -7,6 +7,8 @@ export interface ToolExecutionContext {
   screenshotContentType?: string;
   sessionId?: string;
   activeAgent?: "tv" | "navigation";
+  /** The user's original request — used by validate_screen and background monitor. */
+  userPrompt?: string;
 }
 
 export const toolExecutionResultSchema = z.object({

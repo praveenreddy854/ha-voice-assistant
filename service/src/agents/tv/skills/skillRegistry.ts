@@ -105,6 +105,12 @@ export function getAvailableSkills(deviceStates: HassState[]): SkillSummary[] {
     skills.push({ key: "common", ...meta });
   }
 
+  const playbackVerification = readFile(path.join(SKILLS_DIR, "playback-verification.md"));
+  if (playbackVerification) {
+    const meta = parseSkillMeta(playbackVerification);
+    skills.push({ key: "playback-verification", ...meta });
+  }
+
   // Group entities by device folder
   const deviceGroups = new Map<string, HassState[]>();
   for (const state of deviceStates) {
