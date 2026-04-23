@@ -18,6 +18,7 @@ import * as launchApp from "./launchApp";
 import * as retrieveSimilarFlows from "./retrieveSimilarFlows";
 import * as webSearch from "./webSearch";
 import * as loadSkill from "./loadSkill";
+import * as validateScreen from "./validateScreen";
 import * as wait from "./wait";
 
 // ============================================================================
@@ -39,6 +40,7 @@ const ALL_TOOLS = [
   retrieveSimilarFlows,
   webSearch,
   loadSkill,
+  validateScreen,
   wait,
 ] as const;
 
@@ -132,6 +134,8 @@ export function getToolActionSummary(
       return `Search HA docs: ${args.query || args.url || "query"}`;
     case "load_skill":
       return `Load skill: ${args.skill_key || "skill"}`;
+    case "validate_screen":
+      return `Validate screen: ${args.expected_state || "check"}`;
     case "wait":
       return `Wait ${args.duration_ms || 1000}ms`;
     default:

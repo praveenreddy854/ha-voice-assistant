@@ -296,7 +296,7 @@ export function addLLMStep(sessionId: string, step: TraceLLMStep): void {
   llmSpan.end();
 }
 
-export function addToolResult(sessionId: string, result: TraceToolResult): void {
+export function trackToolResult(sessionId: string, result: TraceToolResult): void {
   const session = activeSessions.get(sessionId);
   if (!session) {
     return;

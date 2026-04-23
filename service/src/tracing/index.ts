@@ -111,7 +111,7 @@ export {
   getAllTraces,
   addEvent,
   addLLMStep,
-  addToolResult,
+  trackToolResult as addToolResult,
   addScreenshot,
   completeTrace,
   updateTraceStatus,

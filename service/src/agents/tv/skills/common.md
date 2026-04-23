@@ -1,20 +1,42 @@
-# Common Navigation Tips (All Devices)
+# Common Operations
 
-## Before Navigating
-- If content is currently playing (video, movie, show), you MUST press back button to exit the player BEFORE navigation will work. Navigation buttons do nothing during active playback.
-- Always check device state first to know what app is open and whether media is playing.
+## Screenshot Analysis
 
-## Navigation Best Practices
-- Take small steps (1-3 button presses) and verify with a screenshot after each move.
-- Wait for the UI to settle after actions: 1500-2000ms after power on, 2000-3000ms after app launch, 1000ms after navigation.
-- If you get lost or the UI is unrecognizable, press go_home to reset to the home screen and start over.
+After `get_latest_screenshot`, look for:
+- Current app and screen type (home, search, video player, browse)
+- Whether content is playing (fullscreen video = must `go_back` before navigating)
+- Selected/highlighted item position
+- Keyboard visibility (required before typing)
 
-## Search Workflow
-1. Navigate to the search icon and press select to activate the search field.
-2. Request a screenshot to confirm the on-screen keyboard appeared.
-3. Only use `deterministic_typing` AFTER verifying the keyboard is visible.
-4. If no keyboard appears, press select again or navigate to the input field first.
+Use stable UI structure (layout, position, landmarks), not dynamic content titles.
 
-## App Launch
-- After launching an app, wait 2-3 seconds for it to fully load before taking any action.
-- Verify the app loaded by requesting a screenshot — don't assume it opened.
+## Standby Recovery
+
+If the observation says "device went to STANDBY" or screenshot is black:
+1. `wait` 2000ms for wake
+2. `get_latest_screenshot` for a fresh image
+3. Then proceed
+
+If `get_device_state` returns `standby` mid-flow, `click_power_button` first.
+Never interpret a black screenshot as valid — always re-capture.
+
+## Waiting Strategy
+
+- 1500–2000ms after power on / wakeup
+- 2000–3000ms after app launch
+- 1000–1500ms after typing
+- 1000ms after navigation before screenshot
+
+## Navigation Tips
+
+- If content is playing, `go_back` first — navigation won't work during playback.
+- If lost, `go_home` to reset to home screen and start over.
+- Use `retrieve_similar_flows` when stuck or repeating failed actions.
+
+## Search & Typing Workflow
+
+1. Navigate to search icon → `click_select_button`
+2. `get_latest_screenshot` — confirm keyboard appeared
+3. `load_skill` for typing — get keyboard layout and cursor position
+4. `deterministic_typing` with text and cursor position from screenshot
+5. If keyboard not visible: `click_select_button` again, re-check with screenshot

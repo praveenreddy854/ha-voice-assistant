@@ -1,5 +1,19 @@
 # YouTube on Apple TV — Navigation Skills
 
+## Starting Position (Fresh App Launch)
+When YouTube is freshly launched (from a turned-off state or via `launch_app`):
+1. YouTube shows a **profile selection** screen first. Press **`click_select_button`** to select the default profile, then `wait` 2000ms for the home feed to load.
+2. After profile selection, the **first content item** in the main content grid is selected/highlighted.
+3. Press **Left** once to move focus to the **Home** icon in the sidebar.
+4. From the Home icon, use the sidebar navigation below (e.g., Up 1x to reach Search).
+
+**Navigation from fresh launch to Search:**
+1. `click_select_button` → select YouTube profile
+2. `wait` 2000ms → home feed loads
+3. Press **Left** 1x → Home icon in sidebar
+4. Press **Up** 1x → Search icon
+5. Press **select** → Search keyboard appears
+
 ## Exiting Video Playback
 - When a video is playing, press **go_back** (Menu) to exit the player and return to the browse UI.
 - Navigation buttons (up/down/left/right) do NOT work while a video is playing. You must exit first.
@@ -21,7 +35,11 @@ YouTube on Apple TV uses a collapsible left sidebar. The icons from top to botto
 The sidebar is collapsed by default (only icons visible). Pressing **Left** from the content area expands it to show labels.
 
 ## How to Reach Search
-From anywhere in YouTube:
+
+**From a fresh launch** (you just called `launch_app`):
+Use the Starting Position steps above — Left 1x → Up 1x → select. Only 1 Left press needed.
+
+**From the browse UI** (after exiting a video with go_back, or general navigation):
 1. Press **Left** repeatedly (3-5 times) until the sidebar expands and an item is highlighted.
 2. The **Home** icon is typically selected by default when entering the sidebar.
 3. Press **Up 1 time** to move from Home to the **Search** icon (Search is directly above Home).
