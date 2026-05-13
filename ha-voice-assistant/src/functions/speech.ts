@@ -13,6 +13,8 @@ import {
   recordStep,
   setTeachingTimeoutCallback,
 } from "./teaching";
+import { startRealtimeChat } from "./realtimeChat";
+import { messageHistoryManager } from "../utils/sessionManager";
 
 export const processRecognizedText = async (
   text: string,
@@ -215,8 +217,30 @@ export const processRecognizedText = async (
         });
       }
     } else if (intent === Intent.Chat) {
-      // Handle chat intent (if applicable)
-      console.log("Chat intent recognized:", text);
+      let fullTranscript = "";
+
+      await startRealtimeChat(
+        text,
+        (delta) => {
+          fullTranscript += delta;
+        },
+        (finalText) => {
+          const responseText = finalText || fullTranscript || "Chat response received.";
+          handleRecognizedText({
+            sender: "assistant",
+            text: responseText,
+            // No messageToAnnounce — Realtime API audio is already playing
+          });
+          messageHistoryManager.addMessage("assistant", responseText);
+        },
+        (error) => {
+          handleRecognizedText({
+            sender: "assistant",
+            text: `Chat error: ${error}`,
+            messageToAnnounce: "Sorry, I couldn't process that.",
+          });
+        }
+      );
     }
   }
 };

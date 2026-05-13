@@ -1,20 +1,19 @@
 /**
- * Agent Loop — wrapper around AI SDK's ToolLoopAgent
+ * Agent Loop — wrapper around AI SDK's generateText with maxSteps
  *
  * Key design:
- * - Tools WITH execute functions: auto-loop inside ToolLoopAgent
+ * - Tools WITH execute functions: auto-loop inside generateText
  * - Tools WITHOUT execute (e.g. get_latest_screenshot): loop breaks, returns to caller
- * - complete_task: stop condition via hasToolCall
+ * - complete_task: no execute function, so it naturally breaks the loop
  * - Session stores messages so the orchestrator can resume after external input
  */
 
 import { randomUUID } from "crypto";
 import {
-  ToolLoopAgent,
+  generateText,
   tool,
   jsonSchema,
   stepCountIs,
-  hasToolCall,
 } from "ai";
 import type {
   ModelMessage,
@@ -39,7 +38,7 @@ export interface ToolDefinition {
     inputSchema?: z.ZodType;
   };
   /**
-   * If provided, the tool auto-executes inside the ToolLoopAgent loop.
+   * If provided, the tool auto-executes inside the generateText loop.
    * If omitted, the loop breaks and returns the tool call to the caller
    * (used for tools that need external input like screenshots).
    */
@@ -107,7 +106,7 @@ export interface AgentLoop {
   ): AgentLoopSession;
   deleteSession(sessionId: string): void;
   /**
-   * Run the agent. The ToolLoopAgent handles the full tool loop internally.
+   * Run the agent. generateText with maxSteps handles the tool loop.
    * Returns when:
    * - complete_task is called → type: "complete"
    * - a tool without execute is invoked → type: "tool_calls"
@@ -184,7 +183,7 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
     }
   }
 
-  // complete_task tool — always without execute so it triggers hasToolCall stop
+  // complete_task tool — no execute, so generateText loop breaks when it's called
   aiTools["complete_task"] = tool({
     description:
       "Call this tool when you have completed the user's request. Provide a summary.",
@@ -204,33 +203,8 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
     } as any),
   });
 
-  // Track which session is currently running so onStepFinish can snapshot messages
-  let activeRunSessionId: string | null = null;
-
-  const agent = new ToolLoopAgent({
-    model: azureProvider(model ?? ""),
-    tools: aiTools,
-    instructions: config.systemPrompt,
-    stopWhen: [
-      stepCountIs(maxIterations),
-      hasToolCall("complete_task"),
-    ],
-    onStepFinish: config.onStepFinish
-      ? ({ stepNumber, text, toolCalls, finishReason }) => {
-          const currentSession = activeRunSessionId ? sessions.get(activeRunSessionId) : undefined;
-          config.onStepFinish!({
-            stepNumber,
-            text: text || "",
-            toolCalls: (toolCalls || []).map((tc) => ({
-              toolName: tc.toolName,
-              args: (tc as { input?: unknown }).input,
-            })),
-            finishReason: finishReason || "unknown",
-            messages: currentSession ? [...currentSession.messages] : [],
-          });
-        }
-      : undefined,
-  });
+  // Step counter for onStepFinish callback
+  let stepCounter = 0;
 
   // ---- Session management ----
 
@@ -278,15 +252,32 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
     }
 
     try {
-      activeRunSessionId = sessionId;
-      const result = await agent.generate({
+      stepCounter = 0;
+      const result = await generateText({
+        model: azureProvider(model ?? ""),
+        tools: aiTools,
+        system: config.systemPrompt,
         messages: session.messages,
+        stopWhen: stepCountIs(maxIterations),
+        onStepFinish: config.onStepFinish
+          ? ({ text, toolCalls, finishReason }) => {
+              stepCounter++;
+              config.onStepFinish!({
+                stepNumber: stepCounter,
+                text: text || "",
+                toolCalls: (toolCalls || []).map((tc) => ({
+                  toolName: tc.toolName,
+                  args: (tc as { input?: unknown }).input,
+                })),
+                finishReason: finishReason || "unknown",
+                messages: [...session.messages],
+              });
+            }
+          : undefined,
       });
-      activeRunSessionId = null;
 
-      return processResult(session, result as GenerateResultShape);
+      return processResult(session, result as unknown as GenerateResultShape);
     } catch (error) {
-      activeRunSessionId = null;
       console.error("[AgentLoop] Error in run:", error);
       return {
         type: "error",

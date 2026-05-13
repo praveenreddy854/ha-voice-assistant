@@ -36,6 +36,17 @@ export const AI_MODEL_ADVANCED = process.env.AI_MODEL_ADVANCED ?? process.env.AI
 export const EMBEDDING_MODEL =
   process.env.EMBEDDING_MODEL ?? "text-embedding-ada-002";
 
+/** Realtime: voice chat via Azure OpenAI Realtime API v2 */
+export const AI_MODEL_REALTIME = process.env.AI_MODEL_REALTIME;
+export const AZURE_OPENAI_REALTIME_API_VERSION =
+  process.env.AZURE_OPENAI_REALTIME_API_VERSION ?? "2025-04-01-preview";
+
+// ============================================================================
+// User / Location
+// ============================================================================
+
+export const USER_ADDRESS = process.env.USER_ADDRESS;
+
 // ============================================================================
 // Azure Speech Service
 // ============================================================================

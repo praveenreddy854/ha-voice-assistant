@@ -27,15 +27,23 @@ Your task is to examine each incoming user message and decide which of the five 
    • "Train TV agent for playing music on Spotify"
    • "Start teaching mode to navigate to settings"
 
-4. AgenticFlow – A multi-step, on-screen interaction that requires observing the TV interface via camera screenshots (captured by the client device) and issuing several remote control actions (scrolling, selecting apps, entering text, navigating menus, etc.). These requests are NOT direct single-step device commands. They usually sound like tasks that require exploring the UI before finishing.
+4. AgenticFlow – A multi-step, on-screen TV interaction that requires navigating the TV UI via remote control actions (scrolling, selecting apps, entering text, navigating menus, etc.). The request must clearly involve controlling or navigating a TV/streaming app interface. These are NOT general knowledge questions — they are tasks that require exploring the TV UI before finishing.
    Examples:
    • "Play the latest Telugu songs on YouTube"
    • "Find a science fiction movie on Netflix and start playing it"
-   • "Open the weather app on my TV and show today's forecast"
    • "Go to settings and turn on closed captions"
    • "Scroll through Prime Video until you see new releases"
+   • "Search for cooking videos on YouTube"
 
-5. Chat – Any other message meant for open-ended conversation with the chatbot (questions, chit-chat, explanations, etc.).
+5. Chat – Questions, general knowledge, chit-chat, or any conversational message that does NOT involve controlling a smart-home device or navigating a TV interface. This includes questions about weather, news, facts, explanations, opinions, math, and anything else that is purely informational.
+   Examples:
+   • "How is the weather"
+   • "What time is it"
+   • "Tell me a joke"
+   • "What is the capital of France"
+   • "Who won the game last night"
+   • "What should I cook for dinner"
+   • "Explain quantum computing"
 
 ### Successful call
 
