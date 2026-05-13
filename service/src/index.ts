@@ -35,7 +35,9 @@ import { runAgent, getRegisteredAgentTypes } from "./agents/core";
 import "./agents/tv/tvAgent";
 import { saveScreenshot, getLatestScreenshot } from "./agents/common/screenshotStore";
 import { isRtspMode, startRtspCapture, stopRtspCapture } from "./agents/common/rtspCapture";
+import { startGestureMonitor } from "./gestureMonitor";
 import { traceRouter } from "./tracing/traceApi";
+import { setupRealtimeChatProxy } from "./realtimeChat";
 // Teaching mode imports - for recording manual steps and fine-tuning data
 import {
   startTeachingSession,
@@ -118,6 +120,11 @@ app.get("/traces", (_req, res) => {
 });
 
 startDeviceStateLogging();
+
+// Start gesture monitor for fist-to-pause TV control (RTSP mode only)
+if (isRtspMode()) {
+  startGestureMonitor();
+}
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.get("/", (req, res, next) => {
@@ -1831,11 +1838,13 @@ app.post("/api/teaching/cleanup", (req, res, next) => {
   })();
 });
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
   console.log(`Visit http://localhost:${port} to access the application`);
   console.log(`Telemetry Viewer: http://localhost:${port}/telemetry`);
 });
+
+setupRealtimeChatProxy(server);
 
 // Graceful shutdown
 process.on("SIGTERM", async () => {
