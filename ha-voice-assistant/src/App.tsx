@@ -10,13 +10,16 @@ import SpeechRecognition, {
   useSpeechRecognition,
 } from "react-speech-recognition";
 import { synthesizeTextToBuffer } from "./functions/textToSpeech";
+import { noteAnnouncement } from "./utils/recentAnnouncements";
 import { USE_AZURE_SPEECH } from "./utils/config";
 import { processRecognizedText } from "./functions/speech";
 import { playChime } from "./functions/chime";
-import { LaundryMonitor, VacuumMonitor, ReminderManager } from "./skills";
+import { LaundryMonitor, VacuumMonitor } from "./skills";
 import SkillToggles from "./components/SkillToggles";
 import SkillWrapper from "./components/SkillWrapper";
 import TeachingModeUI from "./components/TeachingModeUI";
+import Header, { ActiveView } from "./components/Header";
+import ScheduledTasksPage from "./pages/ScheduledTasksPage";
 import HandGestureDetector from "./skills/gestures/HandGestureDetector";
 import {
   SkillToggleState,
@@ -29,23 +32,17 @@ import {
   isAwaitingTeachingTask,
 } from "./functions/teaching";
 
-declare global {
-  interface Window {
-    addReminderToManager?: (reminder: any) => void;
-  }
-}
-
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isListening, setIsListening] = useState(false);
   const [isWakeWordMode, setIsWakeWordMode] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
-  const [allReminders, setAllReminders] = useState<any[]>([]);
   const [skillState, setSkillState] = useState<SkillToggleState>(
     loadSkillToggleState()
   );
   const [isGestureCameraActive, setIsGestureCameraActive] = useState(false);
   const [showTeachingUI, setShowTeachingUI] = useState(false);
+  const [activeView, setActiveView] = useState<ActiveView>("main");
   const isListeningForWakeWord = useRef(false);
 
   const { finalTranscript, resetTranscript } = useSpeechRecognition();
@@ -71,23 +68,10 @@ function App() {
   const handleRecognizedText = useCallback(async (message: Message) => {
     setMessages((prevMessages) => [...prevMessages, message]);
 
-    // Handle voice-created reminders
-    if (message.reminderData) {
-      // Convert service reminder format to local format
-      const reminder = {
-        ...message.reminderData,
-        dueDate: new Date(message.reminderData.dueDate),
-        createdAt: new Date(message.reminderData.createdAt),
-        updatedAt: new Date(message.reminderData.updatedAt),
-      };
-
-      // Add directly to ReminderManager
-      if (window.addReminderToManager) {
-        window.addReminderToManager(reminder);
-      }
-    }
-
     if (message.sender === "assistant" && message.messageToAnnounce) {
+      // Record what we're about to speak so the mic-recognized echo gets
+      // filtered downstream in processRecognizedText.
+      noteAnnouncement(message.messageToAnnounce);
       const { audioBuffer } = await synthesizeTextToBuffer({
         text: message.messageToAnnounce,
       });
@@ -111,10 +95,6 @@ function App() {
     [handleRecognizedText]
   );
 
-  const handleRemindersChange = useCallback((reminders: any[]) => {
-    setAllReminders(reminders);
-  }, []);
-
   // Handle successful teaching recording save
   const handleTeachingSaveComplete = useCallback((taskName: string, stepCount: number) => {
     const message: Message = {
@@ -130,11 +110,10 @@ function App() {
       await processRecognizedText(
         text,
         handleRecognizedText,
-        isListeningForWakeWord,
-        allReminders
+        isListeningForWakeWord
       );
     },
-    [handleRecognizedText, allReminders]
+    [handleRecognizedText]
   );
 
   const processRecognizedTextCallback = useCallback(
@@ -142,11 +121,10 @@ function App() {
       await processRecognizedText(
         text,
         handleRecognizedText,
-        isListeningForWakeWord,
-        allReminders
+        isListeningForWakeWord
       );
     },
-    [handleRecognizedText, allReminders]
+    [handleRecognizedText]
   );
 
   const startWakeWordListening = useCallback(() => {
@@ -310,6 +288,10 @@ function App() {
 
   return (
     <div className="App">
+      <Header activeView={activeView} onChangeView={setActiveView} />
+      {activeView === "scheduledTasks" && <ScheduledTasksPage />}
+      {activeView === "main" && (
+      <>
       <button
         onClick={handleOnStartRecognition}
         disabled={isListening || isListeningForWakeWord.current}
@@ -473,25 +455,6 @@ function App() {
             />
           </SkillWrapper>
 
-          <SkillWrapper
-            skillName="Voice Reminders"
-            enabled={skillState.reminderManager}
-            globalEnabled={skillState.globalEnabled}
-            onToggle={(enabled) =>
-              handleToggleSkill("reminderManager", enabled)
-            }
-            description="Voice-controlled reminder system"
-          >
-            <ReminderManager
-              onAnnouncement={
-                isSkillEnabled("reminderManager", skillState)
-                  ? handleAnnouncement
-                  : undefined
-              }
-              onRemindersChange={handleRemindersChange}
-              enabled={isSkillEnabled("reminderManager", skillState)}
-            />
-          </SkillWrapper>
         </div>
       </div>
 
@@ -523,6 +486,8 @@ function App() {
 
         <HandGestureDetector active={isGestureCameraActive} />
       </div>
+      </>
+      )}
 
       {/* Teaching Mode UI Modal */}
       {showTeachingUI && (

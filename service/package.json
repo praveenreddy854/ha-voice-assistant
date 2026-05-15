@@ -4,9 +4,11 @@
   "main": "index.js",
   "scripts": {
     "start": "NODE_ENV=production node dist/index.js",
+    "predev": "node scripts/download-models.js",
+    "prebuild": "node scripts/download-models.js",
     "build": "tsc && node scripts/copy-prompts.js",
     "dev": "npm run build && nodemon --watch src --exec 'node --inspect=0.0.0.0:9229 -r ts-node/register' src/index.ts",
-    "dev:debug": "nodemon --watch src --exec node --inspect=0.0.0.0:9229 -r ts-node/register src/index.ts",
+    "dev:debug": "node scripts/download-models.js && nodemon --watch src --exec node --inspect=0.0.0.0:9229 -r ts-node/register src/index.ts",
     "traces": "node trace-viewer.js",
     "traces:prompts": "node trace-viewer.js prompts",
     "traces:errors": "node trace-viewer.js errors",

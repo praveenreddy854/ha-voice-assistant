@@ -28,7 +28,7 @@ export const AZURE_OPENAI_API_VERSION =
 /** Nano: intent classification, simple JSON extraction */
 export const AI_MODEL_NANO = process.env.AI_MODEL_NANO;
 
-/** Mini: HA commands, reminders, vision helpers */
+/** Mini: HA commands, vision helpers */
 export const AI_MODEL_MINI = process.env.AI_MODEL_MINI ?? process.env.AI_MODEL_NANO;
 
 /** Advanced: agent loops (TV agent, navigation, typing) */
@@ -83,6 +83,11 @@ export const AZURE_COSMOS_DATABASE = process.env.AZURE_COSMOS_DATABASE;
 export const AZURE_COSMOS_CONTAINER = process.env.AZURE_COSMOS_CONTAINER;
 export const AZURE_COSMOS_TV_FLOW_CONTAINER =
   process.env.AZURE_COSMOS_TV_FLOW_CONTAINER;
+export const AZURE_COSMOS_SCHEDULED_TASKS_CONTAINER =
+  process.env.AZURE_COSMOS_SCHEDULED_TASKS_CONTAINER || "scheduled-tasks";
+export const AZURE_COSMOS_SCHEDULED_TASKS_HISTORY_CONTAINER =
+  process.env.AZURE_COSMOS_SCHEDULED_TASKS_HISTORY_CONTAINER ||
+  "scheduled-tasks-history";
 export const DEVICE_STATE_LOG_CRON =
   process.env.DEVICE_STATE_LOG_CRON || "0 * * * *";
 

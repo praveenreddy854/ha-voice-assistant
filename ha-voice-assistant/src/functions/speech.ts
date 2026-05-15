@@ -1,4 +1,6 @@
-import { getIntent, Intent, processReminder } from "./intent";
+import { getIntent, Intent } from "./intent";
+import { runScheduledTaskAgent } from "./scheduledTasks";
+import { isLikelyEcho } from "../utils/recentAnnouncements";
 import { postHaCommand } from "./ha";
 import { Message } from "../types/chat";
 import { runTvAgenticFlow, getLastSessionLog } from "./tvAgent";
@@ -19,11 +21,17 @@ import { messageHistoryManager } from "../utils/sessionManager";
 export const processRecognizedText = async (
   text: string,
   handleRecognizedText: (message: Message) => void,
-  isListeningForWakeWord: React.RefObject<boolean>,
-  currentReminders?: any[]
+  isListeningForWakeWord: React.RefObject<boolean>
 ) => {
   const lowerText = text.toLowerCase().trim();
-  
+
+  // Drop the assistant's own TTS being heard back through the mic.
+  // Keeps the conversation window alive without any mic muting.
+  if (isLikelyEcho(text)) {
+    console.log("[Speech] Dropped self-echo:", text);
+    return;
+  }
+
   // Handle stop command
   if (lowerText === "stop" || lowerText === "stop it") {
     isListeningForWakeWord.current = true;
@@ -141,22 +149,22 @@ export const processRecognizedText = async (
         text: `Command executed: Success: ${result.success}, Message: ${result.message}`,
         messageToAnnounce: result.message,
       });
-    } else if (intent === Intent.Reminder) {
-      // Handle all reminder intents (CREATE, LIST, QUERY) with unified API
-      const reminderResult = await processReminder(text, currentReminders || []);
-      if (reminderResult.success) {
-        const message = reminderResult.message || "Reminder processed successfully";
+    } else if (intent === Intent.ScheduledTask) {
+      const result = await runScheduledTaskAgent(text);
+      if (result.success && result.data) {
+        const message = result.data.message || "Scheduled task processed.";
         handleRecognizedText({
           sender: "assistant",
           text: message,
           messageToAnnounce: message,
-          reminderData: reminderResult.data,
         });
       } else {
+        const errorMessage =
+          result.errorMessage || "I couldn't process that scheduled task.";
         handleRecognizedText({
           sender: "assistant",
-          text: `Failed to process reminder: ${reminderResult.errorMessage}`,
-          messageToAnnounce: `Sorry, I couldn't process that reminder request. ${reminderResult.errorMessage}`,
+          text: errorMessage,
+          messageToAnnounce: errorMessage,
         });
       }
     } else if (intent === Intent.AgenticFlow) {
