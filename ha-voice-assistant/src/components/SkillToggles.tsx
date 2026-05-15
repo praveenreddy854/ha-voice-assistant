@@ -117,8 +117,7 @@ const SkillToggles: React.FC<SkillTogglesProps> = ({
           }}>
             {[
               { key: 'laundryMonitor', label: 'Laundry Monitor', icon: '👕', desc: 'Track washing machine cycles' },
-              { key: 'vacuumMonitor', label: 'Vacuum Monitor', icon: '🤖', desc: 'Monitor robot vacuum status' },
-              { key: 'reminderManager', label: 'Voice Reminders', icon: '🎤', desc: 'AI-powered reminder system' }
+              { key: 'vacuumMonitor', label: 'Vacuum Monitor', icon: '🤖', desc: 'Monitor robot vacuum status' }
             ].map((skill, index) => (
               <div key={skill.key} style={{
                 background: 'white',

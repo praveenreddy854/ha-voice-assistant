@@ -16,7 +16,7 @@ import { ToolDefinition } from "./agentLoop";
 /**
  * Known agent type identifiers. Extend this union when adding new agents.
  */
-export type AgentType = "tv";
+export type AgentType = "tv" | "scheduled_task";
 
 // ============================================================================
 // Tool Execution

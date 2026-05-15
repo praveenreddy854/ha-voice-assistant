@@ -2,14 +2,12 @@ export interface SkillToggleState {
   globalEnabled: boolean;
   laundryMonitor: boolean;
   vacuumMonitor: boolean;
-  reminderManager: boolean;
 }
 
 const DEFAULT_SKILL_STATE: SkillToggleState = {
   globalEnabled: true,
   laundryMonitor: true,
   vacuumMonitor: true,
-  reminderManager: true,
 };
 
 const STORAGE_KEY = 'ha-voice-assistant-skill-toggles';
