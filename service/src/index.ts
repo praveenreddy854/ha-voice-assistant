@@ -1,12 +1,15 @@
 // Initialize tracing first
-import { context as otelContext, trace as otelTrace, SpanStatusCode } from "@opentelemetry/api";
-import {
-  initializeTracing,
-  shutdownTracing,
-  getTracer,
-  getSessionTraceContext,
-} from "./tracing";
+import { initializeTracing, shutdownTracing } from "./tracing";
 initializeTracing();
+
+// Keep the process alive on unexpected errors so a single failing request,
+// WebSocket frame, or async callback does not take down the whole service.
+process.on("uncaughtException", (err) => {
+  console.error("[uncaughtException]", err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[unhandledRejection]", reason);
+});
 
 import express from "express";
 import type {
@@ -26,10 +29,8 @@ import {
   SPEECH_REGION,
   VACUUM_CLEANER_ENTITY_ID,
 } from "./config";
-import { fetchAllStates, getHACommandBody } from "./ha";
-import { classifyIntent } from "./intent";
+import { fetchAllStates } from "./ha";
 import { startDeviceStateLogging } from "./deviceStateLogger";
-import { runAgent, getRegisteredAgentTypes } from "./agents/core";
 import {
   listActiveScheduledTasks,
   deleteScheduledTask,
@@ -44,6 +45,8 @@ import { isRtspMode, startRtspCapture, stopRtspCapture } from "./agents/common/r
 import { startGestureMonitor } from "./gestureMonitor";
 import { traceRouter } from "./tracing/traceApi";
 import { setupRealtimeChatProxy } from "./realtimeChat";
+import { addAnnouncementClient } from "./announcementBus";
+import { startScheduledTaskFirer } from "./scheduledTaskFirer";
 // Teaching mode imports - for recording manual steps and fine-tuning data
 import {
   startTeachingSession,
@@ -118,6 +121,7 @@ app.get("/traces", (_req, res) => {
 });
 
 startDeviceStateLogging();
+startScheduledTaskFirer();
 
 // Start gesture monitor for fist-to-pause TV control (RTSP mode only)
 if (isRtspMode()) {
@@ -129,159 +133,14 @@ app.get("/", (req, res, next) => {
   res.send("Hello, Node.js + TypeScript!");
 });
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-app.post("/api/classifyIntent", (req, res, next) => {
-  (async () => {
-    try {
-      const { userPrompt: prompt, messageHistory } = req.body;
-      if (!prompt) {
-        return res.status(400).json({ error: "User prompt is required" });
-      }
-      const intent = await classifyIntent(prompt, messageHistory);
-      res.json(intent);
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      console.error("Error classifying intent:", err);
-      res.status(500).json({
-        error: "Error classifying intent",
-        message: err.message,
-        stack: err.stack,
-      });
-    }
-  })();
-});
-
-// ============================================================================
-// Agent API
-// ============================================================================
-
-/**
- * Run any registered agent. Works for both new sessions and continuations.
- *
- * POST /api/agent/run
- * Body: {
- *   agentType: string,         // required — which agent to run
- *   userPrompt?: string,      // required for new sessions
- *   sessionId?: string,       // to continue an existing session
- *   maxSteps?: number,
- *   messageHistory?: Array<{ role: string; content: string }>,
- *   externalInput?: { type: string; data: Record<string, unknown>; error?: string }
- * }
- */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-app.post("/api/agent/run", (req, res, next) => {
-  (async () => {
-    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const requestedSessionId = typeof req.body?.sessionId === "string" ? req.body.sessionId : undefined;
-    const requestedAgentType = typeof req.body?.agentType === "string" ? req.body.agentType : "unknown";
-    const requestParentContext = requestedSessionId
-      ? getSessionTraceContext(requestedSessionId) || otelContext.active()
-      : otelContext.active();
-    const requestSpan = getTracer().startSpan(
-      "http.request.agent.run",
-      {
-        attributes: {
-          "telemetry.kind": "http_request",
-          "http.request_id": requestId,
-          "http.method": req.method,
-          "http.route": "/api/agent/run",
-          "agent.type": requestedAgentType,
-          "agent.session.id": requestedSessionId || "",
-          "agent.session.resume": Boolean(requestedSessionId),
-        },
-      },
-      requestParentContext
-    );
-    const requestContext = otelTrace.setSpan(requestParentContext, requestSpan);
-
-    let responseSettled = false;
-    const finalizeRequestSpan = (): void => {
-      if (responseSettled) {
-        return;
-      }
-      responseSettled = true;
-      requestSpan.addEvent("http.response.sent", {
-        "http.request_id": requestId,
-        "http.status_code": res.statusCode,
-      });
-      requestSpan.end();
-    };
-
-    res.once("finish", finalizeRequestSpan);
-    res.once("close", finalizeRequestSpan);
-
-    try {
-      await otelContext.with(requestContext, async () => {
-        requestSpan.addEvent("http.request.received", {
-          "http.request_id": requestId,
-          "agent.type": requestedAgentType,
-          "agent.session.requested_id": requestedSessionId || "",
-        });
-
-        const { agentType, userPrompt, sessionId, maxSteps, messageHistory, externalInput } = req.body;
-
-        if (!agentType) {
-          requestSpan.setStatus({ code: SpanStatusCode.ERROR, message: "agentType is required" });
-          requestSpan.setAttribute("http.status_code", 400);
-          res.status(400).json({ error: "agentType is required" });
-          return;
-        }
-
-        if (!sessionId && !userPrompt) {
-          requestSpan.setStatus({ code: SpanStatusCode.ERROR, message: "userPrompt is required to start a new session" });
-          requestSpan.setAttribute("http.status_code", 400);
-          res.status(400).json({ error: "userPrompt is required to start a new session" });
-          return;
-        }
-
-        const result = await runAgent({
-          agentType,
-          userPrompt,
-          sessionId,
-          maxSteps,
-          messageHistory,
-          externalInput,
-        });
-
-        requestSpan.setAttribute("agent.session.id", result.sessionId);
-        requestSpan.setAttribute("agent.type", agentType);
-        requestSpan.setAttribute("agent.result.status", result.status);
-        requestSpan.setAttribute("agent.result.message", result.message);
-        requestSpan.setAttribute("http.status_code", 200);
-        requestSpan.setStatus({
-          code: result.success ? SpanStatusCode.OK : SpanStatusCode.ERROR,
-          message: result.message,
-        });
-
-        requestSpan.addEvent("http.response.ready", {
-          "agent.session.id": result.sessionId,
-          "agent.result.status": result.status,
-          "agent.result.success": result.success,
-        });
-
-        res.json(result);
-      });
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      console.error("Error running agent:", err);
-      requestSpan.recordException(err);
-      requestSpan.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
-      requestSpan.setAttribute("http.status_code", 500);
-      res.status(500).json({
-        error: "Error running agent",
-        message: err.message,
-      });
-    }
-  })();
-});
-
-/**
- * List all registered agents.
- *
- * GET /api/agent/list
- */
-app.get("/api/agent/list", (_req, res) => {
-  res.json({ agents: getRegisteredAgentTypes() });
+app.get("/api/announcements/stream", (_req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  res.write(`event: ready\ndata: ${Date.now()}\n\n`);
+  addAnnouncementClient(res);
 });
 
 // ============================================================================
@@ -420,142 +279,6 @@ app.post("/api/screenshot", (req, res) => {
   saveScreenshot(sessionId, base64)
     .then((filePath) => res.json({ saved: true, filePath }))
     .catch((err) => res.status(500).json({ error: err.message }));
-});
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-app.post("/api/postHACommand", (req, res, next) => {
-  (async () => {
-    try {
-      const { command, messageHistory } = req.body;
-      const haBody = await getHACommandBody(command, messageHistory);
-      
-      // Handle array of commands (multi-step operations)
-      if (Array.isArray(haBody)) {
-        const results: any[] = [];
-        const errors: string[] = [];
-        
-        for (let i = 0; i < haBody.length; i++) {
-          const cmd = haBody[i];
-          let urlPath = cmd.url_path;
-          const entityId = cmd.entity_id;
-          
-          if (!urlPath || urlPath.split("/").length !== 2) {
-            errors.push(`Step ${i + 1}: Invalid url_path`);
-            continue;
-          }
-          
-          if (!entityId) {
-            errors.push(`Step ${i + 1}: Missing entity_id`);
-            continue;
-          }
-          
-          if (urlPath.startsWith("/")) {
-            urlPath = urlPath.substring(1);
-          }
-          
-          const requestBody: any = { entity_id: cmd.entity_id };
-          if (cmd.service_data) {
-            Object.assign(requestBody, cmd.service_data);
-          }
-          
-          try {
-            const haResponse = await axios.post(
-              `${HOME_ASSISTANT_URL}/api/services/${urlPath}`,
-              requestBody,
-              {
-                headers: {
-                  "Content-Type": "application/json",
-                  Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
-                },
-              }
-            );
-            results.push(haResponse.data);
-            console.log(`Step ${i + 1} executed:`, cmd);
-          } catch (stepError) {
-            errors.push(`Step ${i + 1}: ${stepError instanceof Error ? stepError.message : 'Unknown error'}`);
-          }
-          
-          // Add delay between commands
-          if (i < haBody.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 300));
-          }
-        }
-        
-        res.json({
-          success: errors.length === 0,
-          message: errors.length === 0 
-            ? `All ${haBody.length} commands executed successfully`
-            : `${haBody.length - errors.length}/${haBody.length} commands succeeded. Errors: ${errors.join('; ')}`,
-          data: results,
-        });
-        console.log(`Received multi-command: ${command}; Steps: ${haBody.length}`);
-        return;
-      }
-      
-      // Handle single command (original logic)
-      let urlPath = haBody.url_path;
-      const entityId = haBody.entity_id;
-
-      if (!urlPath || urlPath.split("/").length !== 2) {
-        return res.status(400).json({
-          error: "Invalid services home assistant path",
-          message:
-            "Command body must contain a valid 'url_path' in the format '<domain>/<service>'",
-        });
-      }
-
-      if (!entityId) {
-        return res.status(400).json({
-          error: "Missing entity_id",
-          message: "Command body must contain 'entity_id'",
-        });
-      }
-
-      // Remove leading and trailing slashes from the URL path
-      if (urlPath.startsWith("/")) {
-        urlPath = urlPath.substring(1);
-      }
-
-      // Prepare the request body
-      const requestBody: any = { entity_id: haBody.entity_id };
-
-      // Add service_data if present (for play_media and other services that need additional data)
-      if (haBody.service_data) {
-        // For Home Assistant API, merge service_data fields directly at the top level
-        Object.assign(requestBody, haBody.service_data);
-      }
-
-      const haResponse = await axios.post(
-        `${HOME_ASSISTANT_URL}/api/services/${urlPath}`,
-        requestBody,
-        {
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
-          },
-        }
-      );
-
-      if (haResponse.status < 200 || haResponse.status >= 300) {
-        const errorText = haResponse.data;
-        console.error("Home Assistant error response:", errorText);
-      }
-
-      res.json({
-        success: true,
-        message: `Command ${command} sent successfully`,
-      });
-      console.log(`Received command: ${command}; Response:`, haResponse.data);
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      console.error("Error posting command to Home Assistant:", err);
-      res.status(500).json({
-        error: "Error posting command to Home Assistant",
-        message: err.message,
-        stack: err.stack,
-      });
-    }
-  })();
 });
 
 app.get("/api/fetchAllDeviceStates", (req, res, next) => {
@@ -726,91 +449,6 @@ app.get("/api/get-speech-credentials", (req, res, next) => {
         error: "Error retrieving speech credentials",
         message: err.message,
         stack: err.stack,
-      });
-    }
-  })();
-});
-
-// MAI-Transcribe-1: Speech-to-text via Azure LLM Speech API
-app.post("/api/transcribe", (req, res, next) => {
-  (async () => {
-    try {
-      if (!SPEECH_KEY || !SPEECH_REGION) {
-        return res.status(400).json({
-          error: "Azure Speech Service key or region is not configured",
-        });
-      }
-
-      const { audio, mimeType } = req.body;
-      if (!audio) {
-        return res.status(400).json({ error: "No audio data provided" });
-      }
-
-      const audioBuffer = Buffer.from(audio, "base64");
-
-      // Build multipart form data for the Azure LLM Speech API
-      const boundary = `----FormBoundary${Date.now()}`;
-      const definition = JSON.stringify({
-        locales: ["en-US"],
-        enhancedMode: {
-          enabled: true,
-          model: "mai-transcribe-1",
-        },
-      });
-
-      // Determine file extension from MIME type
-      const ext = (mimeType || "audio/webm").includes("ogg") ? "ogg" : "webm";
-
-      // Construct multipart body manually
-      const parts: Buffer[] = [];
-      // Definition part
-      parts.push(
-        Buffer.from(
-          `--${boundary}\r\nContent-Disposition: form-data; name="definition"\r\nContent-Type: application/json\r\n\r\n${definition}\r\n`
-        )
-      );
-      // Audio part
-      parts.push(
-        Buffer.from(
-          `--${boundary}\r\nContent-Disposition: form-data; name="audio"; filename="audio.${ext}"\r\nContent-Type: ${mimeType || "audio/webm"}\r\n\r\n`
-        )
-      );
-      parts.push(audioBuffer);
-      parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
-
-      const body = Buffer.concat(parts);
-
-      const apiUrl = `https://${SPEECH_REGION}.api.cognitive.microsoft.com/speechtotext/transcriptions:transcribe?api-version=2024-11-15`;
-      const response = await axios.post<{
-        combinedPhrases?: { text: string }[];
-        phrases?: { text: string }[];
-      }>(apiUrl, body, {
-        headers: {
-          "Ocp-Apim-Subscription-Key": SPEECH_KEY,
-          "Content-Type": `multipart/form-data; boundary=${boundary}`,
-        },
-        maxBodyLength: Infinity,
-      } as any);
-
-      // Extract text from response
-      const combinedText =
-        response.data?.combinedPhrases?.[0]?.text ||
-        response.data?.phrases?.map((p) => p.text).join(" ") ||
-        "";
-
-      res.json({ text: combinedText, raw: response.data });
-    } catch (error) {
-      const err =
-        error instanceof Error
-          ? error
-          : new Error(String(error));
-      console.error(
-        "Transcription error:",
-        (error as any)?.response?.data || err.message
-      );
-      res.status((error as any)?.response?.status || 500).json({
-        error: "Transcription failed",
-        message: (error as any)?.response?.data?.error?.message || err.message,
       });
     }
   })();

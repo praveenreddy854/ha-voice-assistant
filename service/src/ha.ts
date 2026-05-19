@@ -200,18 +200,64 @@ export async function executeHACommand(
 /**
  * Execute a single Home Assistant command
  */
+function normalizeHAUrlPath(urlPath: string): string {
+  let normalized = urlPath.trim().replace(/^\/+|\/+$/g, "");
+  if (normalized.startsWith("api/")) {
+    normalized = normalized.substring("api/".length);
+  }
+  if (normalized.startsWith("services/")) {
+    normalized = normalized.substring("services/".length);
+  }
+  return normalized;
+}
+
+function stateLookupEntityId(urlPath: string): string | undefined {
+  const parts = urlPath.split("/");
+  if (parts.length !== 2 || parts[0] !== "states") {
+    return undefined;
+  }
+  const entityId = decodeURIComponent(parts[1].trim());
+  return entityId || undefined;
+}
+
+async function executeHAStateLookup(
+  entityId: string,
+  originalCommand: string
+): Promise<{ success: boolean; message: string; data?: any }> {
+  const haResponse = await axios.get(
+    `${HOME_ASSISTANT_URL}/api/states/${encodeURIComponent(entityId)}`,
+    {
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
+      },
+    }
+  );
+
+  const state = haResponse.data as HassState;
+  const friendlyName = state.attributes?.friendly_name || entityId;
+  console.log(`HA State retrieved: ${originalCommand}; Response:`, state);
+
+  return {
+    success: true,
+    message: `${friendlyName} state is "${state.state}"`,
+    data: state,
+  };
+}
+
 async function executeSingleHACommand(
   haBody: HassServiceCommand,
   originalCommand: string
 ): Promise<{ success: boolean; message: string; data?: any }> {
-  let urlPath = haBody.url_path;
-  const entityId = haBody.entity_id;
+  const urlPath = normalizeHAUrlPath(haBody.url_path || "");
+  const stateEntityId = stateLookupEntityId(urlPath);
+  const entityId = stateEntityId || haBody.entity_id;
 
-  if (!urlPath || urlPath.split("/").length !== 2) {
+  if (!urlPath || (!stateEntityId && urlPath.split("/").length !== 2)) {
     return {
       success: false,
       message:
-        "Invalid services home assistant path. Command body must contain a valid 'url_path' in the format '<domain>/<service>'",
+        "Invalid home assistant path. Command body must contain a valid 'url_path' in the format '<domain>/<service>' or 'states/<entity_id>'",
     };
   }
 
@@ -222,13 +268,12 @@ async function executeSingleHACommand(
     };
   }
 
-  // Remove leading and trailing slashes from the URL path
-  if (urlPath.startsWith("/")) {
-    urlPath = urlPath.substring(1);
+  if (stateEntityId) {
+    return executeHAStateLookup(entityId, originalCommand);
   }
 
   // Prepare the request body
-  const requestBody: any = { entity_id: haBody.entity_id };
+  const requestBody: any = { entity_id: entityId };
 
   // Add service_data if present (for play_media and other services that need additional data)
   if (haBody.service_data) {

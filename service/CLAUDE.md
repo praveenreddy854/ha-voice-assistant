@@ -17,7 +17,7 @@ All AI calls use the Vercel AI SDK (`ai` + `@ai-sdk/azure`). Models are configur
 
 | Env Var | Tier | Used For |
 |---|---|---|
-| `AI_MODEL_NANO` | Nano | Intent classification, simple JSON extraction (reminders) |
+| `AI_MODEL_NANO` | Nano | Simple JSON extraction |
 | `AI_MODEL_MINI` | Mini | HA commands, vision helpers (TV detection, screenshot analysis) |
 | `AI_MODEL_ADVANCED` | Advanced | Agent loops (TV agent) |
 
@@ -64,7 +64,7 @@ The agent loop (`src/agents/core/agentLoop.ts`) is session-based with external t
 - `src/agents/core/` — Generic agent infrastructure: loop, orchestrator, registry, types
 - `src/agents/tv/` — TV agent: definition, tools, skills, constants, image processing, teaching mode
 - `src/agents/common/` — Shared utilities (keyboards, errors, screenshot store)
-- `src/prompts/` — System prompt templates (INTENT.md, HOMEASSISTANT.md, REMINDER.md)
+- `src/prompts/` — System prompt templates (HOMEASSISTANT.md, SCHEDULEDTASK.md, TVAGENT.md)
 
 ### Telemetry Logs
 

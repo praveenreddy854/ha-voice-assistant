@@ -82,6 +82,8 @@ export interface AgentToolCall {
 export interface AgentStepResult {
   type: AgentStepResultType;
   message?: string;
+  /** Present when type === "complete" — reflects the success flag the agent passed to complete_task. */
+  success?: boolean;
   /** Present when type === "tool_calls" — these are tool calls that need external handling. */
   toolCalls?: AgentToolCall[];
   error?: string;
@@ -311,6 +313,7 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
       return {
         type: "complete",
         message: (args.message as string) || "Task completed",
+        success: args.success !== false,
       };
     }
 

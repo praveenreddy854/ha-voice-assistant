@@ -22,7 +22,7 @@ This document provides comprehensive documentation for the service package's age
 
 The service package is a Node.js/Express backend that provides:
 
-- **Intent Classification**: Routes user requests to appropriate handlers (Home Assistant commands, reminders, chat, or agentic flows)
+- **Realtime Voice Agent**: Handles post-wake-word voice turns, tool calls, and Specialist agent delegation
 - **Home Assistant Integration**: Executes smart home commands via Home Assistant APIs
 - **Multi-Agent System**: Orchestrates specialized AI agents for complex TV automation tasks
 - **Teaching Mode**: Records and learns from manual demonstrations to improve agent performance
@@ -37,8 +37,8 @@ The service package is a Node.js/Express backend that provides:
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
-│  │    Intent    │  │     Home     │  │   Reminder   │              │
-│  │ Classifier   │  │  Assistant   │  │  Processor   │              │
+│  │  Realtime    │  │     Home     │  │ ScheduledTask│              │
+│  │ Voice Agent  │  │  Assistant   │  │    Agent     │              │
 │  └──────────────┘  └──────────────┘  └──────────────┘              │
 │                                                                      │
 ├─────────────────────────────────────────────────────────────────────┤
@@ -67,17 +67,9 @@ The service package is a Node.js/Express backend that provides:
 
 ## Core Components
 
-### Intent Classification (`src/intent.ts`)
+### Realtime Voice Agent (`src/realtimeChat.ts`)
 
-Routes user requests based on intent:
-
-| Intent | Description |
-|--------|-------------|
-| `HACommand` | Direct Home Assistant commands (lights, switches, etc.) |
-| `Reminder` | Create, list, or query reminders |
-| `Chat` | General conversational responses |
-| `AgenticFlow` | Complex TV automation tasks |
-| `TeachingMode` | Record demonstrations for training |
+Owns the post-wake-word voice turn, streams raw audio to Azure OpenAI Realtime, and selects direct Home Assistant tools or Specialist agents based on request meaning.
 
 ### Home Assistant Integration (`src/ha.ts`)
 
@@ -85,12 +77,9 @@ Routes user requests based on intent:
 - Translates natural language commands to HA service calls
 - Supports a wide range of domains: lights, switches, media players, remotes, etc.
 
-### Reminder Processing (`src/reminder.ts`)
+### ScheduledTaskAgent (`src/agents/scheduled-task/`)
 
-Handles reminder-related operations:
-- **CREATE**: Add new reminders with scheduling
-- **LIST**: Retrieve reminders with filtering
-- **QUERY**: Search reminders by category, date, or terms
+Handles ScheduledTask creation, listing, querying, update, cancellation, and server-side action-effect firing.
 
 ---
 
@@ -358,9 +347,8 @@ Located in `src/prompts/`:
 
 | File | Purpose |
 |------|---------|
-| `INTENT.md` | Intent classification prompt |
 | `HOMEASSISTANT.md` | HA command generation prompt |
-| `REMINDER.md` | Reminder processing prompt |
+| `SCHEDULEDTASK.md` | ScheduledTaskAgent instructions |
 | `TVAGENT.md` | TV Agent system instructions |
 
 ---
@@ -372,10 +360,10 @@ Located in `src/prompts/`:
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/` | GET | Health check |
-| `/api/process` | POST | Process user commands |
-| `/api/tv/agentic` | POST | Execute TV agentic flows |
+| `/api/realtime-chat` | WS | Realtime Voice Agent audio/tool proxy |
+| `/api/agent/run` | POST | Run registered Specialist agents |
 | `/api/teaching/*` | Various | Teaching mode endpoints |
-| `/api/reminders/*` | Various | Reminder CRUD operations |
+| `/api/scheduled-tasks/*` | Various | ScheduledTask read/cancel endpoints |
 
 ### Request/Response Types
 
@@ -440,9 +428,9 @@ service/
 │   ├── config.ts           # Configuration
 │   ├── ha.ts               # Home Assistant integration
 │   ├── index.ts            # Express server entry point
-│   ├── intent.ts           # Intent classification
-│   ├── openai.ts           # OpenAI service wrapper
-│   └── reminder.ts         # Reminder processing
+│   ├── realtimeChat.ts     # Realtime Voice Agent proxy
+│   ├── ai.ts               # Azure OpenAI service wrapper
+│   └── tvJobManager.ts     # Server-owned async TV jobs
 ├── logs/                   # Trace output files
 ├── generated_data/         # Runtime generated data
 └── package.json

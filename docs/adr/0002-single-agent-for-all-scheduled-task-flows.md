@@ -1,6 +1,6 @@
 # A single ScheduledTaskAgent owns every ScheduledTask flow
 
-After intent classification labels a prompt `scheduled_task`, all subsequent reasoning — creation parsing, device disambiguation, listing, querying, and firing — runs through one agent registered in `service/src/agents/`. The intent classifier emits a single label; it does **not** sub-classify into CREATE/LIST/QUERY.
+Superseded in part by ADR 0003: the post-wake-word intent classifier was removed, and fire-time agent invocation was dropped in favor of a primitive server-side firing flow. The enduring decision is that once the Realtime Voice Agent selects ScheduledTask handling, all subsequent ScheduledTask voice reasoning — creation parsing, device disambiguation, listing, querying, update, and cancellation — runs through one agent registered in `service/src/agents/`. There is still no sub-classification into CREATE/LIST/QUERY call sites. Firing is intentionally outside this agent.
 
 ## Considered Options
 
