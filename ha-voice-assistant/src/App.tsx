@@ -1,19 +1,24 @@
 import React, { useRef, useState, useCallback, useEffect } from "react";
 import "./App.css";
-import {
-  startAzureSpeechRecognition,
-  stopRecognition,
-} from "./functions/speechToText";
 import Chat from "./Chat";
 import { Message } from "./types/chat";
 import SpeechRecognition, {
   useSpeechRecognition,
 } from "react-speech-recognition";
-import { synthesizeTextToBuffer } from "./functions/textToSpeech";
+import {
+  playAudioFromBuffer,
+  synthesizeTextToBuffer,
+} from "./functions/textToSpeech";
 import { noteAnnouncement } from "./utils/recentAnnouncements";
-import { USE_AZURE_SPEECH } from "./utils/config";
-import { processRecognizedText } from "./functions/speech";
-import { playChime } from "./functions/chime";
+import {
+  prepareRealtimeAudioOutput,
+  setAsyncAssistantSpeechEndHandler,
+  setAsyncJobEventHandler,
+  startRealtimeChat,
+  startRealtimeVoiceTurn,
+  stopRealtimeChat,
+} from "./functions/realtimeChat";
+import { playPing } from "./functions/chime";
 import { LaundryMonitor, VacuumMonitor } from "./skills";
 import SkillToggles from "./components/SkillToggles";
 import SkillWrapper from "./components/SkillWrapper";
@@ -21,16 +26,13 @@ import TeachingModeUI from "./components/TeachingModeUI";
 import Header, { ActiveView } from "./components/Header";
 import ScheduledTasksPage from "./pages/ScheduledTasksPage";
 import HandGestureDetector from "./skills/gestures/HandGestureDetector";
+import { BASE_URL } from "./functions/httpUtils";
 import {
   SkillToggleState,
   loadSkillToggleState,
   saveSkillToggleState,
   isSkillEnabled,
 } from "./utils/skillToggle";
-import {
-  hasActiveTeachingSession,
-  isAwaitingTeachingTask,
-} from "./functions/teaching";
 
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -69,8 +71,7 @@ function App() {
     setMessages((prevMessages) => [...prevMessages, message]);
 
     if (message.sender === "assistant" && message.messageToAnnounce) {
-      // Record what we're about to speak so the mic-recognized echo gets
-      // filtered downstream in processRecognizedText.
+      // Record what we're about to speak so mic-recognized echo can be ignored.
       noteAnnouncement(message.messageToAnnounce);
       const { audioBuffer } = await synthesizeTextToBuffer({
         text: message.messageToAnnounce,
@@ -80,6 +81,7 @@ function App() {
         console.error("Failed to synthesize text to audio buffer");
         return;
       }
+      playAudioFromBuffer(audioBuffer);
     }
   }, []);
 
@@ -95,6 +97,26 @@ function App() {
     [handleRecognizedText]
   );
 
+  useEffect(() => {
+    const source = new EventSource(`${BASE_URL}/announcements/stream`);
+    source.addEventListener("announcement", (event) => {
+      try {
+        const payload = JSON.parse((event as MessageEvent).data) as {
+          message?: string;
+        };
+        if (payload.message) {
+          void handleAnnouncement(payload.message);
+        }
+      } catch (error) {
+        console.error("Failed to parse announcement event:", error);
+      }
+    });
+    source.onerror = () => {
+      // EventSource reconnects automatically.
+    };
+    return () => source.close();
+  }, [handleAnnouncement]);
+
   // Handle successful teaching recording save
   const handleTeachingSaveComplete = useCallback((taskName: string, stepCount: number) => {
     const message: Message = {
@@ -106,22 +128,28 @@ function App() {
 
   const handleTextCommand = useCallback(
     async (text: string) => {
-      // processRecognizedText already adds the user message to chat
-      await processRecognizedText(
+      handleRecognizedText({ sender: "user", text });
+      let fullTranscript = "";
+      await startRealtimeChat(
         text,
-        handleRecognizedText,
-        isListeningForWakeWord
-      );
-    },
-    [handleRecognizedText]
-  );
-
-  const processRecognizedTextCallback = useCallback(
-    async (text: string) => {
-      await processRecognizedText(
-        text,
-        handleRecognizedText,
-        isListeningForWakeWord
+        (delta) => {
+          fullTranscript += delta;
+        },
+        (finalText) => {
+          const responseText =
+            finalText || fullTranscript || "Response received.";
+          handleRecognizedText({
+            sender: "assistant",
+            text: responseText,
+          });
+          noteAnnouncement(responseText);
+        },
+        (error) => {
+          handleRecognizedText({
+            sender: "assistant",
+            text: `Chat error: ${error}`,
+          });
+        }
       );
     },
     [handleRecognizedText]
@@ -143,86 +171,78 @@ function App() {
     );
   }, [resetTranscript]);
 
-  React.useEffect(() => {
-    // Check if we're in teaching mode (active session or awaiting task)
-    const isInTeachingMode = hasActiveTeachingSession() || isAwaitingTeachingTask();
-    
-    // Use 5 minutes (300 seconds) for teaching mode, 30 seconds otherwise
-    const timeoutDuration = isInTeachingMode ? 300000 : 30000; // 5 min or 30 sec
-    const countdownStart = isInTeachingMode ? 300 : 30;
-    
-    // Auto-stop after timeout when listening for commands (not wake words)
-    if (isListening && !isListeningForWakeWord.current) {
-      setCountdown(countdownStart);
-      setIsGestureCameraActive(true);
-
-      // Update countdown every second
-      const countdownInterval = setInterval(() => {
-        setCountdown((prev) => {
-          if (prev === null || prev <= 1) {
-            return null;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-
-      // Auto-stop timer
-      const timer = setTimeout(() => {
-        const modeLabel = isInTeachingMode ? "teaching mode (5 minutes)" : "30 seconds";
-        console.log(`Auto stopping after ${modeLabel} of continuous listening`);
-        setCountdown(null);
+  const enterVoiceTurn = useCallback(() => {
+    setIsListening(true);
+    setIsGestureCameraActive(true);
+    let fullTranscript = "";
+    let asyncJobStarted = false;
+    startRealtimeVoiceTurn(
+      (delta) => {
+        fullTranscript += delta;
+      },
+      (finalText) => {
+        const responseText =
+          finalText || fullTranscript || "Response received.";
         handleRecognizedText({
           sender: "assistant",
-          text: `Auto stopping after ${modeLabel} of continuous listening`,
+          text: responseText,
         });
-        if (USE_AZURE_SPEECH) {
-          stopRecognition(
-            {
-              setRecognizedText: handleRecognizedText,
-              setIsListening,
-              isListeningForWakeWord,
-              processRecognizedText: processRecognizedTextCallback,
-              onSessionStopped: () => setIsGestureCameraActive(false),
-            },
-            () => {
-              // Callback executed after Azure SDK is properly stopped
-              console.log("Azure SDK stopped, starting wake word listening...");
-              startWakeWordListening();
-            }
-          );
-        } else {
-          SpeechRecognition.stopListening().then(() => {
-            console.log(
-              "SpeechRecognition stopped, starting wake word listening..."
-            );
-            setIsListening(false);
-            isListeningForWakeWord.current = true;
-            setIsGestureCameraActive(false);
-            handleRecognizedText({
-              sender: "assistant",
-              text: "Auto stopped listening for commands",
-            });
-            console.log("Azure SDK stopped, starting wake word listening...");
-            startWakeWordListening();
-          });
-        }
-      }, timeoutDuration); // 5 min for teaching mode, 30 sec otherwise
-
-      return () => {
-        clearTimeout(timer);
-        clearInterval(countdownInterval);
-        setCountdown(null);
-      };
-    } else {
+        noteAnnouncement(responseText);
+        fullTranscript = "";
+      },
+      (error) => {
+        handleRecognizedText({
+          sender: "assistant",
+          text: `Realtime error: ${error}`,
+        });
+      },
+      (userTranscript) => {
+        handleRecognizedText({
+          sender: "user",
+          text: userTranscript,
+        });
+      },
+      () => {
+        asyncJobStarted = true;
+      },
+      () => {
+        // Async job finished — handled by global handler instead.
+      },
+      {
+        onListeningWindowChange: setCountdown,
+      }
+    ).finally(() => {
+      setIsListening(false);
       setCountdown(null);
-    }
-  }, [
-    isListening,
-    resetTranscript,
-    startWakeWordListening,
-    processRecognizedTextCallback,
-    handleRecognizedText,
-  ]);
+      isListeningForWakeWord.current = true;
+      setIsGestureCameraActive(false);
+      if (!asyncJobStarted) {
+        stopRealtimeChat();
+      }
+      playPing();
+      startWakeWordListening();
+    });
+  }, [handleRecognizedText, startWakeWordListening]);
+
+  useEffect(() => {
+    setAsyncJobEventHandler(() => {
+      SpeechRecognition.abortListening();
+      isListeningForWakeWord.current = false;
+      setIsWakeWordMode(false);
+    });
+    setAsyncAssistantSpeechEndHandler(({ followupExpected }) => {
+      if (followupExpected) {
+        enterVoiceTurn();
+      } else {
+        playPing();
+        startWakeWordListening();
+      }
+    });
+    return () => {
+      setAsyncJobEventHandler(undefined);
+      setAsyncAssistantSpeechEndHandler(undefined);
+    };
+  }, [enterVoiceTurn, startWakeWordListening]);
 
   React.useEffect(() => {
     if (finalTranscript) {
@@ -241,48 +261,29 @@ function App() {
       ) {
         // If the wake word is detected, reset the transcript and start listening for commands
         console.log("Wake word detected:", finalTranscript);
-        playChime(); // Play chime sound
         handleRecognizedText({ sender: "user", text: finalTranscript });
         isListeningForWakeWord.current = false;
         setIsWakeWordMode(false);
-        setIsListening(true);
-        setIsGestureCameraActive(true);
 
-        // Immediately start Azure speech recognition for command listening
-        if (USE_AZURE_SPEECH) {
-          SpeechRecognition.abortListening().then(() => {
-            console.log(
-              "SpeechRecognition aborted, starting Azure speech recognition..."
-            );
-            // Check if we're in teaching mode for extended silence timeout
-            const isInTeachingMode = hasActiveTeachingSession() || isAwaitingTeachingTask();
-            startAzureSpeechRecognition({
-              setIsListening,
-              setRecognizedText: handleRecognizedText,
-              isListeningForWakeWord,
-              processRecognizedText: processRecognizedTextCallback,
-              onSessionStarted: () => setIsGestureCameraActive(true),
-              onSessionStopped: () => setIsGestureCameraActive(false),
-              extendedSilenceTimeout: isInTeachingMode,
-            });
-          });
-        }
-      } else if (isListening && !USE_AZURE_SPEECH) {
-        // Process the recognized text directly for non-Azure speech
-        processRecognizedTextCallback(finalTranscript);
+        SpeechRecognition.abortListening().then(() => {
+          console.log(
+            "SpeechRecognition aborted, starting realtime voice turn..."
+          );
+          enterVoiceTurn();
+        });
       }
 
       resetTranscript();
     }
   }, [
     finalTranscript,
-    isListening,
     resetTranscript,
     handleRecognizedText,
-    processRecognizedTextCallback,
+    enterVoiceTurn,
   ]);
 
   const handleOnStartRecognition = () => {
+    prepareRealtimeAudioOutput();
     startWakeWordListening();
   };
 
@@ -300,19 +301,17 @@ function App() {
         {isWakeWordMode
           ? "Listening for wake word..."
           : isListening
-          ? `Listening for commands... (${countdown}s)`
+          ? `Listening for commands${countdown !== null ? `... (${countdown}s)` : "..."}`
           : "Start Voice Assistant"}
       </button>
       <button
         onClick={() => {
           SpeechRecognition.abortListening();
-          stopRecognition({
-            setIsListening,
-            isListeningForWakeWord,
-            setRecognizedText: handleRecognizedText,
-            processRecognizedText: processRecognizedTextCallback,
-            onSessionStopped: () => setIsGestureCameraActive(false),
-          });
+          stopRealtimeChat({ closeAudioOutput: true });
+          setIsListening(false);
+          isListeningForWakeWord.current = false;
+          setIsWakeWordMode(false);
+          setIsGestureCameraActive(false);
         }}
         disabled={!isListening && !isListeningForWakeWord.current}
         style={{ marginBottom: 16, marginLeft: 16 }}

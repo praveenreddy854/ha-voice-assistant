@@ -251,7 +251,12 @@ function handleResult(
       return handleError(session, def, stepResult.error || "Unknown agent error");
 
     case "complete":
-      return handleComplete(session, def, stepResult.message || "Task completed successfully");
+      return handleComplete(
+        session,
+        def,
+        stepResult.message || "Task completed successfully",
+        stepResult.success !== false
+      );
 
     case "tool_calls":
       return handleToolCalls(session, def, stepResult.toolCalls || []);
@@ -274,13 +279,14 @@ async function handleError(
 async function handleComplete(
   session: AgentSession,
   def: AgentDefinition,
-  message: string
+  message: string,
+  success: boolean
 ): Promise<AgentRunResult> {
-  console.log(`[Orchestrator] Agent completed: ${message}`);
-  completeTrace(session.id, true, message, "completed");
+  console.log(`[Orchestrator] Agent completed (success=${success}): ${message}`);
+  completeTrace(session.id, success, message, "completed");
   session.completed = true;
   session.agentData.finalMessage = message;
-  const result = buildResult(session, "completed", true, message);
+  const result = buildResult(session, "completed", success, message);
   if (def.onComplete) await def.onComplete(session, result);
   await cleanupSession(session, def);
   return result;
@@ -361,8 +367,10 @@ async function handleToolCalls(
     // In RTSP mode, ensure capture is running and wait for the first frame
     if (isRtspMode()) {
       await startRtspCapture(session.id);
-      // Wait up to 3 seconds for the first frame to appear
-      for (let i = 0; i < 6; i++) {
+      // Wait up to 8 seconds for the first frame to appear. RTSP TCP
+      // handshake + codec init + first I-frame commonly takes 3-7s cold;
+      // tvJobManager pre-warms but the agent may still beat ffmpeg here.
+      for (let i = 0; i < 16; i++) {
         const screenshot = await getLatestScreenshot(session.id);
         if (screenshot) {
           console.log(

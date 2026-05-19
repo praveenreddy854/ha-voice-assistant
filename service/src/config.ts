@@ -25,7 +25,7 @@ export const AZURE_OPENAI_API_VERSION =
 // Three-Tier Model System
 // ============================================================================
 
-/** Nano: intent classification, simple JSON extraction */
+/** Nano: simple JSON extraction */
 export const AI_MODEL_NANO = process.env.AI_MODEL_NANO;
 
 /** Mini: HA commands, vision helpers */
@@ -38,6 +38,7 @@ export const EMBEDDING_MODEL =
 
 /** Realtime: voice chat via Azure OpenAI Realtime API v2 */
 export const AI_MODEL_REALTIME = process.env.AI_MODEL_REALTIME;
+export const AI_MODEL_TRANSCRIBE = process.env.AI_MODEL_TRANSCRIBE ?? "whisper-1";
 export const AZURE_OPENAI_REALTIME_API_VERSION =
   process.env.AZURE_OPENAI_REALTIME_API_VERSION ?? "2025-04-01-preview";
 

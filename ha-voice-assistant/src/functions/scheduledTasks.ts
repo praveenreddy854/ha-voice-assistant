@@ -1,5 +1,4 @@
 import { Response } from "../types/response";
-import { messageHistoryManager } from "../utils/sessionManager";
 
 export interface ScheduledTaskEffect {
   kind: "announcement" | "action";
@@ -23,45 +22,7 @@ export interface ScheduledTask {
   updatedAt: string;
 }
 
-interface AgentRunResponse {
-  success: boolean;
-  message: string;
-  sessionId: string;
-  status: string;
-}
-
 const BASE_URL = "http://localhost:3005";
-
-export const runScheduledTaskAgent = async (
-  text: string
-): Promise<Response<AgentRunResponse>> => {
-  try {
-    const response = await fetch(`${BASE_URL}/api/agent/run`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        agentType: "scheduled_task",
-        userPrompt: text,
-        messageHistory: messageHistoryManager.getContextualHistory(),
-      }),
-    });
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`HTTP ${response.status}: ${body}`);
-    }
-    const data = (await response.json()) as AgentRunResponse;
-    if (data.message) {
-      messageHistoryManager.addMessage("assistant", data.message);
-    }
-    return { success: true, data, message: data.message };
-  } catch (error) {
-    console.error("Error running scheduled-task agent:", error);
-    return {
-      success: false,
-      errorMessage: error instanceof Error ? error.message : String(error),
-    };
-  }
-};
 
 export const listScheduledTasks = async (): Promise<
   Response<ScheduledTask[]>

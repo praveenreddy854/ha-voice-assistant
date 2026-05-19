@@ -9,11 +9,11 @@ interface MessageHistory {
   lastActivity: number;
 }
 
-// Client-side message history management with 10-minute expiration
+// Client-side short conversational memory for realtime turns.
 class MessageHistoryManager {
-  private readonly EXPIRY_TIME = 10 * 60 * 1000; // 10 minutes in milliseconds
+  private readonly EXPIRY_TIME = 5 * 60 * 1000;
   private readonly STORAGE_KEY = 'voiceAssistantMessageHistory';
-  private readonly MAX_MESSAGES = 20; // Keep last 20 messages for context
+  private readonly MAX_MESSAGES = 10;
 
   private messageHistory: MessageHistory;
 

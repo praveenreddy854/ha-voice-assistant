@@ -162,12 +162,9 @@ The application integrates with Home Assistant through:
 
 ## 🤖 AI-Powered Features
 
-### Intent Classification
+### Realtime Voice Agent
 
-The system uses AI to classify user input into two categories:
-
-- **HACommand**: Home Assistant device control requests
-- **Chat**: General conversation and questions
+After browser wake-word detection, raw audio streams to the Realtime Voice Agent. It answers general chat directly or calls tools for Home Assistant commands, ScheduledTasks, and TV automation.
 
 ### Natural Language Processing
 
@@ -180,7 +177,7 @@ The system uses AI to classify user input into two categories:
 ### Backend Service Endpoints
 
 - `GET /` - Health check
-- `POST /api/classifyIntent` - Classify user intent (HACommand vs Chat)
+- `WS /api/realtime-chat` - Realtime Voice Agent audio/tool proxy
 - `POST /api/postHACommand` - Execute Home Assistant commands
 
 ## 📝 Development

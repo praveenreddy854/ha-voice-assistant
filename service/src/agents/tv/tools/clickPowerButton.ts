@@ -50,16 +50,47 @@ async function execute(
     };
   }
 
+  // Apple TV (and similar) report stale media_player state for 10-30s after a
+  // power transition. Poll until HA reflects the transition or the budget
+  // expires so the agent gets ground truth instead of a misleading snapshot.
+  const offStates = new Set(["off", "standby", "unavailable", "unknown"]);
+  const reachedTarget = (state: string | undefined): boolean => {
+    if (!state) return false;
+    return command === "wakeup" ? !offStates.has(state) : offStates.has(state);
+  };
+
   await delay(defaultWait);
 
-  const deviceStates = (await getKnownDeviceStates()).filter((d) =>
+  const pollBudgetMs = 8000;
+  const pollIntervalMs = 750;
+  const deadline = Date.now() + pollBudgetMs;
+  let deviceStates = (await getKnownDeviceStates()).filter((d) =>
     d.entity_id.includes(deviceName)
   );
+  let mediaPlayerState = deviceStates.find((s) =>
+    s.entity_id.startsWith("media_player.")
+  )?.state;
+
+  while (!reachedTarget(mediaPlayerState) && Date.now() < deadline) {
+    await delay(pollIntervalMs);
+    deviceStates = (await getKnownDeviceStates()).filter((d) =>
+      d.entity_id.includes(deviceName)
+    );
+    mediaPlayerState = deviceStates.find((s) =>
+      s.entity_id.startsWith("media_player.")
+    )?.state;
+  }
+
+  const confirmed = reachedTarget(mediaPlayerState);
+  const stateSummary = JSON.stringify(
+    deviceStates.map((s) => ({ entity_id: s.entity_id, state: s.state }))
+  );
+  const note = confirmed
+    ? "State change confirmed by Home Assistant."
+    : "Home Assistant has not yet reflected the state change; Apple TV state often lags 10-30s, so the command likely still took effect — proceed and verify via the next action.";
 
   return {
-    observation: `Successfully sent "${command}" to ${parsed.remote_entity_id}. ${parsed.reason}. Device states: ${JSON.stringify(
-      deviceStates.map((s) => ({ entity_id: s.entity_id, state: s.state }))
-    )}`,
+    observation: `Successfully sent "${command}" to ${parsed.remote_entity_id}. ${parsed.reason}. ${note} Device states: ${stateSummary}`,
     needsScreenshot: false,
   };
 }
