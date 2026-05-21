@@ -174,6 +174,7 @@ function App() {
   const enterVoiceTurn = useCallback(() => {
     setIsListening(true);
     setIsGestureCameraActive(true);
+    playPing();
     let fullTranscript = "";
     let asyncJobStarted = false;
     startRealtimeVoiceTurn(
@@ -252,24 +253,35 @@ function App() {
         "isListeningForWakeWord:",
         isListeningForWakeWord.current
       );
-      if (
-        finalTranscript.toLocaleLowerCase().includes("assistant") ||
-        finalTranscript.toLocaleLowerCase().includes("hey assistant") ||
-        finalTranscript.toLocaleLowerCase().includes("hey, assistant") ||
-        finalTranscript.toLocaleLowerCase().includes("ok assistant") ||
-        finalTranscript.toLocaleLowerCase().includes("ok, assistant")
-      ) {
-        // If the wake word is detected, reset the transcript and start listening for commands
-        console.log("Wake word detected:", finalTranscript);
+      const lower = finalTranscript.toLocaleLowerCase();
+      const wakeMatch = lower.match(
+        /(?:^|\b)(?:hey[,\s]+|ok[,\s]+)?assistant\b[,.\s]*(.*)$/
+      );
+      if (wakeMatch) {
+        const trailing = wakeMatch[1]?.trim() ?? "";
+        console.log("Wake word detected:", finalTranscript, "trailing:", trailing);
         handleRecognizedText({ sender: "user", text: finalTranscript });
         isListeningForWakeWord.current = false;
         setIsWakeWordMode(false);
 
         SpeechRecognition.abortListening().then(() => {
-          console.log(
-            "SpeechRecognition aborted, starting realtime voice turn..."
-          );
-          enterVoiceTurn();
+          if (trailing) {
+            // User said the question in the same breath as the wake word —
+            // route it via user_text so the realtime API responds immediately,
+            // then resume wake-word listening so the user can talk again.
+            console.log("Routing trailing text as command:", trailing);
+            handleTextCommand(trailing).finally(() => {
+              isListeningForWakeWord.current = true;
+              playPing();
+              startWakeWordListening();
+            });
+          } else {
+            // Bare wake word — open the realtime mic for the next utterance.
+            console.log(
+              "SpeechRecognition aborted, starting realtime voice turn..."
+            );
+            enterVoiceTurn();
+          }
         });
       }
 
@@ -280,6 +292,8 @@ function App() {
     resetTranscript,
     handleRecognizedText,
     enterVoiceTurn,
+    handleTextCommand,
+    startWakeWordListening,
   ]);
 
   const handleOnStartRecognition = () => {

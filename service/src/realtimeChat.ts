@@ -561,7 +561,7 @@ function connectAzure(onReady: () => void): void {
           type: "server_vad",
           threshold: 0.5,
           prefix_padding_ms: 300,
-          silence_duration_ms: 700,
+          silence_duration_ms: 900,
           create_response: true,
           interrupt_response: true,
         },
@@ -711,13 +711,25 @@ function connectAzure(onReady: () => void): void {
           break;
         }
 
-        case "error":
+        case "error": {
+          const errMessage = event.error?.message || "Azure Realtime API error";
           console.error("[RealtimeChat] Azure error:", event.error);
+          // Swallow benign errors from our defensive cleanup on reconnect —
+          // it's expected that there may be no in-flight response or audio
+          // buffer to clear when the session has been idle.
+          if (
+            /no active response/i.test(errMessage) ||
+            /buffer is empty/i.test(errMessage) ||
+            /buffer.*empty/i.test(errMessage)
+          ) {
+            break;
+          }
           sendClient({
             type: "error",
-            message: event.error?.message || "Azure Realtime API error",
+            message: errMessage,
           });
           break;
+        }
       }
     } catch (err) {
       console.error("[RealtimeChat] Error parsing Azure message:", err);
@@ -769,6 +781,16 @@ export function setupRealtimeChatProxy(server: http.Server): void {
     console.log("[RealtimeChat] Client connected");
     activeClientWs = clientWs;
 
+    // Discard any stale state left over from a prior client on the same Azure
+    // session: a response may still be streaming, and the input buffer may
+    // hold unflushed audio. Without this, the new turn inherits the old turn's
+    // tail and "responds" before the user even speaks.
+    if (azureWs && azureReady) {
+      sendAzure({ type: "response.cancel" });
+      sendAzure({ type: "input_audio_buffer.clear" });
+      fullTranscript = "";
+    }
+
     // Connect to Azure (reuses existing session if alive)
     connectAzure(() => {
       clientWs.send(JSON.stringify({ type: "session_ready" }));
@@ -803,6 +825,10 @@ export function setupRealtimeChatProxy(server: http.Server): void {
           console.log("[RealtimeChat] Client requested audio commit");
           azureWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
           requestDefaultResponse();
+        } else if (msg.type === "force_followup") {
+          // Client opened the mic for a bare wake-word — keep it open after
+          // the next response no matter what the model decides.
+          pendingFollowUp = true;
         }
       } catch (err) {
         console.error("[RealtimeChat] Error parsing client message:", err);

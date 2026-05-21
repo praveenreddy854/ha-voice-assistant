@@ -385,7 +385,13 @@ function sendJson(payload: Record<string, unknown>): void {
 async function startMicStreaming(): Promise<void> {
   stopMicStreaming();
 
-  activeMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  activeMicStream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    },
+  });
   activeMicCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
   if (activeMicCtx.state === "suspended") {
     await activeMicCtx.resume().catch((error) => {
@@ -395,8 +401,14 @@ async function startMicStreaming(): Promise<void> {
   const source = activeMicCtx.createMediaStreamSource(activeMicStream);
   activeProcessor = activeMicCtx.createScriptProcessor(4096, 1, 1);
 
+  // Drop the first 300ms of captured audio so wake-word residue and the
+  // mic's initial pop don't seed Azure's input buffer.
+  const micOpenedAt = Date.now();
+  const WARMUP_MS = 300;
+
   activeProcessor.onaudioprocess = (event) => {
     if (!isWsOpen() || !activeMicCtx) return;
+    if (Date.now() - micOpenedAt < WARMUP_MS) return;
     const input = event.inputBuffer.getChannelData(0);
     sendJson({
       type: "input_audio",
@@ -539,7 +551,11 @@ export async function startRealtimeVoiceTurn(
     (async () => {
       try {
         await ensureAudioContext();
-        await connectRealtime();
+        const ws = await connectRealtime();
+        // Bare wake-word opens the mic for a real conversation — force the
+        // first response to keep the mic open so the user can actually speak,
+        // even if the model forgets to call await_user_followup.
+        ws.send(JSON.stringify({ type: "force_followup" }));
         await startMicStreaming();
         startListeningWindow(LISTENING_WINDOW_MS);
       } catch (error) {
