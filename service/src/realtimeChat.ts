@@ -557,14 +557,6 @@ function connectAzure(onReady: () => void): void {
         input_audio_transcription: {
           model: AI_MODEL_TRANSCRIBE,
         },
-        turn_detection: {
-          type: "server_vad",
-          threshold: 0.5,
-          prefix_padding_ms: 300,
-          silence_duration_ms: 900,
-          create_response: true,
-          interrupt_response: true,
-        },
         tools: REALTIME_TOOLS,
       },
     }));

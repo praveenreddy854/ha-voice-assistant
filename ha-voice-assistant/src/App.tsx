@@ -268,12 +268,11 @@ function App() {
           if (trailing) {
             // User said the question in the same breath as the wake word —
             // route it via user_text so the realtime API responds immediately,
-            // then resume wake-word listening so the user can talk again.
+            // then open the realtime mic so the user can ask a follow-up
+            // within the 30s listening window without re-saying the wake word.
             console.log("Routing trailing text as command:", trailing);
             handleTextCommand(trailing).finally(() => {
-              isListeningForWakeWord.current = true;
-              playPing();
-              startWakeWordListening();
+              enterVoiceTurn();
             });
           } else {
             // Bare wake word — open the realtime mic for the next utterance.
