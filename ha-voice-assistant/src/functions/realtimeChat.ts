@@ -223,10 +223,11 @@ async function finishResponse(fullText: string, followupExpected: boolean): Prom
     return;
   }
 
-  if (!followupExpected) {
-    resolveCurrentTurn();
-    return;
-  }
+  // Always keep the mic open for LISTENING_WINDOW_MS after every response so
+  // the user can chain follow-up questions without re-saying the wake word.
+  // followupExpected is ignored here; if the user doesn't speak within the
+  // window, startListeningWindow's timer resolves the turn.
+  void followupExpected;
 
   try {
     await startMicStreaming();
