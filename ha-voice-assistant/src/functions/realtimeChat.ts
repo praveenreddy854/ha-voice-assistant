@@ -223,15 +223,18 @@ async function finishResponse(fullText: string, followupExpected: boolean): Prom
     return;
   }
 
-  // Always keep the mic open for LISTENING_WINDOW_MS after every response so
-  // the user can chain follow-up questions without re-saying the wake word.
-  // followupExpected is ignored here; if the user doesn't speak within the
-  // window, startListeningWindow's timer resolves the turn.
+  // Reopen the mic so the user can keep talking, but DO NOT restart the
+  // listening window — it was started once when the turn was activated and
+  // is a hard 30s cap. Otherwise stray TV/ambient responses would keep
+  // resetting the timer and the session would never close.
   void followupExpected;
+
+  // If the hard cap already expired during the response, the turn was
+  // already resolved by the listening-window timer; nothing more to do.
+  if (voiceTurnResolved) return;
 
   try {
     await startMicStreaming();
-    startListeningWindow(LISTENING_WINDOW_MS);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     currentOnError?.(message);
@@ -278,12 +281,11 @@ function handleMessage(event: MessageEvent): void {
         break;
 
       case "transcript_delta":
-        // Assistant is starting to speak — close the mic and stop the
-        // listening window. finishResponse will reopen both if the assistant's
-        // response is a pending question/confirmation.
+        // Assistant is starting to speak — close the mic so we don't capture
+        // its own output. The listening window is a hard cap from activation
+        // and is intentionally NOT cleared here.
         if (currentMode === "voice") {
           stopMicStreaming();
-          clearListeningWindow();
         }
         currentOnTranscriptDelta?.(msg.text);
         break;
@@ -293,11 +295,8 @@ function handleMessage(event: MessageEvent): void {
         break;
 
       case "user_transcript":
-        // Real user utterance committed — clear the silence timer so it
-        // doesn't expire while the agent processes the command.
-        if (currentMode === "voice" && typeof msg.text === "string" && msg.text.trim()) {
-          clearListeningWindow();
-        }
+        // Hard-cap window is not cleared here either — it counts down from
+        // activation regardless of how many user/assistant exchanges happen.
         currentOnUserTranscript?.(msg.text || "");
         break;
 
