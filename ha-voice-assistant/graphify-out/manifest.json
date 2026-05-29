@@ -1,0 +1,227 @@
+{
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/package.json": {
+    "mtime": 1778870427.1161027,
+    "ast_hash": "a96e4a3e6acc86d69faf3a47867aca6f",
+    "semantic_hash": "a96e4a3e6acc86d69faf3a47867aca6f"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/config-overrides.js": {
+    "mtime": 1764509020.2193289,
+    "ast_hash": "95f639b02bfbfe798296f2da93805ba9",
+    "semantic_hash": "95f639b02bfbfe798296f2da93805ba9"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/tsconfig.json": {
+    "mtime": 1764509020.2250702,
+    "ast_hash": "41f73e68606e5b7009f5cac2a394f8cc",
+    "semantic_hash": "41f73e68606e5b7009f5cac2a394f8cc"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/public/manifest.json": {
+    "mtime": 1764509020.2219253,
+    "ast_hash": "d9d975cebe2ec20b6c652e1e4c12ccf0",
+    "semantic_hash": "d9d975cebe2ec20b6c652e1e4c12ccf0"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/index.tsx": {
+    "mtime": 1764509020.2238386,
+    "ast_hash": "4d596a84f20331b91aa53b71ccac5a1c",
+    "semantic_hash": "4d596a84f20331b91aa53b71ccac5a1c"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/App.tsx": {
+    "mtime": 1779414377.2402246,
+    "ast_hash": "5fbeae0f53e358fc63b7b032ebb9bd5a",
+    "semantic_hash": "5fbeae0f53e358fc63b7b032ebb9bd5a"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/App.test.tsx": {
+    "mtime": 1764509020.2226484,
+    "ast_hash": "3258d962552b258f9162a9e094ab9e6e",
+    "semantic_hash": "3258d962552b258f9162a9e094ab9e6e"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/setupTests.ts": {
+    "mtime": 1764509020.2241569,
+    "ast_hash": "1a77571e1a8cf36018a41bcedf60db75",
+    "semantic_hash": "1a77571e1a8cf36018a41bcedf60db75"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/reportWebVitals.ts": {
+    "mtime": 1764509020.2240818,
+    "ast_hash": "f62c07c24a14ca699e74938f358baf22",
+    "semantic_hash": "f62c07c24a14ca699e74938f358baf22"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/Chat.tsx": {
+    "mtime": 1778870427.1227088,
+    "ast_hash": "dcbefaac5cee2dd7bb3069b5aed2d06f",
+    "semantic_hash": "dcbefaac5cee2dd7bb3069b5aed2d06f"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/react-app-env.d.ts": {
+    "mtime": 1764509020.2240105,
+    "ast_hash": "3b12a2a445e35988cd2eb9f73d12c500",
+    "semantic_hash": "3b12a2a445e35988cd2eb9f73d12c500"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/types/chat.ts": {
+    "mtime": 1778870427.1925428,
+    "ast_hash": "29cf2a9117d933aa00d018aa26bceef1",
+    "semantic_hash": "29cf2a9117d933aa00d018aa26bceef1"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/types/response.ts": {
+    "mtime": 1778870427.1928582,
+    "ast_hash": "c162e9c7d268788f65dd6b78f6521a4f",
+    "semantic_hash": "c162e9c7d268788f65dd6b78f6521a4f"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/types/agentic.ts": {
+    "mtime": 1778870427.1918628,
+    "ast_hash": "9d96259abc27fe9c6e77b119702cad45",
+    "semantic_hash": "9d96259abc27fe9c6e77b119702cad45"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/utils/skillToggle.ts": {
+    "mtime": 1778870427.202179,
+    "ast_hash": "f5606ee5466fd93684dd99353b739295",
+    "semantic_hash": "f5606ee5466fd93684dd99353b739295"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/utils/tvCamera.ts": {
+    "mtime": 1778870427.202702,
+    "ast_hash": "3e51b0eb03e6125800e9c28277400020",
+    "semantic_hash": "3e51b0eb03e6125800e9c28277400020"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/utils/recentAnnouncements.ts": {
+    "mtime": 1778870427.1934655,
+    "ast_hash": "88f9b2b0ef2c08bb61342774fabcc0f9",
+    "semantic_hash": "88f9b2b0ef2c08bb61342774fabcc0f9"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/utils/config.ts": {
+    "mtime": 1779196250.848919,
+    "ast_hash": "9207e5715db1b63dd6d4ad714cca8da9",
+    "semantic_hash": "9207e5715db1b63dd6d4ad714cca8da9"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/utils/sessionManager.ts": {
+    "mtime": 1779196250.8492715,
+    "ast_hash": "30eb318a6d2c96f3c2613d8b469bf6c1",
+    "semantic_hash": "30eb318a6d2c96f3c2613d8b469bf6c1"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/components/TeachingModeUI.tsx": {
+    "mtime": 1778870427.129422,
+    "ast_hash": "889c3e0eae35a78bc2a037844db67a5d",
+    "semantic_hash": "889c3e0eae35a78bc2a037844db67a5d"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/components/SkillWrapper.tsx": {
+    "mtime": 1778870427.1288085,
+    "ast_hash": "cc2f5df8c41b1eee0c16d2bdcdab6ec2",
+    "semantic_hash": "cc2f5df8c41b1eee0c16d2bdcdab6ec2"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/components/AgentSessionLog.tsx": {
+    "mtime": 1778870427.1234493,
+    "ast_hash": "1ffa6068c5cb8269e5a71185fb5b4335",
+    "semantic_hash": "1ffa6068c5cb8269e5a71185fb5b4335"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/components/SkillToggles.tsx": {
+    "mtime": 1778870427.1265433,
+    "ast_hash": "b6221fe26eeb4c478b135f37756f5c1e",
+    "semantic_hash": "b6221fe26eeb4c478b135f37756f5c1e"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/components/Header.tsx": {
+    "mtime": 1778870427.1244125,
+    "ast_hash": "5b16f197c65d931a621f6efbffb6bcc0",
+    "semantic_hash": "5b16f197c65d931a621f6efbffb6bcc0"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/components/ToggleSwitch.tsx": {
+    "mtime": 1778870427.1296525,
+    "ast_hash": "23802285a67c4f906a3ac46580d3d5bb",
+    "semantic_hash": "23802285a67c4f906a3ac46580d3d5bb"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/components/index.ts": {
+    "mtime": 1778870427.1388607,
+    "ast_hash": "e0068f7f76cc05ddf57b1398ee481847",
+    "semantic_hash": "e0068f7f76cc05ddf57b1398ee481847"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/functions/scheduledTasks.ts": {
+    "mtime": 1779196250.8483605,
+    "ast_hash": "f8155f9f412d67a7565fb67a28bb8fd0",
+    "semantic_hash": "f8155f9f412d67a7565fb67a28bb8fd0"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/functions/textToSpeech.ts": {
+    "mtime": 1778870427.1887214,
+    "ast_hash": "05fa3a21df2758db614df4812ea2adc7",
+    "semantic_hash": "05fa3a21df2758db614df4812ea2adc7"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/functions/chime.ts": {
+    "mtime": 1779196250.847377,
+    "ast_hash": "314d7fb7fcda59275ddaa5f467d262c0",
+    "semantic_hash": "314d7fb7fcda59275ddaa5f467d262c0"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/functions/realtimeChat.ts": {
+    "mtime": 1779415339.1463578,
+    "ast_hash": "7dab81f365526ef963c0afe064ab237f",
+    "semantic_hash": "7dab81f365526ef963c0afe064ab237f"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/functions/teaching.ts": {
+    "mtime": 1778870427.1862166,
+    "ast_hash": "f375cfd0afa97b93d12a9122dc27b583",
+    "semantic_hash": "f375cfd0afa97b93d12a9122dc27b583"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/functions/httpUtils.ts": {
+    "mtime": 1764509020.2232966,
+    "ast_hash": "7846a4b2b689c8e76d6be9f17f72467b",
+    "semantic_hash": "7846a4b2b689c8e76d6be9f17f72467b"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/functions/messageHistory.ts": {
+    "mtime": 1778870427.1486657,
+    "ast_hash": "e79af6e61bd7712df9bf3312d31d0b3f",
+    "semantic_hash": "e79af6e61bd7712df9bf3312d31d0b3f"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/skills/index.ts": {
+    "mtime": 1778870427.191146,
+    "ast_hash": "9bd07bc0b6634d322ba9b90cf0f201c7",
+    "semantic_hash": "9bd07bc0b6634d322ba9b90cf0f201c7"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/skills/monitor/LaundryMonitor.tsx": {
+    "mtime": 1778870427.1913013,
+    "ast_hash": "8c0a2a780eecdca24d300a6996fb50d4",
+    "semantic_hash": "8c0a2a780eecdca24d300a6996fb50d4"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/skills/monitor/VacuumMonitor.tsx": {
+    "mtime": 1778870427.1914454,
+    "ast_hash": "ba3f6ffb703f2df7764e75168deb981a",
+    "semantic_hash": "ba3f6ffb703f2df7764e75168deb981a"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/skills/monitor/index.ts": {
+    "mtime": 1764509020.2246644,
+    "ast_hash": "8379876bf01dd65c98a6b61ec91a5a33",
+    "semantic_hash": "8379876bf01dd65c98a6b61ec91a5a33"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/skills/gestures/HandGestureDetector.tsx": {
+    "mtime": 1778870427.1908324,
+    "ast_hash": "13241088c054a086f4e11c76996c2dcf",
+    "semantic_hash": "13241088c054a086f4e11c76996c2dcf"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/pages/ScheduledTasksPage.tsx": {
+    "mtime": 1778870427.1902137,
+    "ast_hash": "dfc4c0ab80144b0e175b315b9fedcbda",
+    "semantic_hash": "dfc4c0ab80144b0e175b315b9fedcbda"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/README.md": {
+    "mtime": 1764509020.2192116,
+    "ast_hash": "86383a836e7b0e5da6a44f05e17db606",
+    "semantic_hash": "86383a836e7b0e5da6a44f05e17db606"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/public/index.html": {
+    "mtime": 1764509020.2215083,
+    "ast_hash": "e1d0a2328ead937c3c847fa927e2a084",
+    "semantic_hash": "e1d0a2328ead937c3c847fa927e2a084"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/public/robots.txt": {
+    "mtime": 1764509020.222012,
+    "ast_hash": "fa1ded1ed7c11438a9b0385b1e112850",
+    "semantic_hash": "fa1ded1ed7c11438a9b0385b1e112850"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/public/logo512.png": {
+    "mtime": 1764509020.2218077,
+    "ast_hash": "917515db74ea8d1aee6a246cfbcc0b45",
+    "semantic_hash": "917515db74ea8d1aee6a246cfbcc0b45"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/public/logo192.png": {
+    "mtime": 1764509020.221668,
+    "ast_hash": "33dbdd0177549353eeeb785d02c294af",
+    "semantic_hash": "33dbdd0177549353eeeb785d02c294af"
+  },
+  "/Users/praveengaddam/Desktop/projects/ha-voice-assistant/ha-voice-assistant/src/logo.svg": {
+    "mtime": 1764509020.2239256,
+    "ast_hash": "06e733283fa43d1dd57738cfc409adbd",
+    "semantic_hash": "06e733283fa43d1dd57738cfc409adbd"
+  }
+}

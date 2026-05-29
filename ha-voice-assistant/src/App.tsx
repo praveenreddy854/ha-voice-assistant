@@ -14,6 +14,7 @@ import {
   prepareRealtimeAudioOutput,
   setAsyncAssistantSpeechEndHandler,
   setAsyncJobEventHandler,
+  setCommandCancelledHandler,
   startRealtimeChat,
   startRealtimeVoiceTurn,
   stopRealtimeChat,
@@ -239,9 +240,16 @@ function App() {
         startWakeWordListening();
       }
     });
+    setCommandCancelledHandler(({ tvJobId }) => {
+      const note = tvJobId
+        ? "Cancelled the active TV command. Listening for wake word."
+        : "Cancelled. Listening for wake word.";
+      setMessages((prev) => [...prev, { sender: "assistant", text: note }]);
+    });
     return () => {
       setAsyncJobEventHandler(undefined);
       setAsyncAssistantSpeechEndHandler(undefined);
+      setCommandCancelledHandler(undefined);
     };
   }, [enterVoiceTurn, startWakeWordListening]);
 

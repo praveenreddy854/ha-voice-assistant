@@ -15,7 +15,14 @@ const HOME_ASSISTANT_DEVICES = (process.env.HOME_ASSISTANT_DEVICES || "")
   .filter(Boolean);
 import { executeHACommand } from "./ha";
 import { runAgent } from "./agents/core";
-import { startTvAgentJob } from "./tvJobManager";
+import { startTvAgentJob, cancelActiveTvJob } from "./tvJobManager";
+
+const CANCEL_KEYWORD_RE =
+  /^\s*(?:cancel(?:\s+(?:that|it|the\s+(?:command|task|job|tv|action)))?|stop(?:\s+(?:it|that|the\s+(?:tv|command|task|job)))?|nevermind|never\s+mind|forget\s+it)\.?\s*$/i;
+
+function isCancelCommand(text: string): boolean {
+  return CANCEL_KEYWORD_RE.test(text);
+}
 
 type JsonRecord = Record<string, unknown>;
 
@@ -652,6 +659,20 @@ function connectAzure(onReady: () => void): void {
               type: "user_transcript",
               text: event.transcript,
             });
+            if (isCancelCommand(event.transcript)) {
+              const cancelledTvJobId = cancelActiveTvJob();
+              sendAzure({ type: "response.cancel" });
+              sendAzure({ type: "input_audio_buffer.clear" });
+              fullTranscript = "";
+              pendingFollowUp = false;
+              console.log(
+                `[RealtimeChat] Cancel keyword detected; cancelledTvJobId=${cancelledTvJobId ?? "none"}`
+              );
+              sendClient({
+                type: "command_cancelled",
+                cancelledTvJobId: cancelledTvJobId ?? null,
+              });
+            }
           }
           break;
 
