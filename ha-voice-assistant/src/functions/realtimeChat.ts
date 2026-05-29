@@ -45,6 +45,26 @@ export function setAsyncAssistantSpeechEndHandler(
 ): void {
   globalOnAsyncAssistantSpeechEnd = handler;
 }
+
+let globalOnCommandCancelled:
+  | ((info: { tvJobId: string | null }) => void)
+  | undefined;
+
+export function setCommandCancelledHandler(
+  handler: ((info: { tvJobId: string | null }) => void) | undefined
+): void {
+  globalOnCommandCancelled = handler;
+}
+
+function stopAndResetAudioPlayback(): void {
+  if (activeAudioCtx) {
+    activeAudioCtx.close().catch(() => {});
+    activeAudioCtx = null;
+  }
+  nextPlayTime = 0;
+  audioChunksInResponse = 0;
+  loggedAudioDeltaForResponse = false;
+}
 let currentResolve: (() => void) | null = null;
 let currentMode: "text" | "voice" | null = null;
 let voiceTurnResolved = false;
@@ -328,6 +348,18 @@ function handleMessage(event: MessageEvent): void {
           assistantSpeakingOutsideTurnFollowup = true;
           globalOnAsyncJobEvent?.({ kind: "needs_input", domain: msg.domain });
         }
+        break;
+
+      case "command_cancelled":
+        console.log(
+          "[RealtimeChat] Server cancelled current command",
+          msg.cancelledTvJobId ?? null
+        );
+        stopAndResetAudioPlayback();
+        globalOnCommandCancelled?.({
+          tvJobId: msg.cancelledTvJobId ?? null,
+        });
+        resolveCurrentTurn();
         break;
 
       case "error":
