@@ -15,14 +15,7 @@ const HOME_ASSISTANT_DEVICES = (process.env.HOME_ASSISTANT_DEVICES || "")
   .filter(Boolean);
 import { executeHACommand } from "./ha";
 import { runAgent } from "./agents/core";
-import { startTvAgentJob, cancelActiveTvJob } from "./tvJobManager";
-
-const CANCEL_KEYWORD_RE =
-  /^\s*(?:cancel(?:\s+(?:that|it|the\s+(?:command|task|job|tv|action)))?|stop(?:\s+(?:it|that|the\s+(?:tv|command|task|job)))?|nevermind|never\s+mind|forget\s+it)\.?\s*$/i;
-
-function isCancelCommand(text: string): boolean {
-  return CANCEL_KEYWORD_RE.test(text);
-}
+import { startTvAgentJob } from "./tvJobManager";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -151,6 +144,7 @@ let azureReady = false;
 let activeClientWs: WebSocket | null = null;
 let fullTranscript = "";
 let pendingFollowUp = false;
+let responseInFlight = false;
 let readyCallbacks: Array<() => void> = [];
 
 // Short conversational memory cap: at most 10 items and 5 minutes.
@@ -509,6 +503,9 @@ Specialist behavior:
 - ScheduledTaskAgent runs are blocking; speak its final message.
 - Completion announcements should usually be three or four words.
 
+Cancelling a TV action:
+- If the user wants to stop, cancel, abort, or undo an in-flight TV/streaming action (e.g. "stop", "cancel that", "nevermind", "forget it", "stop the TV"), call start_tv_agent with the user's stop request verbatim. Starting any TV job replaces the prior one, so this is how you cancel. Do not invent a separate cancellation tool.
+
 Memory:
 - Use the recent conversation only as short conversational memory. Current device state and active specialist state are authoritative.${USER_ADDRESS ? ` The user's address is: ${USER_ADDRESS}. Use this for location-based queries like weather.` : ""}`;
 
@@ -587,8 +584,17 @@ function connectAzure(onReady: () => void): void {
           }
           break;
 
+        case "response.created":
+          responseInFlight = true;
+          break;
+
         case "input_audio_buffer.speech_started":
           console.log("[RealtimeChat] Azure speech started");
+          if (responseInFlight) {
+            console.log("[RealtimeChat] Barge-in: cancelling in-flight response");
+            sendAzure({ type: "response.cancel" });
+            sendClient({ type: "assistant_interrupted" });
+          }
           sendClient({ type: "speech_started" });
           break;
 
@@ -659,25 +665,12 @@ function connectAzure(onReady: () => void): void {
               type: "user_transcript",
               text: event.transcript,
             });
-            if (isCancelCommand(event.transcript)) {
-              const cancelledTvJobId = cancelActiveTvJob();
-              sendAzure({ type: "response.cancel" });
-              sendAzure({ type: "input_audio_buffer.clear" });
-              fullTranscript = "";
-              pendingFollowUp = false;
-              console.log(
-                `[RealtimeChat] Cancel keyword detected; cancelledTvJobId=${cancelledTvJobId ?? "none"}`
-              );
-              sendClient({
-                type: "command_cancelled",
-                cancelledTvJobId: cancelledTvJobId ?? null,
-              });
-            }
           }
           break;
 
         case "response.done": {
           console.log("[RealtimeChat] Azure response done");
+          responseInFlight = false;
           // Skip function-call-only responses — the next response.create that
           // follows the tool result will produce the actual user-facing answer.
           const hasFunctionCall = event.response?.output?.some(
@@ -802,6 +795,7 @@ export function setupRealtimeChatProxy(server: http.Server): void {
       sendAzure({ type: "response.cancel" });
       sendAzure({ type: "input_audio_buffer.clear" });
       fullTranscript = "";
+      responseInFlight = false;
     }
 
     // Connect to Azure (reuses existing session if alive)
