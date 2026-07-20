@@ -61,6 +61,8 @@ export interface MemoryRetrievalParams {
   agentType?: string;
   limit?: number;
   minSimilarity?: number;
+  preferCache?: boolean;
+  useEmbedding?: boolean;
 }
 
 export interface MemoryInteraction {
@@ -82,6 +84,7 @@ const MAX_CANDIDATES = 250;
 const DUPLICATE_SIMILARITY = 0.87;
 const CONSOLIDATION_BATCH_SIZE = 12;
 const MAX_PENDING_INTERACTIONS = 100;
+const MEMORY_CANDIDATE_CACHE_TTL_MS = 60_000;
 const DEVICE_SCOPE_TERMS = [
   "camera",
   "preset",
@@ -118,11 +121,18 @@ let memoryContainerPromise: Promise<Container | null> | null = null;
 let memoryClient: CosmosClient | null = null;
 const pendingInteractions: MemoryInteraction[] = [];
 let consolidationTimer: NodeJS.Timeout | null = null;
+let candidateCacheRefreshTimer: NodeJS.Timeout | null = null;
 let consolidationRunning = false;
 let partitionRepairStarted = false;
+let activeCandidateCache: {
+  docs: AgentMemoryDocument[];
+  fetchedAt: number;
+} = { docs: [], fetchedAt: 0 };
+let activeCandidateRefreshPromise: Promise<AgentMemoryDocument[]> | null = null;
 
 export const AGENT_MEMORY_SYSTEM_INSTRUCTIONS = `Persistent agent memory:
-- Relevant Persistent agent memory may be provided as compact context before the current request.
+- Relevant Persistent agent memory may be provided as compact system context before the current request.
+- Apply injected memory when planning or answering. Treat guidance memories as operating constraints unless the user's newest instruction explicitly overrides them or current device state makes them impossible.
 - Treat memory as user preference and durable context, not as current device truth.
 - Newer user instructions and current Home Assistant state override memory.
 - Use retrieve_memory when compact memory is not enough to answer or act.
@@ -445,7 +455,7 @@ function scopeScore(query: string, agentType: string | undefined, doc: AgentMemo
   return Math.min(1, score);
 }
 
-async function fetchActiveCandidates(): Promise<AgentMemoryDocument[]> {
+async function fetchActiveCandidatesLive(): Promise<AgentMemoryDocument[]> {
   const container = await getMemoryContainer();
   if (!container) return [];
 
@@ -465,6 +475,32 @@ async function fetchActiveCandidates(): Promise<AgentMemoryDocument[]> {
     console.error("[Memory] Failed to query memory candidates", error);
     return [];
   }
+}
+
+async function refreshActiveCandidateCache(): Promise<AgentMemoryDocument[]> {
+  if (activeCandidateRefreshPromise) return activeCandidateRefreshPromise;
+  activeCandidateRefreshPromise = fetchActiveCandidatesLive()
+    .then((docs) => {
+      activeCandidateCache = { docs, fetchedAt: Date.now() };
+      return docs;
+    })
+    .finally(() => {
+      activeCandidateRefreshPromise = null;
+    });
+  return activeCandidateRefreshPromise;
+}
+
+async function fetchActiveCandidates(preferCache = false): Promise<AgentMemoryDocument[]> {
+  const cachedDocs = activeCandidateCache.docs;
+  const cacheAgeMs = Date.now() - activeCandidateCache.fetchedAt;
+  const cacheFresh = cachedDocs.length > 0 && cacheAgeMs < MEMORY_CANDIDATE_CACHE_TTL_MS;
+
+  if (preferCache && cachedDocs.length > 0) {
+    if (!cacheFresh) void refreshActiveCandidateCache();
+    return cachedDocs;
+  }
+
+  return refreshActiveCandidateCache();
 }
 
 function rankMemories(
@@ -562,6 +598,7 @@ export async function saveMemory(
     if (duplicate && duplicate.pk !== doc.pk) {
       await container.item(duplicate.id, duplicate.pk).delete().catch(() => undefined);
     }
+    void refreshActiveCandidateCache();
     return (resource as AgentMemoryDocument) ?? doc;
   } catch (error) {
     console.error("[Memory] Failed to save memory", error);
@@ -582,14 +619,18 @@ export async function retrieveMemories(
       ? params.minSimilarity
       : MEMORY_MIN_SIMILARITY;
 
-  const docs = await fetchActiveCandidates();
+  const docs = await fetchActiveCandidates(params.preferCache === true);
   if (docs.length === 0) return [];
 
-  const queryEmbedding = query ? await generateEmbedding(query) : [];
+  const queryEmbedding =
+    query && params.useEmbedding !== false ? await generateEmbedding(query) : [];
   const ranked = rankMemories(docs, query, queryEmbedding, params.agentType);
   const selected = ranked
     .filter((row) => {
-      if (!queryEmbedding.length) return row.scopeScore > 0 || row.lexicalScore > 0;
+      if (!queryEmbedding.length) {
+        if (!query) return row.scopeScore > 0 || row.lexicalScore > 0;
+        return row.scopeScore >= 0.5 || row.lexicalScore >= 0.35;
+      }
       return row.score >= minSimilarity || row.scopeScore >= 0.5;
     })
     .slice(0, limit)
@@ -686,6 +727,7 @@ export async function updateMemory(params: {
     if (existing.pk !== updated.pk) {
       await container.item(existing.id, existing.pk).delete().catch(() => undefined);
     }
+    void refreshActiveCandidateCache();
     return (resource as AgentMemoryDocument) ?? updated;
   } catch (error) {
     console.error("[Memory] Failed to update memory", error);
@@ -726,6 +768,7 @@ export async function deleteMemory(params: {
       console.error(`[Memory] Failed to delete memory ${target.id}`, error);
     }
   }
+  if (deleted.length > 0) void refreshActiveCandidateCache();
   return deleted;
 }
 
@@ -749,13 +792,17 @@ export function formatMemoryContext(memories: AgentMemoryDocument[]): string {
   const lines = memories.map((memory, index) => {
     const scopes = formatScopes(memory.scopes);
     const scopePart = scopes ? ` scope: ${scopes};` : "";
-    return `${index + 1}. [${memory.id}] ${memory.memoryType};${scopePart} ${memory.text}`;
+    const label =
+      memory.memoryType === "guidance"
+        ? "GUIDANCE - follow when applicable"
+        : memory.memoryType;
+    return `${index + 1}. [${memory.id}] ${label};${scopePart} ${memory.text}`;
   });
   return [
     "Relevant Persistent agent memory for this request:",
     ...lines,
     "",
-    "Use these as durable user preferences or facts only. Current user instructions and current device state override memory.",
+    "Apply guidance memories when they match the request. Current user instructions and current device state override memory.",
   ].join("\n");
 }
 
@@ -772,6 +819,8 @@ export async function getPromptMemoryContext(params: {
     query: params.query,
     agentType: params.agentType,
     limit: MEMORY_RETRIEVAL_TOP_K,
+    preferCache: true,
+    useEmbedding: false,
   });
   const memories = await withTimeout(retrieval, timeoutMs, []);
   return formatMemoryContext(memories);
@@ -818,6 +867,14 @@ export function startMemoryConsolidation(): void {
   if (!partitionRepairStarted) {
     partitionRepairStarted = true;
     void repairLegacyMemoryPartitions();
+  }
+
+  void refreshActiveCandidateCache();
+  if (!candidateCacheRefreshTimer) {
+    candidateCacheRefreshTimer = setInterval(() => {
+      void refreshActiveCandidateCache();
+    }, MEMORY_CANDIDATE_CACHE_TTL_MS);
+    candidateCacheRefreshTimer.unref?.();
   }
 
   if (!MEMORY_CONSOLIDATION_ENABLED || consolidationTimer) return;

@@ -61,6 +61,8 @@ export interface StepEvent {
   finishReason: string;
   /** Snapshot of the conversation messages at the time of this step. */
   messages: ModelMessage[];
+  /** Per-session system context sent with this step, such as retrieved memory. */
+  systemMessages?: string[];
 }
 
 // ---- Result types ----
@@ -93,6 +95,7 @@ export interface AgentStepResult {
 
 export interface AgentLoopSession {
   id: string;
+  systemMessages: string[];
   messages: ModelMessage[];
   maxIterations: number;
   currentIteration: number;
@@ -217,17 +220,10 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
     systemMessages?: string[]
   ): AgentLoopSession {
     const sessionId = randomUUID();
+    const sessionSystemMessages = (systemMessages || [])
+      .map((message) => message.trim())
+      .filter(Boolean);
     const messages: ModelMessage[] = [];
-
-    if (systemMessages && systemMessages.length > 0) {
-      for (const message of systemMessages) {
-        if (!message.trim()) continue;
-        messages.push({
-          role: "system",
-          content: message,
-        } as ModelMessage);
-      }
-    }
 
     if (messageHistory && messageHistory.length > 0) {
       for (const msg of messageHistory) {
@@ -242,6 +238,7 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
 
     const session: AgentLoopSession = {
       id: sessionId,
+      systemMessages: sessionSystemMessages,
       messages,
       maxIterations,
       currentIteration: 0,
@@ -267,10 +264,13 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
 
     try {
       stepCounter = 0;
+      const systemPrompt = [config.systemPrompt, ...session.systemMessages]
+        .filter(Boolean)
+        .join("\n\n");
       const result = await generateText({
         model: azureProvider(model ?? ""),
         tools: aiTools,
-        system: config.systemPrompt,
+        system: systemPrompt,
         messages: session.messages,
         stopWhen: stepCountIs(maxIterations),
         onStepFinish: config.onStepFinish
@@ -285,6 +285,7 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
                 })),
                 finishReason: finishReason || "unknown",
                 messages: [...session.messages],
+                systemMessages: [...session.systemMessages],
               });
             }
           : undefined,
@@ -436,7 +437,14 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
 
   function getMessages(sessionId: string): ModelMessage[] {
     const session = sessions.get(sessionId);
-    return session ? [...session.messages] : [];
+    if (!session) return [];
+    return [
+      ...session.systemMessages.map((content) => ({
+        role: "system" as const,
+        content,
+      })),
+      ...session.messages,
+    ];
   }
 
   return {

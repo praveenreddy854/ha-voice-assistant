@@ -4,9 +4,20 @@ import path from "path";
 import { HassServiceCommandBody, HassServiceCommand, HassState } from "./types/ha";
 import { generateCompletion } from "./ai";
 import axios from "axios";
+import {
+  formatMemoryContext,
+  retrieveMemories,
+  type AgentMemoryDocument,
+} from "./memory";
+import { getTracer } from "./tracing";
 
 const promptCache = new Map();
 const homeAssistantCacheKey = "HOMEASSISTANT";
+const LIVING_ROOM_PTZ_PRESET_ENTITY_ID = "select.living_room_ptz_preset";
+const LIVING_ROOM_GUARD_SET_BUTTON_ENTITY_ID =
+  "button.living_room_guard_set_current_position";
+const INTERNAL_WAIT_URL_PATH = "internal/wait";
+const GUARD_SET_WAIT_MS = 15000;
 
 export async function getHACommandBody(
   command: string,
@@ -176,25 +187,151 @@ export async function executeHACommand(
   command: string,
   messageHistory?: Array<{ role: string; content: string }>
 ): Promise<{ success: boolean; message: string; data?: any }> {
+  const span = getTracer().startSpan("ha.command.execute", {
+    attributes: {
+      "ha.command.text": command,
+      "telemetry.kind": "ha_command",
+    },
+  });
+
   try {
+    const memory = await buildMemoryAwareCommand(command);
+    span.setAttribute("ha.memory.context_present", Boolean(memory.context));
+    span.setAttribute("ha.memory.ids", memory.memories.map((item) => item.id).join(","));
+
     // Get the HA command body using the existing LLM function
-    const haBody = await getHACommandBody(command, messageHistory);
+    const generatedHaBody = await getHACommandBody(memory.command, messageHistory);
+    const { body: haBody, guardSetApplied } = applyMemoryCommandAugmentations(
+      generatedHaBody,
+      command,
+      memory.memories
+    );
+
+    span.setAttribute("ha.command.generated_body", JSON.stringify(generatedHaBody));
+    span.setAttribute("ha.command.final_body", JSON.stringify(haBody));
+    span.setAttribute("ha.guard_set_current_position.applied", guardSetApplied);
     
     // Handle array of commands (multi-step operations)
     if (Array.isArray(haBody)) {
-      return await executeMultipleHACommands(haBody, command);
+      const result = await executeMultipleHACommands(haBody, command);
+      span.setAttribute("ha.command.success", result.success);
+      span.setAttribute("ha.command.result_message", result.message);
+      return result;
     }
     
     // Handle single command
-    return await executeSingleHACommand(haBody, command);
+    const result = await executeSingleHACommand(haBody, command);
+    span.setAttribute("ha.command.success", result.success);
+    span.setAttribute("ha.command.result_message", result.message);
+    return result;
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     console.error("Error executing HA command:", err);
+    span.setAttribute("ha.command.success", false);
+    span.setAttribute("ha.command.error", err.message);
     return {
       success: false,
       message: `Error executing command: ${err.message}`,
     };
+  } finally {
+    span.end();
   }
+}
+
+async function buildMemoryAwareCommand(command: string): Promise<{
+  command: string;
+  context: string;
+  memories: AgentMemoryDocument[];
+}> {
+  const memories = await retrieveMemories({
+    query: command,
+    agentType: "realtime",
+    limit: 10,
+    preferCache: false,
+    useEmbedding: false,
+  });
+  const context = formatMemoryContext(memories);
+  if (!context) return { command, context, memories };
+  return {
+    command: [
+      command,
+      "",
+      "Persistent memory to apply while translating this Home Assistant command:",
+      context,
+    ].join("\n"),
+    context,
+    memories,
+  };
+}
+
+function applyMemoryCommandAugmentations(
+  body: HassServiceCommandBody,
+  originalCommand: string,
+  memories: AgentMemoryDocument[]
+): { body: HassServiceCommandBody; guardSetApplied: boolean } {
+  if (!shouldSetLivingRoomGuardPosition(body, originalCommand, memories)) {
+    return { body, guardSetApplied: false };
+  }
+
+  const commands = Array.isArray(body) ? [...body] : [body];
+  const alreadySetsGuard = commands.some(
+    (command) => command.entity_id === LIVING_ROOM_GUARD_SET_BUTTON_ENTITY_ID
+  );
+  if (!alreadySetsGuard) {
+    commands.push(
+      {
+        url_path: INTERNAL_WAIT_URL_PATH,
+        entity_id: "__internal_wait__",
+        service_data: {
+          duration_ms: GUARD_SET_WAIT_MS,
+          reason: "wait for living room camera PTZ preset movement before setting guard position",
+        },
+      },
+      {
+        url_path: "button/press",
+        entity_id: LIVING_ROOM_GUARD_SET_BUTTON_ENTITY_ID,
+      }
+    );
+  }
+
+  return { body: commands, guardSetApplied: !alreadySetsGuard };
+}
+
+function shouldSetLivingRoomGuardPosition(
+  body: HassServiceCommandBody,
+  originalCommand: string,
+  memories: AgentMemoryDocument[]
+): boolean {
+  const commands = Array.isArray(body) ? body : [body];
+  const selectsLivingRoomPreset = commands.some(
+    (command) => command.entity_id === LIVING_ROOM_PTZ_PRESET_ENTITY_ID
+  );
+  if (!selectsLivingRoomPreset) return false;
+
+  const normalizedCommand = originalCommand.toLowerCase();
+  const commandMentionsPresetCamera =
+    normalizedCommand.includes("living room") &&
+    normalizedCommand.includes("camera") &&
+    normalizedCommand.includes("preset");
+
+  const hasGuardPresetMemory = memories.some((memory) => {
+    const haystack = [
+      memory.text,
+      ...(memory.scopes.deviceNames || []),
+      ...(memory.scopes.roomNames || []),
+      ...(memory.scopes.tags || []),
+    ]
+      .join(" ")
+      .toLowerCase();
+    return (
+      haystack.includes("living room") &&
+      haystack.includes("camera") &&
+      haystack.includes("preset") &&
+      haystack.includes("guard")
+    );
+  });
+
+  return commandMentionsPresetCamera && hasGuardPresetMemory;
 }
 
 /**
@@ -250,6 +387,21 @@ async function executeSingleHACommand(
   originalCommand: string
 ): Promise<{ success: boolean; message: string; data?: any }> {
   const urlPath = normalizeHAUrlPath(haBody.url_path || "");
+  if (urlPath === INTERNAL_WAIT_URL_PATH) {
+    const durationMs =
+      typeof haBody.service_data?.duration_ms === "number"
+        ? Math.max(0, Math.min(haBody.service_data.duration_ms, 30000))
+        : 0;
+    if (durationMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, durationMs));
+    }
+    return {
+      success: true,
+      message: `Waited ${durationMs}ms`,
+      data: { durationMs, reason: haBody.service_data?.reason },
+    };
+  }
+
   const stateEntityId = stateLookupEntityId(urlPath);
   const entityId = stateEntityId || haBody.entity_id;
 

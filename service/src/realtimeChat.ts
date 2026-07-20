@@ -16,6 +16,7 @@ const HOME_ASSISTANT_DEVICES = (process.env.HOME_ASSISTANT_DEVICES || "")
 import { executeHACommand } from "./ha";
 import { runAgent } from "./agents/core";
 import { startTvAgentJob } from "./tvJobManager";
+import { getTracer } from "./tracing";
 import {
   deleteMemory,
   formatMemoryContext,
@@ -242,10 +243,19 @@ function requestDefaultResponse(instructions?: string): void {
 }
 
 async function requestDefaultResponseWithMemory(query: string): Promise<void> {
+  const span = getTracer().startSpan("realtime.memory.inject", {
+    attributes: {
+      "telemetry.kind": "realtime_memory",
+      "realtime.query": query,
+    },
+  });
   const memoryContext = await getPromptMemoryContext({
     query,
     agentType: "realtime",
   });
+  span.setAttribute("realtime.memory.context_present", Boolean(memoryContext));
+  span.setAttribute("realtime.memory.has_guard", /guard/i.test(memoryContext));
+  span.end();
   requestDefaultResponse(memoryContext || undefined);
 }
 

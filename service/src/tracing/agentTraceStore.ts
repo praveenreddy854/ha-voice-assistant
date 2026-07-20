@@ -48,6 +48,8 @@ export interface TraceLLMStep {
   finishReason: string;
   text: string;
   toolCalls: TraceToolCall[];
+  /** Per-run system context, including retrieved memory injected before the step. */
+  systemMessages?: string[];
   /** Snapshot of the conversation messages at the time of this LLM step. */
   messages?: Array<{ role: string; content: unknown }>;
 }
@@ -288,6 +290,9 @@ export function addLLMStep(sessionId: string, step: TraceLLMStep): void {
         "agent.step.finish_reason": step.finishReason,
         "agent.step.text": step.text,
         "agent.step.tool_calls": JSON.stringify(step.toolCalls),
+        "agent.step.system_messages": step.systemMessages
+          ? JSON.stringify(step.systemMessages)
+          : "",
         "agent.step.messages": sanitizedMessages ? JSON.stringify(sanitizedMessages) : "",
       },
     },
@@ -622,6 +627,9 @@ function hydrateHttpRequest(traceEntry: AgentTrace, span: ExportedTelemetrySpan)
 function hydrateLlmStep(traceEntry: AgentTrace, span: ExportedTelemetrySpan): void {
   const stepNumber = getNumberAttribute(span.attributes, "agent.step.number") || 0;
   const toolCalls = parseToolCalls(span.attributes["agent.step.tool_calls"]);
+  const systemMessages = parseStringArray(
+    getStringAttribute(span.attributes, "agent.step.system_messages")
+  );
   const messages = parseMessages(getStringAttribute(span.attributes, "agent.step.messages"));
 
   traceEntry.llmSteps.push({
@@ -630,6 +638,7 @@ function hydrateLlmStep(traceEntry: AgentTrace, span: ExportedTelemetrySpan): vo
     finishReason: getStringAttribute(span.attributes, "agent.step.finish_reason") || "unknown",
     text: getStringAttribute(span.attributes, "agent.step.text") || "",
     toolCalls,
+    systemMessages,
     messages,
   });
 
@@ -807,6 +816,18 @@ function parseMessages(value: string | undefined): Array<{ role: string; content
     const parsed = JSON.parse(value);
     if (Array.isArray(parsed)) return parsed;
     return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseStringArray(value: string | undefined): string[] | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return undefined;
+    const values = parsed.filter((entry): entry is string => typeof entry === "string");
+    return values.length ? values : undefined;
   } catch {
     return undefined;
   }

@@ -615,16 +615,20 @@
     // Tool detail dialog
     function findMessagesForTool(toolName, toolCallId) {
       if (!currentTrace || !currentTrace.llmSteps) return null;
+      const stepMessages = (step) => [
+        ...(step.systemMessages || []).map(content => ({ role: 'system', content })),
+        ...(step.messages || []),
+      ];
       // Find the LLM step whose toolCalls include this tool
       for (const step of currentTrace.llmSteps) {
         if (step.toolCalls.some(tc => tc.toolName === toolName || tc.toolCallId === toolCallId)) {
-          return step.messages || null;
+          return stepMessages(step);
         }
       }
       // Fallback: find by tool name in any step
       for (const step of currentTrace.llmSteps) {
         if (step.toolCalls.some(tc => tc.toolName === toolName)) {
-          return step.messages || null;
+          return stepMessages(step);
         }
       }
       return null;

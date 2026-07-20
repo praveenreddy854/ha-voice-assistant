@@ -118,6 +118,7 @@ function getOrCreateLoop(def: AgentDefinition): AgentLoop {
               actionSummary: "",
             })),
             messages: event.messages as Array<{ role: string; content: unknown }>,
+            systemMessages: event.systemMessages,
           });
         }
         if (event.text) {
