@@ -84,6 +84,8 @@ export const AZURE_COSMOS_DATABASE = process.env.AZURE_COSMOS_DATABASE;
 export const AZURE_COSMOS_CONTAINER = process.env.AZURE_COSMOS_CONTAINER;
 export const AZURE_COSMOS_TV_FLOW_CONTAINER =
   process.env.AZURE_COSMOS_TV_FLOW_CONTAINER;
+export const AZURE_COSMOS_MEMORY_CONTAINER =
+  process.env.AZURE_COSMOS_MEMORY_CONTAINER || "AgentMemory";
 export const AZURE_COSMOS_SCHEDULED_TASKS_CONTAINER =
   process.env.AZURE_COSMOS_SCHEDULED_TASKS_CONTAINER || "scheduled-tasks";
 export const AZURE_COSMOS_SCHEDULED_TASKS_HISTORY_CONTAINER =
@@ -92,11 +94,47 @@ export const AZURE_COSMOS_SCHEDULED_TASKS_HISTORY_CONTAINER =
 export const DEVICE_STATE_LOG_CRON =
   process.env.DEVICE_STATE_LOG_CRON || "0 * * * *";
 
+// ============================================================================
+// Proactive Reminders (AI-driven, from device-state history)
+// ============================================================================
+
+export const PROACTIVE_REMINDERS_ENABLED =
+  (process.env.PROACTIVE_REMINDERS_ENABLED ?? "true").toLowerCase() !== "false";
+
+/** Runs at half past each hour by default, after the top-of-hour state log. */
+export const PROACTIVE_REMINDERS_CRON =
+  process.env.PROACTIVE_REMINDERS_CRON || "30 * * * *";
+
+/** Minutes a device must stay on/open before it is worth a reminder. */
+export const PROACTIVE_REMINDER_ON_MINUTES = Number.parseInt(
+  process.env.PROACTIVE_REMINDER_ON_MINUTES || "180",
+  10
+);
+
 // TV Flow Memory (RAG)
 export const TV_FLOW_MEMORY_MIN_SIMILARITY = Number.parseFloat(
   process.env.TV_FLOW_MEMORY_MIN_SIMILARITY || "0.65"
 );
 export const TV_FLOW_MEMORY_TOP_K = Number.parseInt(
   process.env.TV_FLOW_MEMORY_TOP_K || "5",
+  10
+);
+
+// Persistent Agent Memory
+export const MEMORY_RETRIEVAL_TOP_K = Number.parseInt(
+  process.env.MEMORY_RETRIEVAL_TOP_K || "5",
+  10
+);
+export const MEMORY_RETRIEVAL_TIMEOUT_MS = Number.parseInt(
+  process.env.MEMORY_RETRIEVAL_TIMEOUT_MS || "900",
+  10
+);
+export const MEMORY_MIN_SIMILARITY = Number.parseFloat(
+  process.env.MEMORY_MIN_SIMILARITY || "0.55"
+);
+export const MEMORY_CONSOLIDATION_ENABLED =
+  (process.env.MEMORY_CONSOLIDATION_ENABLED ?? "true").toLowerCase() !== "false";
+export const MEMORY_CONSOLIDATION_INTERVAL_MS = Number.parseInt(
+  process.env.MEMORY_CONSOLIDATION_INTERVAL_MS || "60000",
   10
 );

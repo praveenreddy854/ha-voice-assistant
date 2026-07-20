@@ -46,6 +46,12 @@ import {
   setActiveSession,
   getActiveSessionId,
 } from "../../tracing/agentTraceStore";
+import {
+  AGENT_MEMORY_SYSTEM_INSTRUCTIONS,
+  getPromptMemoryContext,
+  recordMemoryInteraction,
+} from "../../memory";
+import { buildMemoryToolDefinitions } from "./memoryTools";
 
 // ============================================================================
 // Session Store
@@ -61,7 +67,10 @@ function getOrCreateLoop(def: AgentDefinition): AgentLoop {
   if (!loop) {
     // Build ToolDefinitions — tools with execute auto-run inside ToolLoopAgent,
     // tools without execute break the loop for external handling
-    const tools: ToolDefinition[] = def.tools.map((t) => {
+    const tools: ToolDefinition[] = [
+      ...def.tools,
+      ...buildMemoryToolDefinitions(def.agentType),
+    ].map((t) => {
       const toolDef: ToolDefinition = {
         type: "function" as const,
         function: {
@@ -81,7 +90,7 @@ function getOrCreateLoop(def: AgentDefinition): AgentLoop {
     });
 
     loop = createAgentLoop({
-      systemPrompt: def.systemPrompt,
+      systemPrompt: `${def.systemPrompt}\n\n${AGENT_MEMORY_SYSTEM_INSTRUCTIONS}`,
       tools,
       maxIterations: def.maxIterations,
       model: def.model,
@@ -144,7 +153,16 @@ async function createSession(
     options
   );
 
-  const loopSession = loop.createSession(initialMessage, options.messageHistory);
+  const memoryContext = await getPromptMemoryContext({
+    query: options.userPrompt!,
+    agentType: def.agentType,
+  });
+
+  const loopSession = loop.createSession(
+    initialMessage,
+    options.messageHistory,
+    memoryContext ? [memoryContext] : []
+  );
 
   const session: AgentSession = {
     id: randomUUID(),
@@ -169,6 +187,11 @@ async function createSession(
     `[Orchestrator] Session created for agent "${def.agentType}": ${session.id} (loop: ${loopSession.id}, max: ${maxSteps})`
   );
   console.log(`[Orchestrator] User prompt: "${options.userPrompt}"`);
+  if (memoryContext) {
+    console.log(
+      `[Orchestrator] Injected Persistent agent memory for "${def.agentType}" session ${session.id}`
+    );
+  }
 
   return session;
 }
@@ -286,6 +309,11 @@ async function handleComplete(
   completeTrace(session.id, success, message, "completed");
   session.completed = true;
   session.agentData.finalMessage = message;
+  recordMemoryInteraction({
+    agentType: def.agentType,
+    userText: session.userPrompt,
+    assistantText: message,
+  });
   const result = buildResult(session, "completed", success, message);
   if (def.onComplete) await def.onComplete(session, result);
   await cleanupSession(session, def);

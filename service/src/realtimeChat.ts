@@ -16,6 +16,18 @@ const HOME_ASSISTANT_DEVICES = (process.env.HOME_ASSISTANT_DEVICES || "")
 import { executeHACommand } from "./ha";
 import { runAgent } from "./agents/core";
 import { startTvAgentJob } from "./tvJobManager";
+import {
+  deleteMemory,
+  formatMemoryContext,
+  getPromptMemoryContext,
+  MemoryScopes,
+  MemoryType,
+  recordMemoryInteraction,
+  retrieveMemories,
+  saveMemory,
+  updateMemory,
+  validateMemoryWrite,
+} from "./memory";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -143,9 +155,12 @@ let azureWs: WebSocket | null = null;
 let azureReady = false;
 let activeClientWs: WebSocket | null = null;
 let fullTranscript = "";
+let lastUserTranscript = "";
 let pendingFollowUp = false;
 let responseInFlight = false;
 let readyCallbacks: Array<() => void> = [];
+let pendingAudioResponseTimer: NodeJS.Timeout | null = null;
+let pendingAudioResponseRequested = false;
 
 // Short conversational memory cap: at most 10 items and 5 minutes.
 const MEMORY_MAX_ITEMS = 10;
@@ -216,13 +231,22 @@ function requestAssistantSpeech(instructions: string): void {
   });
 }
 
-function requestDefaultResponse(): void {
+function requestDefaultResponse(instructions?: string): void {
   sendAzure({
     type: "response.create",
     response: {
       modalities: ["text", "audio"],
+      ...(instructions ? { instructions } : {}),
     },
   });
+}
+
+async function requestDefaultResponseWithMemory(query: string): Promise<void> {
+  const memoryContext = await getPromptMemoryContext({
+    query,
+    agentType: "realtime",
+  });
+  requestDefaultResponse(memoryContext || undefined);
 }
 
 function resetAudioLog(): void {
@@ -297,6 +321,79 @@ function needsActionConfirmation(command: string): boolean {
   return protectedOpening || bulkDestructive;
 }
 
+function stringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const result = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return result.length ? result : undefined;
+}
+
+function parseMemoryScopes(value: unknown): MemoryScopes | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  return {
+    global: raw.global === true,
+    roomNames: stringList(raw.roomNames),
+    deviceNames: stringList(raw.deviceNames),
+    deviceEntityIds: stringList(raw.deviceEntityIds),
+    domains: stringList(raw.domains),
+    appNames: stringList(raw.appNames),
+    people: stringList(raw.people),
+    agentTypes: stringList(raw.agentTypes),
+    tags: stringList(raw.tags),
+  };
+}
+
+function parseMemoryType(value: unknown): MemoryType | undefined {
+  return value === "fact" || value === "guidance" || value === "preference"
+    ? value
+    : undefined;
+}
+
+function compactMemoryPayload(memory: {
+  id: string;
+  text: string;
+  memoryType: string;
+  source: string;
+  confidence: number;
+  scopes: MemoryScopes;
+  updatedAt: string;
+}): JsonRecord {
+  return {
+    id: memory.id,
+    text: memory.text,
+    memoryType: memory.memoryType,
+    source: memory.source,
+    confidence: memory.confidence,
+    scopes: memory.scopes,
+    updatedAt: memory.updatedAt,
+  };
+}
+
+function clearPendingAudioResponse(): void {
+  if (pendingAudioResponseTimer) {
+    clearTimeout(pendingAudioResponseTimer);
+    pendingAudioResponseTimer = null;
+  }
+}
+
+function scheduleAudioResponseFallback(): void {
+  clearPendingAudioResponse();
+  pendingAudioResponseRequested = false;
+  pendingAudioResponseTimer = setTimeout(() => {
+    void requestAudioResponseWithMemory("");
+  }, 1500);
+}
+
+async function requestAudioResponseWithMemory(transcript: string): Promise<void> {
+  if (pendingAudioResponseRequested) return;
+  pendingAudioResponseRequested = true;
+  clearPendingAudioResponse();
+  await requestDefaultResponseWithMemory(transcript);
+}
+
 async function executeRealtimeTool(
   name: string,
   args: JsonRecord
@@ -310,6 +407,79 @@ async function executeRealtimeTool(
     case "web_search": {
       const query = typeof args.query === "string" ? args.query : "";
       return executeWebSearch(query);
+    }
+
+    case "retrieve_memory": {
+      const query = typeof args.query === "string" ? args.query : "";
+      const limit = typeof args.limit === "number" ? args.limit : undefined;
+      const memories = await retrieveMemories({
+        query,
+        agentType: "realtime",
+        limit,
+      });
+      return JSON.stringify({
+        memories: memories.map(compactMemoryPayload),
+        context: formatMemoryContext(memories),
+      });
+    }
+
+    case "save_memory": {
+      const text = typeof args.text === "string" ? args.text : "";
+      if (!text.trim()) return "Missing memory text.";
+      const scopes = parseMemoryScopes(args.scopes) || {};
+      const validation = validateMemoryWrite(text, scopes);
+      if (!validation.ok) {
+        return JSON.stringify({
+          success: false,
+          clarification_required: validation.clarificationRequired === true,
+          message:
+            validation.message ||
+            "Memory needs a clearer scope before it can be saved.",
+        });
+      }
+      const saved = await saveMemory({
+        text,
+        memoryType: parseMemoryType(args.memoryType),
+        source: "explicit",
+        confidence: 1,
+        scopes: {
+          ...scopes,
+          agentTypes: Array.from(new Set([...(scopes.agentTypes || []), "realtime"])),
+        },
+      });
+      return JSON.stringify({
+        success: !!saved,
+        memory: saved ? compactMemoryPayload(saved) : null,
+      });
+    }
+
+    case "update_memory": {
+      const id = typeof args.id === "string" ? args.id : undefined;
+      const query = typeof args.query === "string" ? args.query : undefined;
+      const text = typeof args.text === "string" ? args.text : "";
+      if (!text.trim()) return "Missing replacement memory text.";
+      const updated = await updateMemory({
+        id,
+        query,
+        text,
+        memoryType: parseMemoryType(args.memoryType),
+        scopes: parseMemoryScopes(args.scopes),
+      });
+      return JSON.stringify({
+        success: !!updated,
+        memory: updated ? compactMemoryPayload(updated) : null,
+      });
+    }
+
+    case "delete_memory": {
+      const id = typeof args.id === "string" ? args.id : undefined;
+      const query = typeof args.query === "string" ? args.query : undefined;
+      const limit = typeof args.limit === "number" ? args.limit : undefined;
+      const deleted = await deleteMemory({ id, query, limit });
+      return JSON.stringify({
+        success: deleted.length > 0,
+        deleted: deleted.map(compactMemoryPayload),
+      });
     }
 
     case "execute_home_assistant_command": {
@@ -405,6 +575,121 @@ const REALTIME_TOOLS = [
         },
       },
       required: ["query"],
+    },
+  },
+  {
+    type: "function",
+    name: "retrieve_memory",
+    description:
+      "Retrieve Persistent agent memory relevant to the user's question or request. Use for memory inspection and when injected memory is not enough.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "The memory question or current user request.",
+        },
+        limit: {
+          type: "number",
+          description: "Maximum number of memory items to retrieve.",
+        },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    type: "function",
+    name: "save_memory",
+    description:
+      "Save a durable user preference, stable fact, or reusable guidance item. Use immediately when the user says to remember something. For device-specific memory, identify the target device/room/domain/app in scopes; if unclear, ask the user before saving.",
+    parameters: {
+      type: "object",
+      properties: {
+        text: {
+          type: "string",
+          description: "The durable memory sentence to save.",
+        },
+        memoryType: {
+          type: "string",
+          enum: ["preference", "fact", "guidance"],
+        },
+        scopes: {
+          type: "object",
+          description:
+            "Where this memory applies. Use global=true for global preferences. For device-specific memory, provide deviceNames or deviceEntityIds.",
+          properties: {
+            global: { type: "boolean" },
+            roomNames: { type: "array", items: { type: "string" } },
+            deviceNames: { type: "array", items: { type: "string" } },
+            deviceEntityIds: { type: "array", items: { type: "string" } },
+            domains: { type: "array", items: { type: "string" } },
+            appNames: { type: "array", items: { type: "string" } },
+            people: { type: "array", items: { type: "string" } },
+            agentTypes: { type: "array", items: { type: "string" } },
+            tags: { type: "array", items: { type: "string" } },
+          },
+        },
+      },
+      required: ["text"],
+    },
+  },
+  {
+    type: "function",
+    name: "update_memory",
+    description:
+      "Correct or replace an existing Persistent agent memory when the user changes a remembered fact or preference.",
+    parameters: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        query: {
+          type: "string",
+          description: "Use when the memory id is unknown.",
+        },
+        text: {
+          type: "string",
+          description: "Replacement memory text.",
+        },
+        memoryType: {
+          type: "string",
+          enum: ["preference", "fact", "guidance"],
+        },
+        scopes: {
+          type: "object",
+          properties: {
+            global: { type: "boolean" },
+            roomNames: { type: "array", items: { type: "string" } },
+            deviceNames: { type: "array", items: { type: "string" } },
+            deviceEntityIds: { type: "array", items: { type: "string" } },
+            domains: { type: "array", items: { type: "string" } },
+            appNames: { type: "array", items: { type: "string" } },
+            people: { type: "array", items: { type: "string" } },
+            agentTypes: { type: "array", items: { type: "string" } },
+            tags: { type: "array", items: { type: "string" } },
+          },
+        },
+      },
+      required: ["text"],
+    },
+  },
+  {
+    type: "function",
+    name: "delete_memory",
+    description:
+      "Delete Persistent agent memory when the user asks to forget something.",
+    parameters: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        query: {
+          type: "string",
+          description: "Use when the memory id is unknown.",
+        },
+        limit: {
+          type: "number",
+          description: "Maximum number of matching memory items to delete.",
+        },
+      },
     },
   },
   {
@@ -507,7 +792,13 @@ Cancelling a TV action:
 - If the user wants to stop, cancel, abort, or undo an in-flight TV/streaming action (e.g. "stop", "cancel that", "nevermind", "forget it", "stop the TV"), call start_tv_agent with the user's stop request verbatim. Starting any TV job replaces the prior one, so this is how you cancel. Do not invent a separate cancellation tool.
 
 Memory:
-- Use the recent conversation only as short conversational memory. Current device state and active specialist state are authoritative.${USER_ADDRESS ? ` The user's address is: ${USER_ADDRESS}. Use this for location-based queries like weather.` : ""}`;
+- Use the recent conversation only as short conversational memory.
+- Compact Persistent agent memory may be injected for the current turn. Treat it as durable user preference or context, not current device truth.
+- Current device state, active specialist state, and the user's newest instruction are authoritative over memory.
+- Use retrieve_memory when the user asks what you remember or when injected memory is not enough.
+- Use save_memory for explicit "remember..." requests. Fill concrete scopes: global=true for global preferences, deviceNames/deviceEntityIds for device memory, roomNames for room memory, domains for domain memory, appNames for app memory.
+- If a memory request is device-related and the target is unclear, call await_user_followup and ask which device before saving.
+- Use update_memory or delete_memory when the user corrects or asks to forget memory.${USER_ADDRESS ? ` The user's address is: ${USER_ADDRESS}. Use this for location-based queries like weather.` : ""}`;
 
 function connectAzure(onReady: () => void): void {
   if (azureWs && azureReady && azureWs.readyState === WebSocket.OPEN) {
@@ -607,6 +898,7 @@ function connectAzure(onReady: () => void): void {
           console.log("[RealtimeChat] Azure audio buffer committed");
           resetAudioLog();
           pendingFollowUp = false;
+          scheduleAudioResponseFallback();
           break;
 
         case "conversation.item.created":
@@ -661,6 +953,8 @@ function connectAzure(onReady: () => void): void {
             `[RealtimeChat] Azure transcription completed chars=${String(event.transcript || "").length}`
           );
           if (event.transcript) {
+            lastUserTranscript = event.transcript;
+            void requestAudioResponseWithMemory(event.transcript);
             sendClient({
               type: "user_transcript",
               text: event.transcript,
@@ -684,6 +978,14 @@ function connectAzure(onReady: () => void): void {
           );
           const followupExpected = pendingFollowUp;
           pendingFollowUp = false;
+          if (hasOutput && fullTranscript.trim() && lastUserTranscript.trim()) {
+            recordMemoryInteraction({
+              agentType: "realtime",
+              userText: lastUserTranscript,
+              assistantText: fullTranscript,
+            });
+            lastUserTranscript = "";
+          }
           sendClient({
             type: "response_done",
             fullText: fullTranscript,
@@ -803,12 +1105,13 @@ export function setupRealtimeChatProxy(server: http.Server): void {
       clientWs.send(JSON.stringify({ type: "session_ready" }));
     });
 
-    clientWs.on("message", (data) => {
+    clientWs.on("message", async (data) => {
       try {
         const msg = JSON.parse(data.toString());
 
         if (msg.type === "user_text" && msg.text && azureWs && azureReady) {
           fullTranscript = "";
+          lastUserTranscript = String(msg.text);
 
           // Send text as a conversation item
           azureWs.send(JSON.stringify({
@@ -821,7 +1124,7 @@ export function setupRealtimeChatProxy(server: http.Server): void {
           }));
 
           // Trigger response generation
-          requestDefaultResponse();
+          await requestDefaultResponseWithMemory(String(msg.text));
         } else if (msg.type === "input_audio" && msg.audio && azureWs && azureReady) {
           recordAudioAppend(msg.audio);
           azureWs.send(JSON.stringify({
@@ -831,7 +1134,6 @@ export function setupRealtimeChatProxy(server: http.Server): void {
         } else if (msg.type === "commit_audio" && azureWs && azureReady) {
           console.log("[RealtimeChat] Client requested audio commit");
           azureWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-          requestDefaultResponse();
         } else if (msg.type === "force_followup") {
           // Client opened the mic for a bare wake-word — keep it open after
           // the next response no matter what the model decides.

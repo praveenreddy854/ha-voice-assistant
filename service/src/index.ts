@@ -48,6 +48,8 @@ import { setupRealtimeChatProxy } from "./realtimeChat";
 import { addAnnouncementClient } from "./announcementBus";
 import { startScheduledTaskFirer } from "./scheduledTaskFirer";
 import { startOutDirCleaner } from "./outDirCleaner";
+import { startProactiveReminders } from "./proactiveReminders";
+import { startMemoryConsolidation } from "./memory";
 // Teaching mode imports - for recording manual steps and fine-tuning data
 import {
   startTeachingSession,
@@ -124,6 +126,8 @@ app.get("/traces", (_req, res) => {
 startDeviceStateLogging();
 startScheduledTaskFirer();
 startOutDirCleaner();
+startProactiveReminders();
+startMemoryConsolidation();
 
 // Start gesture monitor for fist-to-pause TV control (RTSP mode only)
 if (isRtspMode()) {

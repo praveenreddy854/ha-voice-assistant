@@ -59,12 +59,19 @@ AZURE_COSMOS_DATABASE=your_database_name
 AZURE_COSMOS_CONTAINER=your_container_name
 # Optional: override the hourly schedule (defaults to top of every hour)
 DEVICE_STATE_LOG_CRON=0 * * * *
+
+# Optional: proactive AI reminders derived from the logged device-state history
+PROACTIVE_REMINDERS_ENABLED=true
+# Schedule for the reminder scan (defaults to half past every hour)
+PROACTIVE_REMINDERS_CRON=30 * * * *
+# Minutes a device must stay on/open before it earns a reminder (default 180)
+PROACTIVE_REMINDER_ON_MINUTES=180
 ```
 
 With the Cosmos DB values populated, the service captures Home Assistant
 device states on startup and then on the defined schedule (hourly by default).
 Captured records include the entity ID, friendly name, state, timestamps, and
-full attribute payload to support future AI-driven reminders.
+full attribute payload to support AI-driven reminders.
 
 ### Installation & Setup
 
@@ -165,6 +172,17 @@ The application integrates with Home Assistant through:
 ### Realtime Voice Agent
 
 After browser wake-word detection, raw audio streams to the Realtime Voice Agent. It answers general chat directly or calls tools for Home Assistant commands, ScheduledTasks, and TV automation.
+
+### Proactive Reminders
+
+When Azure Cosmos DB logging is enabled, a scheduled job reads the captured
+device-state history and surfaces proactive, spoken reminders for situations
+worth your attention — e.g. a light, switch, or fan left on, or a door/window
+left open past a configurable duration (`PROACTIVE_REMINDER_ON_MINUTES`,
+default 3 hours). Detected situations are phrased into a natural reminder by the
+Mini model tier and delivered through the existing announcement channel (spoken
+via TTS in the browser). Each on-episode is mentioned at most once. The feature
+is a no-op when Cosmos DB is not configured.
 
 ### Natural Language Processing
 
