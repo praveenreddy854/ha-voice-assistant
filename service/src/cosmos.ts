@@ -236,6 +236,22 @@ export interface DeviceStateRecord {
   additional?: Record<string, unknown>;
 }
 
+export const queryRecentDeviceStates = async (
+  sinceIso: string
+): Promise<DeviceStateRecord[]> => {
+  const container = await getCosmosContainer();
+  if (!container) return [];
+
+  const { resources } = await container.items
+    .query<DeviceStateRecord>({
+      query: "SELECT * FROM c WHERE c.capturedAt >= @since",
+      parameters: [{ name: "@since", value: sinceIso }],
+    })
+    .fetchAll();
+
+  return resources;
+};
+
 export const saveDeviceStatesBatch = async (
   deviceStates: DeviceStateRecord[]
 ): Promise<void> => {

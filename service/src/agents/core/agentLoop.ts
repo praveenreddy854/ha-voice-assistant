@@ -104,7 +104,8 @@ export interface AgentLoopSession {
 export interface AgentLoop {
   createSession(
     userPrompt: string,
-    messageHistory?: Array<{ role: string; content: string }>
+    messageHistory?: Array<{ role: string; content: string }>,
+    systemMessages?: string[]
   ): AgentLoopSession;
   deleteSession(sessionId: string): void;
   /**
@@ -212,10 +213,21 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
 
   function createSession(
     userPrompt: string,
-    messageHistory?: Array<{ role: string; content: string }>
+    messageHistory?: Array<{ role: string; content: string }>,
+    systemMessages?: string[]
   ): AgentLoopSession {
     const sessionId = randomUUID();
     const messages: ModelMessage[] = [];
+
+    if (systemMessages && systemMessages.length > 0) {
+      for (const message of systemMessages) {
+        if (!message.trim()) continue;
+        messages.push({
+          role: "system",
+          content: message,
+        } as ModelMessage);
+      }
+    }
 
     if (messageHistory && messageHistory.length > 0) {
       for (const msg of messageHistory) {

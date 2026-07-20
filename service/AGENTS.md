@@ -25,6 +25,7 @@ The service package is a Node.js/Express backend that provides:
 - **Realtime Voice Agent**: Handles post-wake-word voice turns, tool calls, and Specialist agent delegation
 - **Home Assistant Integration**: Executes smart home commands via Home Assistant APIs
 - **Multi-Agent System**: Orchestrates specialized AI agents for complex TV automation tasks
+- **Persistent Agent Memory**: Stores scoped user preferences, stable facts, and reusable guidance for all agents
 - **Teaching Mode**: Records and learns from manual demonstrations to improve agent performance
 - **OpenTelemetry Tracing**: Comprehensive observability for debugging and monitoring
 
@@ -80,6 +81,10 @@ Owns the post-wake-word voice turn, streams raw audio to Azure OpenAI Realtime, 
 ### ScheduledTaskAgent (`src/agents/scheduled-task/`)
 
 Handles ScheduledTask creation, listing, querying, update, cancellation, and server-side action-effect firing.
+
+### Persistent Agent Memory (`src/memory.ts`)
+
+Stores long-lived, scoped user preferences and facts in Cosmos DB. Realtime and Specialist agent runs receive compact memory context before answering, and all agents can retrieve, save, update, or delete memory. Memory partition keys are derived from the strongest resolved scope, such as device entity, device name, room, domain, app, person, or global. Background consolidation extracts only high-confidence durable preferences from recent interactions; raw device state, tool traces, and failed runs are not treated as memory.
 
 ---
 
@@ -338,6 +343,9 @@ npm run traces:errors
 | `TV_DEFAULT_WAIT_MS` | Wait time after actions | `1500` |
 | `TV_AGENT_MAX_ITERATIONS` | Max TV agent steps | `8` |
 | `TV_AGENT_DEVICES` | Comma-separated device list | - |
+| `AZURE_COSMOS_MEMORY_CONTAINER` | Cosmos container for Persistent agent memory | `AgentMemory` |
+| `MEMORY_RETRIEVAL_TIMEOUT_MS` | Max time to wait for pre-run memory context | `900` |
+| `MEMORY_CONSOLIDATION_INTERVAL_MS` | Background memory consolidation cadence | `60000` |
 | `AZURE_SPEECH_KEY` | Azure Speech Service key | - |
 | `AZURE_SPEECH_REGION` | Speech Service region | `eastus` |
 

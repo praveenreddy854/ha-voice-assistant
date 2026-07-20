@@ -106,6 +106,18 @@ _Avoid_: Browser silence timeout, command recording timeout, fixed listening win
 Recent conversational context carried across wake-word sessions for interpreting follow-up requests.
 _Avoid_: Long-term memory, source of device truth.
 
+**Persistent agent memory**:
+Long-lived assistant memory of user preferences, stable facts, and prior guidance that can inform future voice interactions.
+_Avoid_: Short conversational memory, device truth, trace log.
+
+**Scoped memory**:
+A Persistent agent memory item tagged by where it applies, such as global, room, device, domain, app, person, or agent.
+_Avoid_: Device-only memory, memory category.
+
+**Memory consolidation**:
+A background process that turns recent interactions and explicit memory requests into durable Persistent agent memory.
+_Avoid_: L3 memory scan, trace summarization.
+
 ### Scheduled tasks
 
 **ScheduledTask**:
@@ -137,6 +149,15 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 - The **Voice turn boundary** is owned by the realtime voice session, not by browser-side command recording.
 - The **Realtime Voice Agent** may use **Short conversational memory**, but current device state and active specialist state remain authoritative.
 - **Short conversational memory** keeps the last 10 user/assistant messages or about five minutes of interaction, whichever is smaller.
+- The **Realtime Voice Agent** and **Specialist agent**s may use **Persistent agent memory**, but current device state and active specialist state remain authoritative.
+- **Persistent agent memory** stores durable user-relevant facts and preferences, not transient chat, device state, tool traces, or failed agent runs.
+- **Persistent agent memory** may be written from explicit user requests or conservatively inferred from high-confidence durable preferences and facts.
+- Newer user instructions and current device state override **Persistent agent memory**.
+- The user can inspect, delete, or correct **Persistent agent memory** by voice.
+- **Scoped memory** may include device names, but device names are one retrieval facet rather than the only memory category.
+- Device-related **Scoped memory** must identify a target device, room, domain, or app; if the target is ambiguous, the assistant asks a clarification request before saving.
+- **Memory consolidation** creates or updates **Persistent agent memory** without treating raw device state or tool traces as memory.
+- Agent runs should receive compact **Persistent agent memory** context before answering, with bounded waiting so unavailable memory does not block the voice turn indefinitely.
 - The **Realtime Voice Agent** delegates ScheduledTask requests to the **ScheduledTaskAgent**.
 - The **Realtime Voice Agent** delegates TV and streaming-app requests to the **TVAgent**.
 - The **Realtime Voice Agent** handles a **Direct Home Assistant command** as a blocking tool call.

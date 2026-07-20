@@ -70,6 +70,7 @@ let currentMode: "text" | "voice" | null = null;
 let voiceTurnResolved = false;
 let audioChunksInResponse = 0;
 let loggedAudioDeltaForResponse = false;
+let assistantInterrupted = false;
 let listeningWindowTimer: ReturnType<typeof setTimeout> | null = null;
 let listeningWindowInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -213,12 +214,17 @@ async function waitForQueuedAudio(): Promise<void> {
 
 async function finishResponse(fullText: string, followupExpected: boolean): Promise<void> {
   const isVoiceTurn = currentMode === "voice";
-  if (isVoiceTurn) {
+  const wasInterrupted = assistantInterrupted;
+  assistantInterrupted = false;
+
+  // On interrupt the mic was never closed — it's already streaming the user's
+  // follow-up audio. Closing and reopening here would drop ~300ms of warmup.
+  if (isVoiceTurn && !wasInterrupted) {
     stopMicStreaming();
   }
 
   await waitForQueuedAudio();
-  if (audioChunksInResponse === 0 && fullText.trim()) {
+  if (audioChunksInResponse === 0 && fullText.trim() && !wasInterrupted) {
     console.warn("[RealtimeChat] Response completed without audio deltas");
   }
 
@@ -252,6 +258,9 @@ async function finishResponse(fullText: string, followupExpected: boolean): Prom
   // If the hard cap already expired during the response, the turn was
   // already resolved by the listening-window timer; nothing more to do.
   if (voiceTurnResolved) return;
+
+  // Mic still streaming from the interruption — skip the reopen.
+  if (wasInterrupted) return;
 
   try {
     await startMicStreaming();
@@ -301,13 +310,15 @@ function handleMessage(event: MessageEvent): void {
         break;
 
       case "transcript_delta":
-        // Assistant is starting to speak — close the mic so we don't capture
-        // its own output. The listening window is a hard cap from activation
-        // and is intentionally NOT cleared here.
-        if (currentMode === "voice") {
-          stopMicStreaming();
-        }
+        // Mic stays open while the assistant speaks so the user can interrupt;
+        // browser echoCancellation suppresses the assistant's own audio.
         currentOnTranscriptDelta?.(msg.text);
+        break;
+
+      case "assistant_interrupted":
+        console.log("[RealtimeChat] User interrupted assistant — stopping playback");
+        assistantInterrupted = true;
+        stopAndResetAudioPlayback();
         break;
 
       case "response_done":
