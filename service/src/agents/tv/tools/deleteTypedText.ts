@@ -41,6 +41,8 @@ async function execute(
   const diff = deletePos - currentPos;
 
   if (diff !== 0) {
+    await context.waitIfPaused?.();
+    context.abortSignal?.throwIfAborted();
     const direction = diff > 0 ? "right" : "left";
     const navResult = await callHAServiceDirect(
       "remote", "send_command", parsed.remote_entity_id,
@@ -54,9 +56,11 @@ async function execute(
         toolSuccess: false,
       };
     }
-    await delay(NAV_WAIT_MS);
+    await delay(NAV_WAIT_MS, context.abortSignal);
   }
 
+  await context.waitIfPaused?.();
+  context.abortSignal?.throwIfAborted();
   const selectResult = await callHAServiceDirect(
     "remote", "send_command", parsed.remote_entity_id,
     { command: "select" }
@@ -70,7 +74,7 @@ async function execute(
     };
   }
 
-  await delay(SELECT_WAIT_MS);
+  await delay(SELECT_WAIT_MS, context.abortSignal);
 
   return {
     observation: `✅ Navigated to DELETE key and deleted last character. Cursor is now on DELETE (position ${deletePos}). ${parsed.reason}`,

@@ -79,6 +79,8 @@ export async function executeTool(
   args: TvToolArguments,
   context: ToolExecutionContext
 ): Promise<ToolExecutionResult> {
+  await context.waitIfPaused?.();
+  context.abortSignal?.throwIfAborted();
   console.log(`[TV Tools] Dispatching: ${toolName}`);
   console.log(`[TV Tools]   Args: ${JSON.stringify(args, null, 2)}`);
 
@@ -89,6 +91,8 @@ export async function executeTool(
   }
 
   const result = await executor(args, context);
+  await context.waitIfPaused?.();
+  context.abortSignal?.throwIfAborted();
   console.log(`[TV Tools]   Result success: ${result.toolSuccess ?? true}`);
   console.log(`[TV Tools]   Observation: ${result.observation.substring(0, 300)}`);
   if (result.needsScreenshot) {

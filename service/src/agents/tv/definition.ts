@@ -14,6 +14,7 @@ import {
   AgentSession,
   AgentRunResult,
   ExternalInputData,
+  AgentPauseGate,
 } from "../core/types";
 import { ToolDefinition } from "../core/agentLoop";
 import {
@@ -97,7 +98,11 @@ let latestScreenshot: { base64: string; contentType: string } | null = null;
 /** The current user request — used by background monitor and validate_screen tool. */
 let currentUserPrompt: string | null = null;
 
-function getTvToolContext(sessionId?: string): TvToolContext {
+function getTvToolContext(
+  sessionId?: string,
+  abortSignal?: AbortSignal,
+  pauseGate?: AgentPauseGate
+): TvToolContext {
   if (!HOME_ASSISTANT_URL || !HOME_ASSISTANT_TOKEN) {
     throw new Error(
       "Home Assistant connection is not configured. Set HOME_ASSISTANT_URL and HOME_ASSISTANT_TOKEN."
@@ -108,6 +113,10 @@ function getTvToolContext(sessionId?: string): TvToolContext {
     homeAssistantToken: HOME_ASSISTANT_TOKEN,
     sessionId: sessionId || getActiveSessionId() || undefined,
     activeAgent: "tv",
+    abortSignal,
+    waitIfPaused: pauseGate
+      ? () => pauseGate.waitIfPaused()
+      : undefined,
     screenshotBase64: latestScreenshot?.base64,
     screenshotContentType: latestScreenshot?.contentType,
     userPrompt: currentUserPrompt || undefined,
@@ -124,11 +133,9 @@ function getTvToolContext(sessionId?: string): TvToolContext {
  * When the LLM emits multiple tool calls in a single response, the AI SDK
  * fires all execute functions concurrently. We only allow the first tool to
  * run; the rest get a rejection message telling the LLM to call them one at
- * a time. Node.js is single-threaded, so the synchronous check+set before
- * the first `await` is atomic — no race condition.
+ * a time. The check and assignment have no `await` between them, so they are
+ * atomic within a run even when the SDK starts parallel tool promises.
  */
-let stepGuardOwner: string | null = null;
-
 function buildTools(): ToolDefinition[] {
   return TV_TOOLS.map((t): ToolDefinition => {
     const toolName = t.function.name;
@@ -145,20 +152,32 @@ function buildTools(): ToolDefinition[] {
 
     if (!TOOLS_NEEDING_EXTERNAL_INPUT.has(toolName)) {
       // Auto-execute: the ToolLoopAgent runs this inside its loop
-      def.execute = async (args: Record<string, unknown>) => {
+      def.execute = async (args, options) => {
+        const runContext = options?.experimental_context as
+          | {
+              pauseGate?: AgentPauseGate;
+              toolExecutionState?: { activeTool: string | null };
+            }
+          | undefined;
+        const pauseGate = runContext?.pauseGate;
+        const toolExecutionState = runContext?.toolExecutionState ?? {
+          activeTool: null,
+        };
+        await pauseGate?.waitIfPaused();
+        options?.abortSignal?.throwIfAborted();
         // ── Concurrency guard: one tool per step ──
-        if (stepGuardOwner !== null) {
+        if (toolExecutionState.activeTool !== null) {
           console.warn(
-            `[TV Agent] BLOCKED parallel tool call: "${toolName}" rejected (step already running "${stepGuardOwner}")`
+            `[TV Agent] BLOCKED parallel tool call: "${toolName}" rejected (step already running "${toolExecutionState.activeTool}")`
           );
           return {
             observation:
-              `⚠️ REJECTED: "${toolName}" was called in parallel with "${stepGuardOwner}". ` +
+              `⚠️ REJECTED: "${toolName}" was called in parallel with "${toolExecutionState.activeTool}". ` +
               `Only ONE tool is allowed per turn. Call "${toolName}" alone in your next response.`,
             toolSuccess: false,
           };
         }
-        stepGuardOwner = toolName;
+        toolExecutionState.activeTool = toolName;
 
         const startTime = Date.now();
         console.log(`[TV Agent] ▶ Tool call: ${toolName}`, JSON.stringify(args, null, 2));
@@ -171,12 +190,18 @@ function buildTools(): ToolDefinition[] {
         }
 
         try {
-          const context = getTvToolContext();
+          const context = getTvToolContext(
+            undefined,
+            options?.abortSignal,
+            pauseGate
+          );
           const result = await executeTvTool(
             toolName as TvToolName,
             args as unknown as TvToolArguments,
             context
           );
+          await pauseGate?.waitIfPaused();
+          options?.abortSignal?.throwIfAborted();
           const durationMs = Date.now() - startTime;
           const success = result.toolSuccess ?? true;
 
@@ -202,6 +227,9 @@ function buildTools(): ToolDefinition[] {
             appUiContext: result.appUiContext,
           };
         } catch (error) {
+          if (options?.abortSignal?.aborted) {
+            throw options.abortSignal.reason ?? error;
+          }
           const durationMs = Date.now() - startTime;
           const errMsg = error instanceof Error ? error.message : String(error);
           console.error(`[TV Agent] ✗ Tool error: ${toolName} (${durationMs}ms) → ${errMsg}`);
@@ -220,7 +248,7 @@ function buildTools(): ToolDefinition[] {
             toolSuccess: false,
           };
         } finally {
-          stepGuardOwner = null;
+          toolExecutionState.activeTool = null;
         }
       };
     }

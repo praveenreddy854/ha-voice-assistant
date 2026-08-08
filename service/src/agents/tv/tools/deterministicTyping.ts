@@ -21,6 +21,16 @@ const SCREENSHOT_SETTLE_MS = 1000;
 
 let typingCursorPosition: number | undefined;
 
+type PauseCheckpoint = () => Promise<void>;
+
+async function waitForRunPermission(
+  abortSignal?: AbortSignal,
+  waitIfPaused?: PauseCheckpoint
+): Promise<void> {
+  await waitIfPaused?.();
+  abortSignal?.throwIfAborted();
+}
+
 export function resetTypingState(): void {
   typingCursorPosition = undefined;
 }
@@ -58,10 +68,14 @@ async function sendRemote(
   entityId: string,
   command: string,
   repeats?: number,
+  abortSignal?: AbortSignal,
+  waitIfPaused?: PauseCheckpoint,
 ): Promise<string | undefined> {
+  await waitForRunPermission(abortSignal, waitIfPaused);
   const data: Record<string, unknown> = { command };
   if (repeats && repeats > 1) data.num_repeats = repeats;
   const r = await callHAServiceDirect("remote", "send_command", entityId, data);
+  await waitForRunPermission(abortSignal, waitIfPaused);
   return r.success ? undefined : r.message;
 }
 
@@ -69,19 +83,34 @@ async function sendRemote(
 async function runSteps(
   steps: ReturnType<typeof computeTypingSequence>["steps"],
   entityId: string,
+  abortSignal?: AbortSignal,
+  waitIfPaused?: PauseCheckpoint,
 ): Promise<{ error?: string; typed: string[]; actions: number }> {
   const typed: string[] = [];
   let actions = 0;
   for (const step of steps) {
+    await waitForRunPermission(abortSignal, waitIfPaused);
     if (step.action === "navigate" && step.direction && step.count) {
-      const err = await sendRemote(entityId, step.direction, step.count);
+      const err = await sendRemote(
+        entityId,
+        step.direction,
+        step.count,
+        abortSignal,
+        waitIfPaused
+      );
       if (err) return { error: `Navigation failed at '${step.character}': ${err}`, typed, actions };
-      await delay(NAV_WAIT_MS);
+      await delay(NAV_WAIT_MS, abortSignal);
     } else if (step.action === "select") {
-      const err = await sendRemote(entityId, "select");
+      const err = await sendRemote(
+        entityId,
+        "select",
+        undefined,
+        abortSignal,
+        waitIfPaused
+      );
       if (err) return { error: `Select failed for '${step.character}': ${err}`, typed, actions };
       typed.push(step.character);
-      await delay(SELECT_WAIT_MS);
+      await delay(SELECT_WAIT_MS, abortSignal);
     }
     actions++;
   }
@@ -96,8 +125,11 @@ async function checkSuggestion(
   sessionId: string,
   targetText: string,
   typedSoFar: string,
+  abortSignal?: AbortSignal,
+  waitIfPaused?: PauseCheckpoint,
 ): Promise<{ position: number; text: string } | undefined> {
-  await delay(SCREENSHOT_SETTLE_MS);
+  await delay(SCREENSHOT_SETTLE_MS, abortSignal);
+  await waitForRunPermission(abortSignal, waitIfPaused);
   const shot = await getLatestScreenshot(sessionId);
   if (!shot) return undefined;
 
@@ -123,12 +155,14 @@ Reply with ONLY a JSON object (no markdown):
       maxTokens: 100,
       temperature: 0,
     });
+    await waitForRunPermission(abortSignal, waitIfPaused);
 
     const parsed = JSON.parse(raw.replace(/```json\s*|\s*```/g, "").trim());
     if (parsed.found && parsed.position !== undefined) {
       return { position: parsed.position, text: parsed.text || "" };
     }
   } catch (err) {
+    if (abortSignal?.aborted) throw abortSignal.reason ?? err;
     console.warn(`[Typing] Suggestion check failed:`, err instanceof Error ? err.message : err);
   }
   return undefined;
@@ -137,21 +171,41 @@ Reply with ONLY a JSON object (no markdown):
 async function selectSuggestion(
   entityId: string,
   position: number,
+  abortSignal?: AbortSignal,
+  waitIfPaused?: PauseCheckpoint,
 ): Promise<string | undefined> {
   // Down from keyboard strip → suggestion row
-  let err = await sendRemote(entityId, "down");
+  let err = await sendRemote(
+    entityId,
+    "down",
+    undefined,
+    abortSignal,
+    waitIfPaused
+  );
   if (err) return `Failed to navigate down to suggestions: ${err}`;
 
   // Right to the correct pill
   if (position > 0) {
-    await delay(NAV_WAIT_MS);
-    err = await sendRemote(entityId, "right", position);
+    await delay(NAV_WAIT_MS, abortSignal);
+    err = await sendRemote(
+      entityId,
+      "right",
+      position,
+      abortSignal,
+      waitIfPaused
+    );
     if (err) return `Failed to navigate right to suggestion: ${err}`;
   }
 
   // Select the pill
-  await delay(NAV_WAIT_MS);
-  err = await sendRemote(entityId, "select");
+  await delay(NAV_WAIT_MS, abortSignal);
+  err = await sendRemote(
+    entityId,
+    "select",
+    undefined,
+    abortSignal,
+    waitIfPaused
+  );
   if (err) return `Failed to select suggestion: ${err}`;
 
   return undefined;
@@ -168,6 +222,8 @@ async function reconcileExistingText(
   entityId: string,
   cursorPos: number,
   layout: KeyboardLayoutMap,
+  abortSignal?: AbortSignal,
+  waitIfPaused?: PauseCheckpoint,
 ): Promise<{ textToType: string; cursorPos: number; actions: number; error?: string }> {
   // Find common prefix
   let commonLen = 0;
@@ -194,17 +250,30 @@ async function reconcileExistingText(
 
     // Navigate to DELETE key
     if (diff !== 0) {
-      const err = await sendRemote(entityId, diff > 0 ? "right" : "left", Math.abs(diff));
+      const err = await sendRemote(
+        entityId,
+        diff > 0 ? "right" : "left",
+        Math.abs(diff),
+        abortSignal,
+        waitIfPaused
+      );
       if (err) return { textToType, cursorPos, actions, error: `Failed to navigate to DELETE: ${err}` };
-      await delay(NAV_WAIT_MS);
+      await delay(NAV_WAIT_MS, abortSignal);
       actions++;
     }
 
     // Press select N times to delete N chars
     for (let i = 0; i < charsToDelete; i++) {
-      const err = await sendRemote(entityId, "select");
+      await waitForRunPermission(abortSignal, waitIfPaused);
+      const err = await sendRemote(
+        entityId,
+        "select",
+        undefined,
+        abortSignal,
+        waitIfPaused
+      );
       if (err) return { textToType, cursorPos: deletePos, actions, error: `Failed to delete char ${i + 1}/${charsToDelete}: ${err}` };
-      await delay(SELECT_WAIT_MS);
+      await delay(SELECT_WAIT_MS, abortSignal);
       actions++;
     }
 
@@ -234,6 +303,8 @@ async function typeWords(
   sessionId: string,
   fullTargetText: string,
   prefixLen: number,
+  abortSignal?: AbortSignal,
+  waitIfPaused?: PauseCheckpoint,
 ): Promise<TypeWordsResult> {
   const words = text.split(" ").filter((w) => w.length > 0);
   const typed: string[] = [];
@@ -245,7 +316,12 @@ async function typeWords(
   // If the remaining text starts with a space, type it first
   if (text.startsWith(" ")) {
     const { steps, finalPosition } = computeTypingSequence(" ", pos, layout);
-    const result = await runSteps(steps, entityId);
+    const result = await runSteps(
+      steps,
+      entityId,
+      abortSignal,
+      waitIfPaused
+    );
     if (result.error) return { typed: result.typed, cursorPos: pos, actions: result.actions, error: result.error };
     typed.push(...result.typed);
     actions += result.actions;
@@ -254,6 +330,7 @@ async function typeWords(
   }
 
   for (let i = 0; i < words.length; i++) {
+    await waitForRunPermission(abortSignal, waitIfPaused);
     // Check if a prior background suggestion check found a match
     if (match) break;
     if (pendingCheck) {
@@ -265,7 +342,7 @@ async function typeWords(
     // Type inter-word space
     if (i > 0) {
       const { steps, finalPosition } = computeTypingSequence(" ", pos, layout);
-      const r = await runSteps(steps, entityId);
+      const r = await runSteps(steps, entityId, abortSignal, waitIfPaused);
       if (r.error) return { typed: [...typed, ...r.typed], cursorPos: pos, actions: actions + r.actions, error: r.error };
       typed.push(...r.typed);
       actions += r.actions;
@@ -274,7 +351,7 @@ async function typeWords(
 
     // Type the word
     const { steps, finalPosition } = computeTypingSequence(words[i], pos, layout);
-    const r = await runSteps(steps, entityId);
+    const r = await runSteps(steps, entityId, abortSignal, waitIfPaused);
     typed.push(...r.typed);
     actions += r.actions;
     if (r.error) return { typed, cursorPos: pos, actions, error: r.error };
@@ -284,7 +361,13 @@ async function typeWords(
     const typedSoFar = fullTargetText.slice(0, prefixLen) + typed.join("");
     pendingCheck = (async () => {
       console.log(`[Typing] Checking suggestions after word "${words[i]}" (typed: "${typedSoFar}")`);
-      const found = await checkSuggestion(sessionId, fullTargetText, typedSoFar);
+      const found = await checkSuggestion(
+        sessionId,
+        fullTargetText,
+        typedSoFar,
+        abortSignal,
+        waitIfPaused
+      );
       if (found) {
         console.log(`[Typing] Suggestion match: "${found.text}" at position ${found.position}`);
         match = found;
@@ -340,7 +423,13 @@ async function execute(
 
   if (parsed.already_typed) {
     const reconciled = await reconcileExistingText(
-      parsed.already_typed.toLowerCase(), fullText, entityId, cursorPos, layout,
+      parsed.already_typed.toLowerCase(),
+      fullText,
+      entityId,
+      cursorPos,
+      layout,
+      context.abortSignal,
+      context.waitIfPaused,
     );
     if (reconciled.error) {
       return { observation: `❌ ${reconciled.error}`, needsScreenshot: true, toolSuccess: false };
@@ -360,7 +449,17 @@ async function execute(
   console.log(`[Typing] Typing "${textToType}" (prefix reused: ${prefixLen} chars) from pos ${cursorPos}`);
 
   // --- Type remaining text ---
-  const result = await typeWords(textToType, cursorPos, entityId, layout, sessionId, fullText, prefixLen);
+  const result = await typeWords(
+    textToType,
+    cursorPos,
+    entityId,
+    layout,
+    sessionId,
+    fullText,
+    prefixLen,
+    context.abortSignal,
+    context.waitIfPaused
+  );
   cursorPos = result.cursorPos;
   typingCursorPosition = cursorPos;
 
@@ -379,7 +478,12 @@ async function execute(
     const { position, text } = result.suggestion;
     console.log(`[Typing] Auto-selecting suggestion "${text}" at position ${position}`);
 
-    const err = await selectSuggestion(entityId, position);
+    const err = await selectSuggestion(
+      entityId,
+      position,
+      context.abortSignal,
+      context.waitIfPaused
+    );
     if (err) {
       return {
         observation: `⚠️ Found suggestion "${text}" but failed to select it: ${err}\nTyped: "${result.typed.join("")}"`,

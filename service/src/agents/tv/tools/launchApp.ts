@@ -40,7 +40,7 @@ async function execute(
     };
   }
 
-  await delay(defaultWait);
+  await delay(defaultWait, context.abortSignal);
 
   const allDeviceStates = await getKnownDeviceStates();
   const mediaPlayerStates = allDeviceStates.filter(

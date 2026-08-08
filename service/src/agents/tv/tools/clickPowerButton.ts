@@ -36,6 +36,8 @@ async function execute(
   // Use direct HA API with wakeup/suspend for speed and reliability
   // (bypasses LLM-mediated command translation)
   const command = isOff !== false ? "wakeup" : "suspend";
+  await context.waitIfPaused?.();
+  context.abortSignal?.throwIfAborted();
   const result = await callHAServiceDirect(
     "remote", "send_command",
     parsed.remote_entity_id,
@@ -59,7 +61,7 @@ async function execute(
     return command === "wakeup" ? !offStates.has(state) : offStates.has(state);
   };
 
-  await delay(defaultWait);
+  await delay(defaultWait, context.abortSignal);
 
   const pollBudgetMs = 8000;
   const pollIntervalMs = 750;
@@ -72,7 +74,9 @@ async function execute(
   )?.state;
 
   while (!reachedTarget(mediaPlayerState) && Date.now() < deadline) {
-    await delay(pollIntervalMs);
+    await delay(pollIntervalMs, context.abortSignal);
+    await context.waitIfPaused?.();
+    context.abortSignal?.throwIfAborted();
     deviceStates = (await getKnownDeviceStates()).filter((d) =>
       d.entity_id.includes(deviceName)
     );

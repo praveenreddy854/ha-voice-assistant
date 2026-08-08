@@ -13,6 +13,7 @@ export type {
   AgentRunOptions,
   AgentRunResult,
   AgentSessionStatus,
+  AgentPauseGate,
   ExternalInputRequest,
   ExternalInputData,
   PendingExternalInput,

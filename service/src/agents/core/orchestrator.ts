@@ -28,11 +28,12 @@ import {
   AgentRunOptions,
   AgentRunResult,
   AgentSessionStatus,
+  AgentPauseGate,
   ExternalInputData,
   PendingExternalInput,
 } from "./types";
 import { getAgent } from "./registry";
-import { resolveMaxSteps } from "../common/utils";
+import { delay, resolveMaxSteps } from "../common/utils";
 import { getLatestScreenshot } from "../common/screenshotStore";
 import { isRtspMode, startRtspCapture } from "../common/rtspCapture";
 import type { ModelMessage } from "ai";
@@ -240,7 +241,9 @@ function buildResult(
 
 async function processLoop(
   session: AgentSession,
-  def: AgentDefinition
+  def: AgentDefinition,
+  abortSignal?: AbortSignal,
+  pauseGate?: AgentPauseGate
 ): Promise<AgentRunResult> {
   const loop = getOrCreateLoop(def);
 
@@ -250,8 +253,17 @@ async function processLoop(
   addEvent(session.id, "agent.loop.started", `Running agent loop for session ${session.id}`);
   setActiveSession(session.id);
 
-  const stepResult = await loop.run(session.agentLoopSessionId);
-  setActiveSession(null);
+  let stepResult: AgentStepResult;
+  try {
+    stepResult = await loop.run(
+      session.agentLoopSessionId,
+      abortSignal,
+      pauseGate
+    );
+  } finally {
+    setActiveSession(null);
+  }
+  abortSignal?.throwIfAborted();
 
   console.log(`[Orchestrator] Agent result type: ${stepResult.type}`);
   if (stepResult.type === "tool_calls") {
@@ -262,13 +274,15 @@ async function processLoop(
     console.error(`[Orchestrator] Agent loop error: ${stepResult.error}`);
   }
 
-  return handleResult(session, def, stepResult);
+  return handleResult(session, def, stepResult, abortSignal, pauseGate);
 }
 
 function handleResult(
   session: AgentSession,
   def: AgentDefinition,
-  stepResult: AgentStepResult
+  stepResult: AgentStepResult,
+  abortSignal?: AbortSignal,
+  pauseGate?: AgentPauseGate
 ): Promise<AgentRunResult> {
   switch (stepResult.type) {
     case "error":
@@ -283,7 +297,13 @@ function handleResult(
       );
 
     case "tool_calls":
-      return handleToolCalls(session, def, stepResult.toolCalls || []);
+      return handleToolCalls(
+        session,
+        def,
+        stepResult.toolCalls || [],
+        abortSignal,
+        pauseGate
+      );
   }
 }
 
@@ -324,8 +344,12 @@ async function handleComplete(
 async function handleToolCalls(
   session: AgentSession,
   def: AgentDefinition,
-  toolCalls: AgentToolCall[]
+  toolCalls: AgentToolCall[],
+  abortSignal?: AbortSignal,
+  pauseGate?: AgentPauseGate
 ): Promise<AgentRunResult> {
+  await pauseGate?.waitIfPaused();
+  abortSignal?.throwIfAborted();
   // These are tool calls without execute functions (loop broke).
   // Typically this is get_latest_screenshot or similar external-input tools.
   const externalToolNames = toolCalls.map((tc) => tc.function.name).join(", ");
@@ -400,17 +424,28 @@ async function handleToolCalls(
       // handshake + codec init + first I-frame commonly takes 3-7s cold;
       // tvJobManager pre-warms but the agent may still beat ffmpeg here.
       for (let i = 0; i < 16; i++) {
+        await pauseGate?.waitIfPaused();
+        abortSignal?.throwIfAborted();
         const screenshot = await getLatestScreenshot(session.id);
         if (screenshot) {
           console.log(
             `[Orchestrator] Auto-fulfilling get_latest_screenshot from RTSP: ${screenshot.filePath}`
           );
-          return handleExternalInput(session, def, {
-            type: "screenshot",
-            data: { base64: screenshot.base64, contentType: screenshot.contentType },
-          });
+          return handleExternalInput(
+            session,
+            def,
+            {
+              type: "screenshot",
+              data: {
+                base64: screenshot.base64,
+                contentType: screenshot.contentType,
+              },
+            },
+            abortSignal,
+            pauseGate
+          );
         }
-        await new Promise((r) => setTimeout(r, 500));
+        await delay(500, abortSignal);
       }
       console.warn(
         `[Orchestrator] RTSP capture failed to produce a frame for session ${session.id}`
@@ -421,10 +456,19 @@ async function handleToolCalls(
         console.log(
           `[Orchestrator] Auto-fulfilling get_latest_screenshot from disk: ${screenshot.filePath}`
         );
-        return handleExternalInput(session, def, {
-          type: "screenshot",
-          data: { base64: screenshot.base64, contentType: screenshot.contentType },
-        });
+        return handleExternalInput(
+          session,
+          def,
+          {
+            type: "screenshot",
+            data: {
+              base64: screenshot.base64,
+              contentType: screenshot.contentType,
+            },
+          },
+          abortSignal,
+          pauseGate
+        );
       }
       console.warn(
         `[Orchestrator] No screenshot on disk for session ${session.id}, falling back to client`
@@ -451,8 +495,12 @@ async function handleToolCalls(
 async function handleExternalInput(
   session: AgentSession,
   def: AgentDefinition,
-  input: ExternalInputData
+  input: ExternalInputData,
+  abortSignal?: AbortSignal,
+  pauseGate?: AgentPauseGate
 ): Promise<AgentRunResult> {
+  await pauseGate?.waitIfPaused();
+  abortSignal?.throwIfAborted();
   const pending = session.pendingExternalInput;
   if (!pending) {
     throw new Error("No pending external input request for this session.");
@@ -537,19 +585,25 @@ async function handleExternalInput(
 
   // Submit the tool result (with image if available) and re-run the agent
   setActiveSession(session.id);
-  const nextResult = await loop.submitToolResults(
-    session.agentLoopSessionId,
-    [{
-      toolCallId,
-      toolName,
-      result: toolOutput,
-      imageBase64,
-      imageContentType,
-    }]
-  );
-  setActiveSession(null);
+  let nextResult: AgentStepResult;
+  try {
+    nextResult = await loop.submitToolResults(
+      session.agentLoopSessionId,
+      [{
+        toolCallId,
+        toolName,
+        result: toolOutput,
+        imageBase64,
+        imageContentType,
+      }],
+      abortSignal,
+      pauseGate
+    );
+  } finally {
+    setActiveSession(null);
+  }
 
-  return handleResult(session, def, nextResult);
+  return handleResult(session, def, nextResult, abortSignal, pauseGate);
 }
 
 // ============================================================================
@@ -587,6 +641,8 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   let session: AgentSession | undefined;
 
   try {
+    await options.pauseGate?.waitIfPaused();
+    options.abortSignal?.throwIfAborted();
     // Get or create session
     if (options.sessionId) {
       session = sessionStore.get(options.sessionId);
@@ -607,6 +663,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         );
       }
       session = await createSession(def, options);
+      options.abortSignal?.throwIfAborted();
     }
 
     session.maxSteps = resolveMaxSteps(session.maxSteps, def.maxIterations);
@@ -616,7 +673,13 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     // Handle pending external input
     if (session.pendingExternalInput) {
       if (options.externalInput) {
-        result = await handleExternalInput(session, def, options.externalInput);
+        result = await handleExternalInput(
+          session,
+          def,
+          options.externalInput,
+          options.abortSignal,
+          options.pauseGate
+        );
       } else {
         // No input provided — return current awaiting state
         const pending = session.pendingExternalInput;
@@ -632,7 +695,12 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         );
       }
     } else {
-      result = await processLoop(session, def);
+      result = await processLoop(
+        session,
+        def,
+        options.abortSignal,
+        options.pauseGate
+      );
     }
 
     // Cleanup on terminal states
@@ -642,12 +710,26 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
 
     return result;
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Unknown error running agent.";
+    const cancelled = options.abortSignal?.aborted === true;
+    const message = cancelled
+      ? "Agent run cancelled."
+      : error instanceof Error
+        ? error.message
+        : "Unknown error running agent.";
     console.error(`[Orchestrator] Error:`, { message, error });
 
     if (session) {
       const result = buildResult(session, "error", false, message);
+      if (cancelled) {
+        addEvent(
+          session.id,
+          "agent.session.cancelled",
+          "Agent run cancelled by a newer user turn"
+        );
+        completeTrace(session.id, false, message, "error");
+        await cleanupSession(session, def);
+        return result;
+      }
       if (def.onComplete) {
         try {
           await def.onComplete(session, result);
