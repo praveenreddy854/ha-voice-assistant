@@ -39,7 +39,7 @@ async function execute(
     };
   }
 
-  await delay(defaultWait);
+  await delay(defaultWait, context.abortSignal);
   return {
     observation: `✅ Successfully pressed HOME button on ${deviceName}.\n📍 Reason: ${parsed.reason}\n➡️ The TV should now show the home screen.`,
     needsScreenshot: true,

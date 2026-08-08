@@ -38,13 +38,15 @@ async function execute(
   let lastError = "";
 
   for (let i = 0; i < count; i++) {
+    await context.waitIfPaused?.();
+    context.abortSignal?.throwIfAborted();
     const plainCommand = `Scroll ${parsed.direction} on ${deviceName}`;
     const result = await executeHACommand(plainCommand);
 
     if (result.success) {
       successCount++;
       if (i < count - 1) {
-        await delay(200);
+        await delay(200, context.abortSignal);
       }
     } else {
       lastError = result.message;
@@ -52,7 +54,7 @@ async function execute(
     }
   }
 
-  await delay(defaultWait);
+  await delay(defaultWait, context.abortSignal);
 
   if (successCount === 0) {
     return {

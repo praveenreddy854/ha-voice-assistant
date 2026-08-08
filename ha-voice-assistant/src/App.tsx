@@ -12,8 +12,10 @@ import {
 import { noteAnnouncement } from "./utils/recentAnnouncements";
 import {
   prepareRealtimeAudioOutput,
+  pauseActiveAgentRun,
   setAsyncAssistantSpeechEndHandler,
   setAsyncJobEventHandler,
+  setAgentRunPausedHandler,
   setCommandCancelledHandler,
   startRealtimeChat,
   startRealtimeVoiceTurn,
@@ -47,6 +49,7 @@ function App() {
   const [showTeachingUI, setShowTeachingUI] = useState(false);
   const [activeView, setActiveView] = useState<ActiveView>("main");
   const isListeningForWakeWord = useRef(false);
+  const hasActiveAgentRun = useRef(false);
 
   const { finalTranscript, resetTranscript } = useSpeechRecognition();
 
@@ -206,9 +209,10 @@ function App() {
       },
       () => {
         asyncJobStarted = true;
+        hasActiveAgentRun.current = true;
       },
       () => {
-        // Async job finished — handled by global handler instead.
+        hasActiveAgentRun.current = false;
       },
       {
         onListeningWindowChange: setCountdown,
@@ -227,7 +231,10 @@ function App() {
   }, [handleRecognizedText, startWakeWordListening]);
 
   useEffect(() => {
-    setAsyncJobEventHandler(() => {
+    setAsyncJobEventHandler((event) => {
+      if (event.kind !== "needs_input") {
+        hasActiveAgentRun.current = false;
+      }
       SpeechRecognition.abortListening();
       isListeningForWakeWord.current = false;
       setIsWakeWordMode(false);
@@ -241,15 +248,30 @@ function App() {
       }
     });
     setCommandCancelledHandler(({ tvJobId }) => {
+      hasActiveAgentRun.current = false;
       const note = tvJobId
         ? "Cancelled the active TV command. Listening for wake word."
         : "Cancelled. Listening for wake word.";
       setMessages((prev) => [...prev, { sender: "assistant", text: note }]);
     });
+    setAgentRunPausedHandler(({ domain }) => {
+      hasActiveAgentRun.current = false;
+      setMessages((prev) => [
+        ...prev,
+        {
+          sender: "assistant",
+          text:
+            domain === "tv"
+              ? "Paused the active TV command. Listening for your follow-up."
+              : "Paused. Listening for your follow-up.",
+        },
+      ]);
+    });
     return () => {
       setAsyncJobEventHandler(undefined);
       setAsyncAssistantSpeechEndHandler(undefined);
       setCommandCancelledHandler(undefined);
+      setAgentRunPausedHandler(undefined);
     };
   }, [enterVoiceTurn, startWakeWordListening]);
 
@@ -263,16 +285,26 @@ function App() {
       );
       const lower = finalTranscript.toLocaleLowerCase();
       const wakeMatch = lower.match(
-        /(?:^|\b)(?:hey[,\s]+|ok[,\s]+)?assistant\b[,.\s]*(.*)$/
+        /^\s*(?:hey[,\s]+|ok[,\s]+)?assistant\b[,.\s]*(.*)$/
       );
       if (wakeMatch) {
         const trailing = wakeMatch[1]?.trim() ?? "";
         console.log("Wake word detected:", finalTranscript, "trailing:", trailing);
         handleRecognizedText({ sender: "user", text: finalTranscript });
+        const pauseRequest = hasActiveAgentRun.current
+          ? pauseActiveAgentRun().catch((error) => {
+              const message =
+                error instanceof Error ? error.message : String(error);
+              handleRecognizedText({
+                sender: "assistant",
+                text: `Unable to pause the active command: ${message}`,
+              });
+            })
+          : Promise.resolve();
         isListeningForWakeWord.current = false;
         setIsWakeWordMode(false);
 
-        SpeechRecognition.abortListening().then(() => {
+        Promise.all([SpeechRecognition.abortListening(), pauseRequest]).then(() => {
           if (trailing) {
             // User said the question in the same breath as the wake word —
             // route it via user_text so the realtime API responds immediately,

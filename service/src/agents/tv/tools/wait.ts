@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { TvToolDefinition, ToolExecutionResult } from "./types";
+import {
+  TvToolDefinition,
+  ToolExecutionContext,
+  ToolExecutionResult,
+} from "./types";
 import { delay } from "../../common/utils";
 import { TV_DEFAULT_WAIT_MS } from "../../../config";
 
@@ -14,11 +18,14 @@ export const inputSchema = z.object({
 
 export type WaitInput = z.infer<typeof inputSchema>;
 
-async function execute(args: WaitInput): Promise<ToolExecutionResult> {
+async function execute(
+  args: WaitInput,
+  context: ToolExecutionContext
+): Promise<ToolExecutionResult> {
   const parsed = inputSchema.parse(args);
   const duration = parsed.duration_ms && parsed.duration_ms > 0 ? parsed.duration_ms : TV_DEFAULT_WAIT_MS;
 
-  await delay(duration);
+  await delay(duration, context.abortSignal);
 
   return {
     observation: `⏱️ Waited ${duration}ms. ${parsed.reason}`,

@@ -5,6 +5,7 @@ import {
   startRtspCapture,
   stopRtspCapture,
 } from "./agents/common/rtspCapture";
+import type { AgentPauseGate } from "./agents/core/types";
 
 interface TvJobCallbacks {
   onComplete?: (message: string) => void;
@@ -14,8 +15,39 @@ interface TvJobCallbacks {
 interface TvJob {
   id: string;
   prompt: string;
-  cancelled: boolean;
+  status: "running" | "paused" | "cancelled";
+  abortController: AbortController;
+  pauseController: AgentPauseController;
   startedAt: string;
+}
+
+/** A reusable cooperative gate that preserves the promise waiting behind it. */
+export class AgentPauseController implements AgentPauseGate {
+  private paused = false;
+  private waiters = new Set<() => void>();
+
+  get isPaused(): boolean {
+    return this.paused;
+  }
+
+  pause(): boolean {
+    if (this.paused) return false;
+    this.paused = true;
+    return true;
+  }
+
+  resume(): boolean {
+    if (!this.paused) return false;
+    this.paused = false;
+    for (const resolve of this.waiters) resolve();
+    this.waiters.clear();
+    return true;
+  }
+
+  waitIfPaused(): Promise<void> {
+    if (!this.paused) return Promise.resolve();
+    return new Promise((resolve) => this.waiters.add(resolve));
+  }
 }
 
 let activeTvJob: TvJob | null = null;
@@ -25,18 +57,46 @@ export interface StartTvJobResult {
   replacedJobId?: string;
 }
 
-export function getActiveTvJob(): { id: string; prompt: string; startedAt: string } | null {
-  if (!activeTvJob || activeTvJob.cancelled) return null;
+export function getActiveTvJob(): {
+  id: string;
+  prompt: string;
+  startedAt: string;
+  status: "running" | "paused";
+} | null {
+  if (!activeTvJob || activeTvJob.status === "cancelled") return null;
   return {
     id: activeTvJob.id,
     prompt: activeTvJob.prompt,
     startedAt: activeTvJob.startedAt,
+    status: activeTvJob.status,
   };
 }
 
+/** Pause the active job at its next cooperative checkpoint. */
+export function pauseActiveTvJob(): string | undefined {
+  if (!activeTvJob || activeTvJob.status === "cancelled") return undefined;
+  if (activeTvJob.status === "paused") return activeTvJob.id;
+  activeTvJob.status = "paused";
+  activeTvJob.pauseController.pause();
+  return activeTvJob.id;
+}
+
+/** Resume the exact same run, model session, and promise. */
+export function resumeActiveTvJob(): string | undefined {
+  if (!activeTvJob || activeTvJob.status !== "paused") return undefined;
+  activeTvJob.status = "running";
+  activeTvJob.pauseController.resume();
+  return activeTvJob.id;
+}
+
 export function cancelActiveTvJob(): string | undefined {
-  if (!activeTvJob || activeTvJob.cancelled) return undefined;
-  activeTvJob.cancelled = true;
+  if (!activeTvJob || activeTvJob.status === "cancelled") return undefined;
+  activeTvJob.status = "cancelled";
+  activeTvJob.abortController.abort(
+    new Error("TV agent run cancelled by the user or a replacement run")
+  );
+  // Release a paused checkpoint so the AbortSignal can be observed.
+  activeTvJob.pauseController.resume();
   return activeTvJob.id;
 }
 
@@ -48,7 +108,9 @@ export function startTvAgentJob(
   const job: TvJob = {
     id: randomUUID(),
     prompt,
-    cancelled: false,
+    status: "running",
+    abortController: new AbortController(),
+    pauseController: new AgentPauseController(),
     startedAt: new Date().toISOString(),
   };
   activeTvJob = job;
@@ -73,9 +135,11 @@ async function runTvJob(job: TvJob, callbacks: TvJobCallbacks): Promise<void> {
       agentType: "tv",
       userPrompt: job.prompt,
       maxSteps: 12,
+      abortSignal: job.abortController.signal,
+      pauseGate: job.pauseController,
     });
 
-    if (job.cancelled) return;
+    if (job.status === "cancelled") return;
 
     if (result.status === "awaiting_external_input") {
       // Async TV jobs assume screenshots are auto-fulfilled (RTSP or browser).
@@ -93,7 +157,7 @@ async function runTvJob(job: TvJob, callbacks: TvJobCallbacks): Promise<void> {
 
     callbacks.onError?.(result.message || "TV job failed.");
   } catch (error) {
-    if (job.cancelled) return;
+    if (job.status === "cancelled") return;
     const message = error instanceof Error ? error.message : String(error);
     callbacks.onError?.(message);
   } finally {

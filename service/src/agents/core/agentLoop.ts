@@ -17,11 +17,13 @@ import {
 } from "ai";
 import type {
   ModelMessage,
+  ToolExecutionOptions,
   ToolSet,
 } from "ai";
 import type { z } from "zod";
 import { AI_MODEL_ADVANCED } from "../../config";
 import { azureProvider } from "../../ai";
+import type { AgentPauseGate } from "./types";
 
 // ============================================================================
 // Types
@@ -42,7 +44,10 @@ export interface ToolDefinition {
    * If omitted, the loop breaks and returns the tool call to the caller
    * (used for tools that need external input like screenshots).
    */
-  execute?: (args: Record<string, unknown>) => Promise<unknown>;
+  execute?: (
+    args: Record<string, unknown>,
+    options?: ToolExecutionOptions
+  ) => Promise<unknown>;
 }
 
 export interface AgentLoopConfig {
@@ -119,13 +124,19 @@ export interface AgentLoop {
    * - max iterations reached → type: "error"
    * - LLM error → type: "error"
    */
-  run(sessionId: string): Promise<AgentStepResult>;
+  run(
+    sessionId: string,
+    abortSignal?: AbortSignal,
+    pauseGate?: AgentPauseGate
+  ): Promise<AgentStepResult>;
   /**
    * After the caller handles external tool results, submit them and re-run.
    */
   submitToolResults(
     sessionId: string,
-    results: ToolResultInput[]
+    results: ToolResultInput[],
+    abortSignal?: AbortSignal,
+    pauseGate?: AgentPauseGate
   ): Promise<AgentStepResult>;
   getMessages(sessionId: string): ModelMessage[];
 }
@@ -179,7 +190,8 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
       aiTools[def.function.name] = tool({
         description: desc,
         inputSchema: schema as any,
-        execute: async (args: any) => executeFn(args),
+        execute: async (args: any, options: ToolExecutionOptions) =>
+          executeFn(args, options),
       });
     } else {
       aiTools[def.function.name] = tool({
@@ -208,9 +220,6 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
       required: ["success", "message"],
     } as any),
   });
-
-  // Step counter for onStepFinish callback
-  let stepCounter = 0;
 
   // ---- Session management ----
 
@@ -253,7 +262,11 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
     sessions.delete(sessionId);
   }
 
-  async function run(sessionId: string): Promise<AgentStepResult> {
+  async function run(
+    sessionId: string,
+    abortSignal?: AbortSignal,
+    pauseGate?: AgentPauseGate
+  ): Promise<AgentStepResult> {
     const session = sessions.get(sessionId);
     if (!session) {
       return { type: "error", error: `Session ${sessionId} not found` };
@@ -263,7 +276,10 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
     }
 
     try {
-      stepCounter = 0;
+      abortSignal?.throwIfAborted();
+      await pauseGate?.waitIfPaused();
+      abortSignal?.throwIfAborted();
+      let stepCounter = 0;
       const systemPrompt = [config.systemPrompt, ...session.systemMessages]
         .filter(Boolean)
         .join("\n\n");
@@ -272,6 +288,11 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
         tools: aiTools,
         system: systemPrompt,
         messages: session.messages,
+        abortSignal,
+        experimental_context: {
+          pauseGate,
+          toolExecutionState: { activeTool: null as string | null },
+        },
         stopWhen: stepCountIs(maxIterations),
         onStepFinish: config.onStepFinish
           ? ({ text, toolCalls, finishReason }) => {
@@ -291,6 +312,8 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
           : undefined,
       });
 
+      await pauseGate?.waitIfPaused();
+      abortSignal?.throwIfAborted();
       return processResult(session, result as unknown as GenerateResultShape);
     } catch (error) {
       console.error("[AgentLoop] Error in run:", error);
@@ -383,7 +406,9 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
 
   async function submitToolResults(
     sessionId: string,
-    results: ToolResultInput[]
+    results: ToolResultInput[],
+    abortSignal?: AbortSignal,
+    pauseGate?: AgentPauseGate
   ): Promise<AgentStepResult> {
     const session = sessions.get(sessionId);
     if (!session) {
@@ -432,7 +457,7 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
     }
 
     // Re-run the agent with the updated messages
-    return run(sessionId);
+    return run(sessionId, abortSignal, pauseGate);
   }
 
   function getMessages(sessionId: string): ModelMessage[] {

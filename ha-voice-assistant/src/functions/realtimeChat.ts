@@ -8,6 +8,8 @@ let activeMicStream: MediaStream | null = null;
 let activeMicCtx: AudioContext | null = null;
 let activeProcessor: ScriptProcessorNode | null = null;
 let activeMicOutput: GainNode | null = null;
+let activeMicStart: Promise<void> | null = null;
+let micLifecycleVersion = 0;
 let activeSessionReady = false;
 let pendingConnectResolvers: Array<(ws: WebSocket) => void> = [];
 let pendingConnectRejectors: Array<(error: Error) => void> = [];
@@ -26,13 +28,16 @@ let currentOnListeningWindowChange:
 // Global handlers for events that arrive outside an active voice turn
 // (e.g. async TV-job completion or follow-up question while the wake-word
 // listener is active).
-export type AsyncJobKind = "completed" | "needs_input" | "error";
+export type AsyncJobKind = "completed" | "cancelled" | "needs_input" | "error";
 let globalOnAsyncJobEvent: ((event: { kind: AsyncJobKind; domain?: string }) => void) | undefined;
 let globalOnAsyncAssistantSpeechEnd:
   | ((info: { followupExpected: boolean }) => void)
   | undefined;
 let assistantSpeakingOutsideTurn = false;
 let assistantSpeakingOutsideTurnFollowup = false;
+let globalOnAgentRunPaused:
+  | ((info: { domain?: string; jobId?: string }) => void)
+  | undefined;
 
 export function setAsyncJobEventHandler(
   handler: ((event: { kind: AsyncJobKind; domain?: string }) => void) | undefined
@@ -44,6 +49,14 @@ export function setAsyncAssistantSpeechEndHandler(
   handler: ((info: { followupExpected: boolean }) => void) | undefined
 ): void {
   globalOnAsyncAssistantSpeechEnd = handler;
+}
+
+export function setAgentRunPausedHandler(
+  handler:
+    | ((info: { domain?: string; jobId?: string }) => void)
+    | undefined
+): void {
+  globalOnAgentRunPaused = handler;
 }
 
 let globalOnCommandCancelled:
@@ -159,12 +172,8 @@ function pcm16Base64ToFloat32(base64: string): Float32Array {
 function playPcm16Chunk(samples: Float32Array): void {
   if (!activeAudioCtx) return;
 
-  // Close the mic while the assistant is speaking so we don't capture its own
-  // audio, but leave the listening-window timer alone — it represents
-  // "time until the voice turn ends" and shouldn't be reset by every chunk.
-  if (currentMode === "voice") {
-    stopMicStreaming();
-  }
+  // Keep the mic open during playback so the user can barge in with the wake
+  // phrase. Browser echo cancellation suppresses the assistant's own audio.
 
   audioChunksInResponse += 1;
   if (!loggedAudioDeltaForResponse) {
@@ -319,6 +328,10 @@ function handleMessage(event: MessageEvent): void {
         console.log("[RealtimeChat] User interrupted assistant — stopping playback");
         assistantInterrupted = true;
         stopAndResetAudioPlayback();
+        void ensureAudioContext(false);
+        if (currentMode === "voice" && !voiceTurnResolved) {
+          void ensureMicStreamingForFollowUp();
+        }
         break;
 
       case "response_done":
@@ -347,7 +360,12 @@ function handleMessage(event: MessageEvent): void {
           assistantSpeakingOutsideTurn = true;
           assistantSpeakingOutsideTurnFollowup = false;
           globalOnAsyncJobEvent?.({
-            kind: msg.status === "error" ? "error" : "completed",
+            kind:
+              msg.status === "error"
+                ? "error"
+                : msg.status === "cancelled"
+                  ? "cancelled"
+                  : "completed",
             domain: msg.domain,
           });
         }
@@ -359,6 +377,21 @@ function handleMessage(event: MessageEvent): void {
           assistantSpeakingOutsideTurnFollowup = true;
           globalOnAsyncJobEvent?.({ kind: "needs_input", domain: msg.domain });
         }
+        break;
+
+      case "agent_run_paused":
+        console.log(
+          "[RealtimeChat] Active agent run paused",
+          msg.jobId ?? null
+        );
+        if (currentMode === "voice" && !voiceTurnResolved) {
+          startListeningWindow(LISTENING_WINDOW_MS);
+          void ensureMicStreamingForFollowUp();
+        }
+        globalOnAgentRunPaused?.({
+          domain: msg.domain,
+          jobId: msg.jobId,
+        });
         break;
 
       case "command_cancelled":
@@ -412,6 +445,12 @@ export function prepareRealtimeAudioOutput(): void {
   });
 }
 
+/** Pause the active server-owned specialist run before collecting a new turn. */
+export async function pauseActiveAgentRun(): Promise<void> {
+  const ws = await connectRealtime();
+  ws.send(JSON.stringify({ type: "pause_active_agent" }));
+}
+
 function isWsOpen(): boolean {
   return activeWs !== null && activeWs.readyState === WebSocket.OPEN;
 }
@@ -426,47 +465,106 @@ function sendJson(payload: Record<string, unknown>): void {
 }
 
 async function startMicStreaming(): Promise<void> {
+  if (activeMicStart) return activeMicStart;
+
   stopMicStreaming();
+  const lifecycleVersion = micLifecycleVersion;
 
-  activeMicStream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-    },
-  });
-  activeMicCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-  if (activeMicCtx.state === "suspended") {
-    await activeMicCtx.resume().catch((error) => {
-      console.error("[RealtimeChat] Failed to resume microphone context:", error);
-    });
+  const startPromise = (async (): Promise<void> => {
+    let stream: MediaStream | null = null;
+    let micContext: AudioContext | null = null;
+
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+
+      if (lifecycleVersion !== micLifecycleVersion) return;
+
+      micContext = new (
+        window.AudioContext || (window as any).webkitAudioContext
+      )();
+      if (micContext.state === "suspended") {
+        await micContext.resume().catch((error) => {
+          console.error(
+            "[RealtimeChat] Failed to resume microphone context:",
+            error
+          );
+        });
+      }
+
+      if (lifecycleVersion !== micLifecycleVersion) return;
+
+      const source = micContext.createMediaStreamSource(stream);
+      const processor = micContext.createScriptProcessor(4096, 1, 1);
+
+      // Drop the first 300ms of captured audio so wake-word residue and the
+      // mic's initial pop don't seed Azure's input buffer.
+      const micOpenedAt = Date.now();
+      const WARMUP_MS = 300;
+
+      processor.onaudioprocess = (event) => {
+        if (Date.now() - micOpenedAt < WARMUP_MS) return;
+        if (!isWsOpen() || lifecycleVersion !== micLifecycleVersion) return;
+        const input = event.inputBuffer.getChannelData(0);
+        sendJson({
+          type: "input_audio",
+          audio: floatToPcm16Base64(input, micContext!.sampleRate),
+        });
+      };
+
+      const micOutput = micContext.createGain();
+      micOutput.gain.value = 0;
+      source.connect(processor);
+      processor.connect(micOutput);
+      micOutput.connect(micContext.destination);
+
+      activeMicStream = stream;
+      activeMicCtx = micContext;
+      activeProcessor = processor;
+      activeMicOutput = micOutput;
+      stream = null;
+      micContext = null;
+    } finally {
+      stream?.getTracks().forEach((track) => track.stop());
+      await micContext?.close().catch(() => {});
+    }
+  })();
+
+  activeMicStart = startPromise;
+  try {
+    await startPromise;
+  } finally {
+    if (activeMicStart === startPromise) {
+      activeMicStart = null;
+    }
   }
-  const source = activeMicCtx.createMediaStreamSource(activeMicStream);
-  activeProcessor = activeMicCtx.createScriptProcessor(4096, 1, 1);
+}
 
-  // Drop the first 300ms of captured audio so wake-word residue and the
-  // mic's initial pop don't seed Azure's input buffer.
-  const micOpenedAt = Date.now();
-  const WARMUP_MS = 300;
+async function ensureMicStreamingForFollowUp(): Promise<void> {
+  const micIsActive =
+    activeMicStream?.active === true &&
+    activeMicStream.getAudioTracks().some((track) => track.readyState === "live") &&
+    activeProcessor !== null &&
+    activeMicCtx?.state !== "closed";
+  if (micIsActive) return;
 
-  activeProcessor.onaudioprocess = (event) => {
-    if (!isWsOpen() || !activeMicCtx) return;
-    if (Date.now() - micOpenedAt < WARMUP_MS) return;
-    const input = event.inputBuffer.getChannelData(0);
-    sendJson({
-      type: "input_audio",
-      audio: floatToPcm16Base64(input, activeMicCtx.sampleRate),
-    });
-  };
-
-  source.connect(activeProcessor);
-  activeMicOutput = activeMicCtx.createGain();
-  activeMicOutput.gain.value = 0;
-  activeProcessor.connect(activeMicOutput);
-  activeMicOutput.connect(activeMicCtx.destination);
+  try {
+    await startMicStreaming();
+  } catch (error) {
+    const message = errorMessage(error, "Unable to reopen the microphone");
+    currentOnError?.(message);
+    resolveCurrentTurn();
+  }
 }
 
 function stopMicStreaming(): void {
+  micLifecycleVersion++;
+  activeMicStart = null;
   if (activeProcessor) {
     activeProcessor.disconnect();
     activeProcessor.onaudioprocess = null;

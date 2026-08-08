@@ -39,7 +39,7 @@ async function execute(
     };
   }
 
-  await delay(defaultWait);
+  await delay(defaultWait, context.abortSignal);
   return {
     observation: `✅ Successfully pressed BACK button on ${deviceName}.\n📍 Reason: ${parsed.reason}\n➡️ The TV should now show the previous screen.`,
     needsScreenshot: true,

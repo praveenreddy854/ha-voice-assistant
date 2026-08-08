@@ -50,11 +50,26 @@ export function resolveMaxSteps(
 /**
  * Delay execution for a specified number of milliseconds
  * @param ms - Milliseconds to delay
+ * @param abortSignal - Optional signal that cancels the delay immediately
  * @returns Promise that resolves after the delay
  */
-export async function delay(ms: number): Promise<void> {
+export async function delay(
+  ms: number,
+  abortSignal?: AbortSignal
+): Promise<void> {
+  abortSignal?.throwIfAborted();
   if (ms <= 0) {
     return;
   }
-  await new Promise((resolve) => setTimeout(resolve, ms));
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(abortSignal?.reason ?? new Error("Operation aborted"));
+    };
+    const timer = setTimeout(() => {
+      abortSignal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    abortSignal?.addEventListener("abort", onAbort, { once: true });
+  });
 }

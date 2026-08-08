@@ -7,6 +7,10 @@ export interface ToolExecutionContext {
   screenshotContentType?: string;
   sessionId?: string;
   activeAgent?: "tv" | "navigation";
+  /** Cancellation token for the currently active agent run. */
+  abortSignal?: AbortSignal;
+  /** Cooperative checkpoint that waits while the current run is paused. */
+  waitIfPaused?: () => Promise<void>;
   /** The user's original request — used by validate_screen and background monitor. */
   userPrompt?: string;
 }

@@ -15,7 +15,13 @@ const HOME_ASSISTANT_DEVICES = (process.env.HOME_ASSISTANT_DEVICES || "")
   .filter(Boolean);
 import { executeHACommand } from "./ha";
 import { runAgent } from "./agents/core";
-import { startTvAgentJob } from "./tvJobManager";
+import {
+  cancelActiveTvJob,
+  getActiveTvJob,
+  pauseActiveTvJob,
+  resumeActiveTvJob,
+  startTvAgentJob,
+} from "./tvJobManager";
 import { getTracer } from "./tracing";
 import {
   deleteMemory,
@@ -159,6 +165,10 @@ let fullTranscript = "";
 let lastUserTranscript = "";
 let pendingFollowUp = false;
 let responseInFlight = false;
+let responseCreatePending = false;
+let queuedResponseInstructions: string | null = null;
+let suppressCancelledResponseDone = false;
+let interruptedAssistantText: string | null = null;
 let readyCallbacks: Array<() => void> = [];
 let pendingAudioResponseTimer: NodeJS.Timeout | null = null;
 let pendingAudioResponseRequested = false;
@@ -223,16 +233,23 @@ function sendAzure(payload: JsonRecord): void {
 function requestAssistantSpeech(instructions: string): void {
   if (!azureReady || !isClientActive()) return;
   fullTranscript = "";
-  sendAzure({
-    type: "response.create",
-    response: {
-      modalities: ["text", "audio"],
-      instructions,
-    },
-  });
+  requestDefaultResponse(instructions, "queue");
 }
 
-function requestDefaultResponse(instructions?: string): void {
+type BusyResponseBehavior = "queue" | "skip";
+
+function requestDefaultResponse(
+  instructions?: string,
+  busyBehavior: BusyResponseBehavior = "queue"
+): boolean {
+  if (responseInFlight || responseCreatePending) {
+    if (busyBehavior === "queue") {
+      queuedResponseInstructions = instructions ?? "";
+    }
+    return false;
+  }
+
+  responseCreatePending = true;
   sendAzure({
     type: "response.create",
     response: {
@@ -240,9 +257,20 @@ function requestDefaultResponse(instructions?: string): void {
       ...(instructions ? { instructions } : {}),
     },
   });
+  return true;
 }
 
-async function requestDefaultResponseWithMemory(query: string): Promise<void> {
+function flushQueuedResponse(): void {
+  if (queuedResponseInstructions === null) return;
+  const instructions = queuedResponseInstructions;
+  queuedResponseInstructions = null;
+  requestDefaultResponse(instructions || undefined, "queue");
+}
+
+async function requestDefaultResponseWithMemory(
+  query: string,
+  busyBehavior: BusyResponseBehavior = "queue"
+): Promise<void> {
   const span = getTracer().startSpan("realtime.memory.inject", {
     attributes: {
       "telemetry.kind": "realtime_memory",
@@ -256,7 +284,29 @@ async function requestDefaultResponseWithMemory(query: string): Promise<void> {
   span.setAttribute("realtime.memory.context_present", Boolean(memoryContext));
   span.setAttribute("realtime.memory.has_guard", /guard/i.test(memoryContext));
   span.end();
-  requestDefaultResponse(memoryContext || undefined);
+  const activeTvJob = getActiveTvJob();
+  const activeRunContext = activeTvJob
+    ? activeTvJob.status === "paused"
+      ? `Runtime state: TV agent job ${activeTvJob.id} is PAUSED at the user's wake phrase. Interpret the user's current message as the follow-up decision. Use control_tv_agent with action "continue" to resume the exact same run, "stop" to cancel it, or "change" with a full replacement prompt when the user changes/corrects the requested action. For an unrelated question, answer it without changing the paused job.`
+      : `Runtime state: TV agent job ${activeTvJob.id} is currently running.`
+    : "";
+  const interruptedResponseContext = interruptedAssistantText
+    ? `Runtime state: The user interrupted your previous spoken response after hearing: "${interruptedAssistantText}". If the user says "continue speaking", "keep talking", or asks you to continue your answer, resume that response from where it stopped without repeating it. If they say stop, end the response. If they give a changed request, follow the new request. An explicit request to continue speaking refers to your interrupted answer, not a paused TV job.`
+    : "";
+  const responseInstructions = [
+    memoryContext,
+    activeRunContext,
+    interruptedResponseContext,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  const responseRequested = requestDefaultResponse(
+    responseInstructions || undefined,
+    busyBehavior
+  );
+  if (query.trim() && (responseRequested || busyBehavior === "queue")) {
+    interruptedAssistantText = null;
+  }
 }
 
 function resetAudioLog(): void {
@@ -331,6 +381,15 @@ function needsActionConfirmation(command: string): boolean {
   return protectedOpening || bulkDestructive;
 }
 
+function matchWakePhrase(
+  transcript: string
+): { trailingText: string } | null {
+  const match = transcript.toLocaleLowerCase().match(
+    /^\s*(?:hey[,\s]+|ok[,\s]+)?assistant\b[,.\s]*(.*)$/
+  );
+  return match ? { trailingText: match[1]?.trim() ?? "" } : null;
+}
+
 function stringList(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const result = value
@@ -401,7 +460,30 @@ async function requestAudioResponseWithMemory(transcript: string): Promise<void>
   if (pendingAudioResponseRequested) return;
   pendingAudioResponseRequested = true;
   clearPendingAudioResponse();
-  await requestDefaultResponseWithMemory(transcript);
+  await requestDefaultResponseWithMemory(
+    transcript,
+    suppressCancelledResponseDone ? "queue" : "skip"
+  );
+}
+
+function startRealtimeTvJob(prompt: string) {
+  const started = startTvAgentJob(prompt, {
+    onComplete: (message) => {
+      sendClient({ type: "async_job_finished", domain: "tv", status: "completed" });
+      requestAssistantSpeech(
+        `Say only this short completion to the user: "${tvCompletion(prompt, message)}".`
+      );
+    },
+    onError: (message) => {
+      sendClient({ type: "async_job_finished", domain: "tv", status: "error" });
+      const detail = (message || "TV job failed").replace(/"/g, "'");
+      requestAssistantSpeech(
+        `The TV job failed. Tell the user in three or four words what went wrong. Do not apologize or add filler. Failure detail: "${detail}".`
+      );
+    },
+  });
+  sendClient({ type: "async_job_started", domain: "tv", jobId: started.jobId });
+  return started;
 }
 
 async function executeRealtimeTool(
@@ -531,27 +613,75 @@ async function executeRealtimeTool(
       if (!prompt.trim()) {
         return "Missing TV prompt.";
       }
-      const started = startTvAgentJob(prompt, {
-        onComplete: (message) => {
-          sendClient({ type: "async_job_finished", domain: "tv", status: "completed" });
-          requestAssistantSpeech(
-            `Say only this short completion to the user: "${tvCompletion(prompt, message)}".`
-          );
-        },
-        onError: (message) => {
-          sendClient({ type: "async_job_finished", domain: "tv", status: "error" });
-          const detail = (message || "TV job failed").replace(/"/g, "'");
-          requestAssistantSpeech(
-            `The TV job failed. Tell the user in three or four words what went wrong. Do not apologize or add filler. Failure detail: "${detail}".`
-          );
-        },
-      });
-      sendClient({ type: "async_job_started", domain: "tv", jobId: started.jobId });
+      const started = startRealtimeTvJob(prompt);
       return JSON.stringify({
         success: true,
         jobId: started.jobId,
         replacedJobId: started.replacedJobId,
         message: "TV job started. Say exactly: working on it.",
+      });
+    }
+
+    case "control_tv_agent": {
+      const action = typeof args.action === "string" ? args.action : "";
+
+      if (action === "continue") {
+        const jobId = resumeActiveTvJob();
+        if (!jobId) {
+          return JSON.stringify({
+            success: false,
+            message: "There is no paused TV job to continue.",
+          });
+        }
+        sendClient({ type: "async_job_started", domain: "tv", jobId });
+        return JSON.stringify({
+          success: true,
+          jobId,
+          message: "The same TV job resumed. Say exactly: continuing.",
+        });
+      }
+
+      if (action === "stop") {
+        const jobId = cancelActiveTvJob();
+        if (!jobId) {
+          return JSON.stringify({
+            success: false,
+            message: "There is no TV job to stop.",
+          });
+        }
+        sendClient({
+          type: "async_job_finished",
+          domain: "tv",
+          status: "cancelled",
+          jobId,
+        });
+        return JSON.stringify({
+          success: true,
+          jobId,
+          message: "The TV job was stopped. Say exactly: stopped.",
+        });
+      }
+
+      if (action === "change") {
+        const prompt = typeof args.prompt === "string" ? args.prompt.trim() : "";
+        if (!prompt) {
+          return JSON.stringify({
+            success: false,
+            message: "A full replacement TV instruction is required.",
+          });
+        }
+        const started = startRealtimeTvJob(prompt);
+        return JSON.stringify({
+          success: true,
+          jobId: started.jobId,
+          replacedJobId: started.replacedJobId,
+          message: "The prior TV job was replaced. Say exactly: changing it.",
+        });
+      }
+
+      return JSON.stringify({
+        success: false,
+        message: "Unsupported TV job action.",
       });
     }
 
@@ -756,6 +886,28 @@ const REALTIME_TOOLS = [
       required: ["prompt"],
     },
   },
+  {
+    type: "function",
+    name: "control_tv_agent",
+    description:
+      "Control an existing TVAgent run after the wake phrase has paused it. Use continue to resume the exact same run, stop to cancel it, or change to cancel it and start a replacement with the user's complete revised instruction.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["continue", "stop", "change"],
+          description: "How to handle the paused TVAgent run.",
+        },
+        prompt: {
+          type: "string",
+          description:
+            "Required for change: the user's complete revised TV or streaming-app request.",
+        },
+      },
+      required: ["action"],
+    },
+  },
 ];
 
 const REALTIME_INSTRUCTIONS = `You are the Realtime Voice Agent for a Home Assistant voice assistant.
@@ -771,6 +923,7 @@ Capabilities:
 - Use execute_home_assistant_command for immediate smart-home commands and read-only device state questions.
 - Use run_scheduled_task_agent for ScheduledTask creation, list/query, update, cancellation, and clarification.
 - Use start_tv_agent for TV or streaming-app tasks that require navigation, screenshots, remote actions, app launching, search, typing, or playback.
+- Use control_tv_agent to continue, stop, or change a TVAgent run that was paused by the wake phrase.
 - Use web_search when live/current information is needed.
 
 Do not use a fixed priority order. Select the capability by request meaning. If the request is ambiguous, ask a short clarification question before acting.${
@@ -782,9 +935,12 @@ Known smart-home devices ${HOME_ASSISTANT_DEVICES.join(", ")}.`
 }
 
 Mic / follow-up policy:
-- The mic closes after every response by default and the user must say the wake word again for the next command.
+- An active voice turn remains open for at most 30 seconds so the user can interrupt or answer a follow-up. After that window closes, the user must say the wake word again.
 - If your next spoken response will be a question or a request for confirmation that the user must answer without saying the wake word, call await_user_followup BEFORE producing that response. This keeps the mic open for 30 seconds so the user can answer.
 - Do NOT call await_user_followup for routine completions, acknowledgements ("working on it", "Done"), or any response that does not require a user answer.
+- The user can say the wake phrase while you are speaking to pause your response. A bare wake phrase is not a question: stop and wait silently for the follow-up utterance.
+- If the follow-up is "continue speaking", "keep talking", or equivalent, continue the interrupted response from where it stopped without repeating the beginning.
+- If the follow-up says stop, remain stopped. If it changes the request, answer the changed request instead.
 
 Confirmation policy:
 - Routine smart-home actions execute without confirmation.
@@ -795,11 +951,17 @@ Confirmation policy:
 Specialist behavior:
 - Do not narrate tool calls or internal Specialist agent iterations.
 - TVAgent runs are async. When start_tv_agent succeeds, say exactly "working on it" and then stay silent.
+- When control_tv_agent continues a run, say exactly "continuing". When it stops a run, say exactly "stopped". When it changes a run, say exactly "changing it".
 - ScheduledTaskAgent runs are blocking; speak its final message.
 - Completion announcements should usually be three or four words.
 
-Cancelling a TV action:
-- If the user wants to stop, cancel, abort, or undo an in-flight TV/streaming action (e.g. "stop", "cancel that", "nevermind", "forget it", "stop the TV"), call start_tv_agent with the user's stop request verbatim. Starting any TV job replaces the prior one, so this is how you cancel. Do not invent a separate cancellation tool.
+Pausing and redirecting a TV action:
+- Saying the wake phrase while a TVAgent is active pauses that exact run; it does not cancel or restart it.
+- Interpret the user's follow-up in context of the paused run. For "continue", "resume", or equivalent, call control_tv_agent with action "continue".
+- For "stop", "cancel", "nevermind", or equivalent, call control_tv_agent with action "stop".
+- If the user corrects, redirects, or replaces the action, call control_tv_agent with action "change" and include the complete revised TV request in prompt.
+- If the follow-up is unrelated, answer it and leave the TVAgent paused. Do not silently resume it.
+- "Continue speaking" or "continue your answer" refers to your interrupted spoken response and must not resume a paused TVAgent. Only resume the TVAgent when the user refers to the TV action or simply says "continue" in that paused-action context.
 
 Memory:
 - Use the recent conversation only as short conversational memory.
@@ -886,6 +1048,7 @@ function connectAzure(onReady: () => void): void {
           break;
 
         case "response.created":
+          responseCreatePending = false;
           responseInFlight = true;
           break;
 
@@ -893,6 +1056,10 @@ function connectAzure(onReady: () => void): void {
           console.log("[RealtimeChat] Azure speech started");
           if (responseInFlight) {
             console.log("[RealtimeChat] Barge-in: cancelling in-flight response");
+            if (fullTranscript.trim()) {
+              interruptedAssistantText = fullTranscript.trim();
+            }
+            suppressCancelledResponseDone = true;
             sendAzure({ type: "response.cancel" });
             sendClient({ type: "assistant_interrupted" });
           }
@@ -963,11 +1130,56 @@ function connectAzure(onReady: () => void): void {
             `[RealtimeChat] Azure transcription completed chars=${String(event.transcript || "").length}`
           );
           if (event.transcript) {
-            lastUserTranscript = event.transcript;
-            void requestAudioResponseWithMemory(event.transcript);
+            const transcript = String(event.transcript);
+            const activeTvJob = getActiveTvJob();
+            const wakeMatch = matchWakePhrase(transcript);
+
+            if (wakeMatch) {
+              const pausedJobId = activeTvJob
+                ? pauseActiveTvJob()
+                : undefined;
+              console.log(
+                pausedJobId
+                  ? `[RealtimeChat] Wake phrase paused active TV job ${pausedJobId}`
+                  : "[RealtimeChat] Wake phrase paused the active spoken response"
+              );
+              if (fullTranscript.trim()) {
+                interruptedAssistantText = fullTranscript.trim();
+              }
+              clearPendingAudioResponse();
+              pendingAudioResponseRequested = true;
+              pendingFollowUp = true;
+              lastUserTranscript = "";
+              fullTranscript = "";
+              if (responseInFlight) {
+                suppressCancelledResponseDone = true;
+                sendAzure({ type: "response.cancel" });
+              } else {
+                responseCreatePending = false;
+              }
+              sendClient({
+                type: "agent_run_paused",
+                domain: pausedJobId ? "tv" : "realtime",
+                jobId: pausedJobId,
+              });
+              sendClient({ type: "user_transcript", text: transcript });
+
+              if (wakeMatch.trailingText) {
+                lastUserTranscript = wakeMatch.trailingText;
+                pendingAudioResponseRequested = true;
+                void requestDefaultResponseWithMemory(
+                  wakeMatch.trailingText,
+                  "queue"
+                );
+              }
+              break;
+            }
+
+            lastUserTranscript = transcript;
+            void requestAudioResponseWithMemory(transcript);
             sendClient({
               type: "user_transcript",
-              text: event.transcript,
+              text: transcript,
             });
           }
           break;
@@ -975,12 +1187,20 @@ function connectAzure(onReady: () => void): void {
         case "response.done": {
           console.log("[RealtimeChat] Azure response done");
           responseInFlight = false;
+          responseCreatePending = false;
+          if (suppressCancelledResponseDone) {
+            suppressCancelledResponseDone = false;
+            fullTranscript = "";
+            flushQueuedResponse();
+            break;
+          }
           // Skip function-call-only responses — the next response.create that
           // follows the tool result will produce the actual user-facing answer.
           const hasFunctionCall = event.response?.output?.some(
             (o: any) => o.type === "function_call"
           );
           if (hasFunctionCall) {
+            flushQueuedResponse();
             break;
           }
           const hasOutput = event.response?.output?.some(
@@ -1003,6 +1223,7 @@ function connectAzure(onReady: () => void): void {
             hasOutput: hasOutput || fullTranscript.length > 0,
           });
           fullTranscript = "";
+          flushQueuedResponse();
           break;
         }
 
@@ -1040,8 +1261,15 @@ function connectAzure(onReady: () => void): void {
             /buffer is empty/i.test(errMessage) ||
             /buffer.*empty/i.test(errMessage)
           ) {
+            responseCreatePending = false;
             break;
           }
+          if (/active response in progress/i.test(errMessage)) {
+            responseCreatePending = false;
+            responseInFlight = true;
+            break;
+          }
+          responseCreatePending = false;
           sendClient({
             type: "error",
             message: errMessage,
@@ -1057,6 +1285,8 @@ function connectAzure(onReady: () => void): void {
   ws.on("error", (err) => {
     console.error("[RealtimeChat] Azure WS error:", err.message);
     azureReady = false;
+    responseCreatePending = false;
+    queuedResponseInstructions = null;
     readyCallbacks = [];
     resetAudioLog();
     sendClient({
@@ -1069,6 +1299,8 @@ function connectAzure(onReady: () => void): void {
     console.log("[RealtimeChat] Azure WS closed");
     azureWs = null;
     azureReady = false;
+    responseCreatePending = false;
+    queuedResponseInstructions = null;
     readyCallbacks = [];
     resetAudioLog();
     conversationItems.length = 0;
@@ -1108,6 +1340,8 @@ export function setupRealtimeChatProxy(server: http.Server): void {
       sendAzure({ type: "input_audio_buffer.clear" });
       fullTranscript = "";
       responseInFlight = false;
+      responseCreatePending = false;
+      queuedResponseInstructions = null;
     }
 
     // Connect to Azure (reuses existing session if alive)
@@ -1148,6 +1382,18 @@ export function setupRealtimeChatProxy(server: http.Server): void {
           // Client opened the mic for a bare wake-word — keep it open after
           // the next response no matter what the model decides.
           pendingFollowUp = true;
+        } else if (msg.type === "pause_active_agent") {
+          const pausedJobId = pauseActiveTvJob();
+          if (pausedJobId) {
+            console.log(
+              `[RealtimeChat] Client wake phrase paused active TV job ${pausedJobId}`
+            );
+            clientWs.send(JSON.stringify({
+              type: "agent_run_paused",
+              domain: "tv",
+              jobId: pausedJobId,
+            }));
+          }
         }
       } catch (err) {
         console.error("[RealtimeChat] Error parsing client message:", err);

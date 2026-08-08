@@ -7,7 +7,7 @@
  * pause/resume, and step tracking.
  */
 
-import { ToolDefinition } from "./agentLoop";
+import type { ToolDefinition } from "./agentLoop";
 
 // ============================================================================
 // Agent Type
@@ -29,6 +29,14 @@ export type AgentType = "tv" | "scheduled_task";
 export interface ToolExecutionContext {
   /** Arbitrary key-value bag agents can populate with domain-specific data. */
   [key: string]: unknown;
+}
+
+/**
+ * Cooperative pause boundary for a running agent. Unlike AbortSignal, waiting
+ * here preserves the current model session and resumes the same run later.
+ */
+export interface AgentPauseGate {
+  waitIfPaused(): Promise<void>;
 }
 
 /**
@@ -174,6 +182,10 @@ export interface AgentRunOptions {
   messageHistory?: Array<{ role: string; content: string }>;
   /** External input data when resuming after a pause. */
   externalInput?: ExternalInputData;
+  /** Cancels the active model/tool loop when this run is superseded. */
+  abortSignal?: AbortSignal;
+  /** Suspends the active run without discarding its session or progress. */
+  pauseGate?: AgentPauseGate;
 }
 
 /**

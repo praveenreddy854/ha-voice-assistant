@@ -61,7 +61,7 @@ async function execute(
     };
   }
 
-  await delay(defaultWait);
+  await delay(defaultWait, context.abortSignal);
 
   const deviceStates = (await getKnownDeviceStates()).filter((d) =>
     d.entity_id.includes(deviceName)

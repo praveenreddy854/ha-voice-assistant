@@ -37,7 +37,7 @@ async function execute(
     };
   }
 
-  await delay(defaultWait);
+  await delay(defaultWait, context.abortSignal);
   return {
     observation: `Successfully executed "${plainCommand}". ${parsed.reason}`,
     needsScreenshot: false,
