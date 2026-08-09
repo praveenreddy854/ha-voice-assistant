@@ -501,6 +501,7 @@ async function startMicStreaming(): Promise<void> {
 
       const source = micContext.createMediaStreamSource(stream);
       const processor = micContext.createScriptProcessor(4096, 1, 1);
+      const inputSampleRate = micContext.sampleRate;
 
       // Drop the first 300ms of captured audio so wake-word residue and the
       // mic's initial pop don't seed Azure's input buffer.
@@ -513,7 +514,7 @@ async function startMicStreaming(): Promise<void> {
         const input = event.inputBuffer.getChannelData(0);
         sendJson({
           type: "input_audio",
-          audio: floatToPcm16Base64(input, micContext!.sampleRate),
+          audio: floatToPcm16Base64(input, inputSampleRate),
         });
       };
 
