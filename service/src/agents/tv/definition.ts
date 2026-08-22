@@ -43,6 +43,10 @@ import { saveTvFlowMemory } from "./flowMemory";
 import { HassState } from "../../types/ha";
 import { getAvailableSkills, formatSkillSummaries } from "./skills/skillRegistry";
 import {
+  DEVICE_COMPONENT_SOURCE,
+  getPendingDeviceCommandResearch,
+} from "./tools/webSearch";
+import {
   addEvent,
   trackToolResult,
   getActiveSessionId,
@@ -269,6 +273,26 @@ export const tvAgentDefinition: AgentDefinition = {
   systemPrompt: TV_AGENT_INSTRUCTIONS,
   tools: buildTools(),
   maxIterations: TV_AGENT_MAX_ITERATIONS_CAP,
+
+  validateCompletion(session) {
+    const pendingResearch = getPendingDeviceCommandResearch({
+      sessionId: session.id,
+    });
+    if (pendingResearch.length === 0) return { allowed: true };
+
+    const requirements = pendingResearch
+      .map(
+        ({ integration, reason }) =>
+          `${integration}: ${reason} Search ${DEVICE_COMPONENT_SOURCE[integration]}.`
+      )
+      .join(" ");
+    return {
+      allowed: false,
+      reason:
+        `complete_task is not allowed because command verification failed and required research has not been performed. ` +
+        `${requirements} Call web_search, inspect the result, then retry and verify the command before completing.`,
+    };
+  },
 
   async buildInitialMessage(
     userPrompt: string,

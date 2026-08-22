@@ -1,8 +1,10 @@
 import { z } from "zod";
 import { TvToolDefinition, ToolExecutionContext, ToolExecutionResult } from "./types";
-import { getKnownDeviceStates, callHAServiceDirect } from "../../../ha";
+import { callHAServiceDirect } from "../../../ha";
 import { delay } from "../../common/utils";
 import { TV_DEFAULT_WAIT_MS } from "../../../config";
+import { getDeviceIntegration } from "./webSearch";
+import { getDeviceEntityState } from "./deviceStateGuard";
 
 export const inputSchema = z.object({
   remote_entity_id: z.string().describe(
@@ -24,41 +26,44 @@ async function execute(
     ? Math.max(250, TV_DEFAULT_WAIT_MS)
     : 1500;
 
-  const deviceName = parsed.remote_entity_id.replace("remote.", "");
-
-  // Check current state to decide wakeup vs suspend
-  const preStates = (await getKnownDeviceStates()).filter((d) =>
-    d.entity_id.includes(deviceName)
+  // Query the exact remote entity before deciding whether to turn it on/off.
+  const remoteState = await getDeviceEntityState(
+    parsed.remote_entity_id,
+    context
   );
-  const mediaPlayer = preStates.find((s) => s.entity_id.startsWith("media_player."));
-  const isOff = mediaPlayer && (mediaPlayer.state === "standby" || mediaPlayer.state === "off");
+  const isOff = remoteState.state === "off";
+  const integration = getDeviceIntegration(parsed.remote_entity_id);
 
-  // Use direct HA API with wakeup/suspend for speed and reliability
-  // (bypasses LLM-mediated command translation)
-  const command = isOff !== false ? "wakeup" : "suspend";
+  // Use the integration-specific power service directly for reliability.
+  const command = isOff ? "turn_on" : "turn_off";
   await context.waitIfPaused?.();
   context.abortSignal?.throwIfAborted();
-  const result = await callHAServiceDirect(
-    "remote", "send_command",
-    parsed.remote_entity_id,
-    { command }
-  );
+  const result = integration === "samsungtv"
+    ? await callHAServiceDirect(
+        "remote",
+        command,
+        parsed.remote_entity_id
+      )
+    : await callHAServiceDirect(
+        "remote",
+        "send_command",
+        parsed.remote_entity_id,
+        { command: isOff ? "wakeup" : "suspend" }
+      );
 
   if (!result.success) {
     return {
-      observation: `Failed to send "${command}" to ${parsed.remote_entity_id}: ${result.message}. Use web_search to find the correct service call for this device.`,
+      observation: `Failed to send "${command}" to ${parsed.remote_entity_id}: ${result.message}. Use web_search to confirm the correct service call for this device.`,
       needsScreenshot: false,
       toolSuccess: false,
     };
   }
 
-  // Apple TV (and similar) report stale media_player state for 10-30s after a
-  // power transition. Poll until HA reflects the transition or the budget
-  // expires so the agent gets ground truth instead of a misleading snapshot.
+  // Poll the same remote entity used for the pre-command state check.
   const offStates = new Set(["off", "standby", "unavailable", "unknown"]);
   const reachedTarget = (state: string | undefined): boolean => {
     if (!state) return false;
-    return command === "wakeup" ? !offStates.has(state) : offStates.has(state);
+    return command === "turn_on" ? !offStates.has(state) : offStates.has(state);
   };
 
   await delay(defaultWait, context.abortSignal);
@@ -66,36 +71,28 @@ async function execute(
   const pollBudgetMs = 8000;
   const pollIntervalMs = 750;
   const deadline = Date.now() + pollBudgetMs;
-  let deviceStates = (await getKnownDeviceStates()).filter((d) =>
-    d.entity_id.includes(deviceName)
-  );
-  let mediaPlayerState = deviceStates.find((s) =>
-    s.entity_id.startsWith("media_player.")
-  )?.state;
+  let currentState = (
+    await getDeviceEntityState(parsed.remote_entity_id, context)
+  ).state;
 
-  while (!reachedTarget(mediaPlayerState) && Date.now() < deadline) {
+  while (!reachedTarget(currentState) && Date.now() < deadline) {
     await delay(pollIntervalMs, context.abortSignal);
     await context.waitIfPaused?.();
     context.abortSignal?.throwIfAborted();
-    deviceStates = (await getKnownDeviceStates()).filter((d) =>
-      d.entity_id.includes(deviceName)
-    );
-    mediaPlayerState = deviceStates.find((s) =>
-      s.entity_id.startsWith("media_player.")
-    )?.state;
+    currentState = (
+      await getDeviceEntityState(parsed.remote_entity_id, context)
+    ).state;
   }
 
-  const confirmed = reachedTarget(mediaPlayerState);
-  const stateSummary = JSON.stringify(
-    deviceStates.map((s) => ({ entity_id: s.entity_id, state: s.state }))
-  );
+  const confirmed = reachedTarget(currentState);
   const note = confirmed
     ? "State change confirmed by Home Assistant."
-    : "Home Assistant has not yet reflected the state change; Apple TV state often lags 10-30s, so the command likely still took effect — proceed and verify via the next action.";
+    : "The power service was accepted, but Home Assistant still reports the original state. The command is not verified; inspect the device integration or Home Assistant Core component before retrying.";
 
   return {
-    observation: `Successfully sent "${command}" to ${parsed.remote_entity_id}. ${parsed.reason}. ${note} Device states: ${stateSummary}`,
+    observation: `${confirmed ? "Successfully completed" : "Sent"} "${command}" to ${parsed.remote_entity_id}. ${parsed.reason}. ${note} Remote state: ${currentState}`,
     needsScreenshot: false,
+    toolSuccess: confirmed,
   };
 }
 

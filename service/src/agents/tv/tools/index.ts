@@ -20,6 +20,13 @@ import * as webSearch from "./webSearch";
 import * as loadSkill from "./loadSkill";
 import * as validateScreen from "./validateScreen";
 import * as wait from "./wait";
+import { ensureDeviceOnBeforeCommand } from "./deviceStateGuard";
+import {
+  DEVICE_COMPONENT_SOURCE,
+  getDeviceCommandResearchRequirement,
+  getDeviceIntegration,
+  requireDeviceCommandResearch,
+} from "./webSearch";
 
 // ============================================================================
 // All tool modules in registration order
@@ -74,6 +81,59 @@ for (const mod of ALL_TOOLS) {
   EXECUTORS[mod.definition.name] = mod.definition.execute;
 }
 
+const TOOLS_REQUIRING_DEVICE_ON = new Set<string>([
+  "media_control",
+  "click_select_button",
+  "go_back",
+  "go_home",
+  "navigate",
+  "deterministic_typing",
+  "delete_typed_text",
+  "launch_app",
+]);
+
+const DEVICE_COMMAND_TOOLS = new Set<string>([
+  "click_power_button",
+  "media_control",
+  "click_select_button",
+  "go_back",
+  "go_home",
+  "navigate",
+  "deterministic_typing",
+  "delete_typed_text",
+  "get_device_state",
+  "launch_app",
+]);
+
+function getToolDeviceIntegration(
+  args: Record<string, unknown>
+): ReturnType<typeof getDeviceIntegration> {
+  for (const field of [
+    "remote_entity_id",
+    "media_player_entity_id",
+    "device_name",
+  ] as const) {
+    const value = args[field];
+    if (typeof value !== "string") continue;
+    const integration = getDeviceIntegration(value);
+    if (integration) return integration;
+  }
+  return undefined;
+}
+
+function resultRequiresCommandResearch(
+  toolName: string,
+  result: ToolExecutionResult
+): boolean {
+  if (result.toolSuccess === false) return true;
+  if (toolName !== "launch_app" && toolName !== "click_power_button") {
+    return false;
+  }
+  return /PARTIAL|UNKNOWN|not yet reflected the state change|remains?\s+"?off/i.test(
+    result.observation
+  );
+}
+
 export async function executeTool(
   toolName: TvToolName,
   args: TvToolArguments,
@@ -90,7 +150,57 @@ export async function executeTool(
     throw new Error(`Unsupported tool: ${toolName}`);
   }
 
+  const toolArgs = args as unknown as Record<string, unknown>;
+  const integration = DEVICE_COMMAND_TOOLS.has(toolName)
+    ? getToolDeviceIntegration(toolArgs)
+    : undefined;
+  const researchRequirement = integration
+    ? getDeviceCommandResearchRequirement(context, integration)
+    : undefined;
+  if (integration && researchRequirement) {
+    return {
+      observation:
+        `Command research is required before ${toolName}. ` +
+        `Previous verification failed: ${researchRequirement.reason}. ` +
+        `Call web_search with the Home Assistant Core component URL ` +
+        `"${DEVICE_COMPONENT_SOURCE[integration]}" and inspect the result before retrying. ` +
+        `No Home Assistant request was sent.`,
+      needsScreenshot: false,
+      toolSuccess: false,
+    };
+  }
+
+  const stateGuard = TOOLS_REQUIRING_DEVICE_ON.has(toolName)
+    ? await ensureDeviceOnBeforeCommand(
+        toolArgs,
+        context
+      )
+    : undefined;
+
+  if (stateGuard && !stateGuard.ready) {
+    const reason = stateGuard.observation;
+    if (integration) {
+      requireDeviceCommandResearch(context, integration, reason);
+    }
+    return {
+      observation:
+        `Device state preflight failed: ${reason}` +
+        `${integration ? ` Search ${DEVICE_COMPONENT_SOURCE[integration]} before retrying.` : ""}`,
+      needsScreenshot: false,
+      toolSuccess: false,
+    };
+  }
+
   const result = await executor(args, context);
+  if (stateGuard) {
+    result.observation = `Device state preflight: ${stateGuard.observation}\n\n${result.observation}`;
+  }
+  if (integration && resultRequiresCommandResearch(toolName, result)) {
+    requireDeviceCommandResearch(context, integration, result.observation);
+    result.observation +=
+      `\n\nCommand verification failed. Before another ${integration} command, ` +
+      `call web_search with ${DEVICE_COMPONENT_SOURCE[integration]} and inspect the result.`;
+  }
   await context.waitIfPaused?.();
   context.abortSignal?.throwIfAborted();
   console.log(`[TV Tools]   Result success: ${result.toolSuccess ?? true}`);

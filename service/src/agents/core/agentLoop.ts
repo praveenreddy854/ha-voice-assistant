@@ -91,6 +91,8 @@ export interface AgentStepResult {
   message?: string;
   /** Present when type === "complete" — reflects the success flag the agent passed to complete_task. */
   success?: boolean;
+  /** Tool-call ID for complete_task, used when completion must be rejected and resumed. */
+  completionToolCallId?: string;
   /** Present when type === "tool_calls" — these are tool calls that need external handling. */
   toolCalls?: AgentToolCall[];
   error?: string;
@@ -344,12 +346,12 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
     );
 
     if (completeCall) {
-      session.isComplete = true;
       const args = (completeCall.input ?? {}) as Record<string, unknown>;
       return {
         type: "complete",
         message: (args.message as string) || "Task completed",
         success: args.success !== false,
+        completionToolCallId: completeCall.toolCallId,
       };
     }
 

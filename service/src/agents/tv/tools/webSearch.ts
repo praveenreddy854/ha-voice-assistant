@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { TvToolDefinition, ToolExecutionResult } from "./types";
+import {
+  TvToolDefinition,
+  ToolExecutionResult,
+} from "./types";
 
 export const inputSchema = z.object({
   query: z.string().describe(
@@ -9,7 +12,7 @@ export const inputSchema = z.object({
     "Optional: A direct URL to fetch. Allowed domains: home-assistant.io and github.com/home-assistant/core."
   ),
   reason: z.string().describe(
-    "Why you need this — should reference the failed command (e.g., 'launch_app failed with invalid service, need correct service call')."
+    "Why you need this (e.g., 'required Samsung TV documentation preflight' or 'launch_app failed, need the correct service call')."
   ),
 });
 
@@ -23,6 +26,114 @@ const HA_DOMAIN = "home-assistant.io";
 const HA_GITHUB_REPO = "home-assistant/core";
 const HA_GITHUB_COMPONENTS_PATH = "homeassistant/components";
 const MAX_CONTENT_LENGTH = 6000;
+
+export const DEVICE_INTEGRATION_DOCUMENTATION = {
+  appletv: "https://www.home-assistant.io/integrations/apple_tv/",
+  samsungtv: "https://www.home-assistant.io/integrations/samsungtv/",
+} as const;
+
+export const DEVICE_COMPONENT_SOURCE = {
+  appletv:
+    "https://github.com/home-assistant/core/tree/dev/homeassistant/components/apple_tv",
+  samsungtv:
+    "https://github.com/home-assistant/core/tree/dev/homeassistant/components/samsungtv",
+} as const;
+
+export type DeviceIntegration = keyof typeof DEVICE_INTEGRATION_DOCUMENTATION;
+
+interface ResearchRequirement {
+  reason: string;
+  createdAt: number;
+}
+
+const researchRequirements = new Map<
+  string,
+  Map<DeviceIntegration, ResearchRequirement>
+>();
+const MAX_RESEARCH_SESSIONS = 500;
+
+function researchSessionKey(context: { sessionId?: string }): string {
+  return context.sessionId ?? "__unscoped__";
+}
+
+export function requireDeviceCommandResearch(
+  context: { sessionId?: string },
+  integration: DeviceIntegration,
+  reason: string
+): void {
+  const sessionKey = researchSessionKey(context);
+  let requirements = researchRequirements.get(sessionKey);
+  if (!requirements) {
+    if (researchRequirements.size >= MAX_RESEARCH_SESSIONS) {
+      const oldestSession = researchRequirements.keys().next().value;
+      if (oldestSession) researchRequirements.delete(oldestSession);
+    }
+    requirements = new Map<DeviceIntegration, ResearchRequirement>();
+    researchRequirements.set(sessionKey, requirements);
+  }
+  requirements.set(integration, { reason, createdAt: Date.now() });
+}
+
+export function getDeviceCommandResearchRequirement(
+  context: { sessionId?: string },
+  integration: DeviceIntegration
+): ResearchRequirement | undefined {
+  return researchRequirements
+    .get(researchSessionKey(context))
+    ?.get(integration);
+}
+
+export function getPendingDeviceCommandResearch(
+  context: { sessionId?: string }
+): Array<{ integration: DeviceIntegration; reason: string }> {
+  const requirements = researchRequirements.get(researchSessionKey(context));
+  if (!requirements) return [];
+  return [...requirements.entries()].map(([integration, requirement]) => ({
+    integration,
+    reason: requirement.reason,
+  }));
+}
+
+export function clearDeviceCommandResearchRequirement(
+  context: { sessionId?: string },
+  integration: DeviceIntegration
+): void {
+  const sessionKey = researchSessionKey(context);
+  const requirements = researchRequirements.get(sessionKey);
+  requirements?.delete(integration);
+  if (requirements?.size === 0) researchRequirements.delete(sessionKey);
+}
+
+export function resetDeviceCommandResearchRequirements(
+  sessionId?: string
+): void {
+  researchRequirements.delete(sessionId ?? "__unscoped__");
+}
+
+function normalizedDeviceName(entityIdOrName: string): string {
+  return entityIdOrName
+    .toLowerCase()
+    .replace(/^[^.]+\./, "")
+    .replace(/[^a-z0-9]/g, "");
+}
+
+export function getDeviceIntegration(
+  entityIdOrName: string
+): DeviceIntegration | undefined {
+  const deviceName = normalizedDeviceName(entityIdOrName);
+  if (deviceName.includes("appletv")) return "appletv";
+  if (deviceName.includes("samsung")) return "samsungtv";
+  return undefined;
+}
+
+export function getDeviceDocumentationUrl(
+  entityIdOrName: string
+): string | undefined {
+  const integration = getDeviceIntegration(entityIdOrName);
+  return integration
+    ? DEVICE_INTEGRATION_DOCUMENTATION[integration]
+    : undefined;
+}
 
 function stripHtml(html: string): string {
   return html
@@ -110,7 +221,9 @@ function parseDdgResults(html: string): SearchResult[] {
 // HA docs fetching
 // ============================================================================
 
-async function fetchHaPage(url: string): Promise<{ content: string; title: string }> {
+export async function fetchHaPage(
+  url: string
+): Promise<{ content: string; title: string }> {
   const response = await fetch(url, {
     headers: {
       "User-Agent": "Mozilla/5.0 (compatible; HAVoiceAssistant/1.0)",
@@ -198,13 +311,20 @@ async function fetchGitHubContent(input: string): Promise<string> {
   let componentPath: string;
 
   if (input.startsWith("http")) {
-    const match = input.match(/homeassistant\/components\/(.+)/);
-    if (!match?.[1]) {
+    const parsed = new URL(input);
+    const marker = "/homeassistant/components";
+    const markerIndex = parsed.pathname.indexOf(marker);
+    if (markerIndex === -1) {
       throw new Error(
         `URL must point to a path under homeassistant/components/. Got: ${input}`
       );
     }
-    componentPath = match[1].replace(/^tree\/dev\//, "");
+    componentPath = parsed.pathname
+      .slice(markerIndex + marker.length)
+      .replace(/^\/+|\/+$/g, "");
+    if (!componentPath) {
+      return listGitHubComponentDir("");
+    }
   } else {
     componentPath = input.replace(/^\/+|\/+$/g, "");
   }
@@ -234,7 +354,8 @@ async function fetchGitHubContent(input: string): Promise<string> {
 // ============================================================================
 
 async function execute(
-  args: WebSearchInput
+  args: WebSearchInput,
+  context: { sessionId?: string }
 ): Promise<ToolExecutionResult> {
   const parsed = inputSchema.parse(args);
 
@@ -253,16 +374,30 @@ async function execute(
 
       if (isHaGithubRepo(parsed.url)) {
         const content = await fetchGitHubContent(parsed.url);
+        const integration = getDeviceIntegration(parsed.url);
+        if (integration) {
+          clearDeviceCommandResearchRequirement(context, integration);
+        }
         return {
-          observation: `🔗 GitHub: ${parsed.url}\n\n${content}`,
+          observation:
+            `🔗 GitHub: ${parsed.url}` +
+            `${integration ? `\n✅ Command research completed for ${integration}.` : ""}` +
+            `\n\n${content}`,
           needsScreenshot: false,
           toolSuccess: true,
         };
       }
 
       const { content, title } = await fetchHaPage(parsed.url);
+      const integration = getDeviceIntegration(parsed.url);
+      if (integration) {
+        clearDeviceCommandResearchRequirement(context, integration);
+      }
       return {
-        observation: `📄 Fetched: ${title}\n🔗 URL: ${parsed.url}\n\n${content}`,
+        observation:
+          `📄 Fetched: ${title}\n🔗 URL: ${parsed.url}` +
+          `${integration ? `\n✅ Command research completed for ${integration}.` : ""}` +
+          `\n\n${content}`,
         needsScreenshot: false,
         toolSuccess: true,
       };
@@ -273,8 +408,15 @@ async function execute(
     if (isComponentQuery) {
       try {
         const ghContent = await fetchGitHubContent(parsed.query.trim());
+        const integration = getDeviceIntegration(parsed.query);
+        if (integration) {
+          clearDeviceCommandResearchRequirement(context, integration);
+        }
         return {
-          observation: `🔍 GitHub component lookup for "${parsed.query}":\n\n${ghContent}`,
+          observation:
+            `🔍 GitHub component lookup for "${parsed.query}":` +
+            `${integration ? `\n✅ Command research completed for ${integration}.` : ""}` +
+            `\n\n${ghContent}`,
           needsScreenshot: false,
           toolSuccess: true,
         };
@@ -345,7 +487,7 @@ async function execute(
 export const definition: TvToolDefinition = {
   name: "web_search",
   description:
-    "Search Home Assistant documentation and source code. ONLY use this tool when a command fails and you need to find the correct service call, entity attributes, or integration API. Searches home-assistant.io docs and the HA core GitHub repo (github.com/home-assistant/core). If query is a component name like 'apple_tv', it auto-fetches the component directory listing and services.yaml from GitHub.",
+    "Fetch or search official Home Assistant documentation and source code. Use this only when you are uncertain about a command/service/entity behavior or after a command fails; known commands do not require a search. Device skills contain the relevant home-assistant.io integration page and Home Assistant Core component URL. GitHub searches are restricted to github.com/home-assistant/core.",
   inputSchema,
   execute,
 };

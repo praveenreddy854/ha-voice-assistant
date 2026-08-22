@@ -1,5 +1,21 @@
 # Apple TV — General Navigation
 
+## Official Integration Documentation
+- Documentation: https://www.home-assistant.io/integrations/apple_tv/
+- Home Assistant Core source: https://github.com/home-assistant/core/tree/dev/homeassistant/components/apple_tv
+- If the command and service are clear from this skill, execute them directly without searching.
+- If a command/service is unclear or fails, call `web_search` with the documentation or component-source URL and inspect the result before retrying.
+
+## Mandatory State Guard
+Before every command after the initial power action:
+1. Check `remote.appletv` with `get_device_state` (Home Assistant `GET /api/states/remote.appletv`).
+2. If its state is `off`, power it on with `remote.send_command` and command `wakeup`.
+3. Only then execute the requested navigation, playback, typing, or app command.
+
+The server also enforces this check immediately before command tools so a device that powers off mid-flow is woken before the next action.
+
+If a power, playback, or app command is accepted but the expected state does not change, or a result is `PARTIAL`/`UNKNOWN`, call `web_search` with the Apple TV Home Assistant Core source URL before retrying another Apple TV command.
+
 ## Remote Button Mapping
 - **go_back** = Menu button (`menu` remote command). Exits current view, backs out of menus, pauses/exits video player.
 - **go_home** = Home button (`home` remote command). Returns to the Apple TV home screen.

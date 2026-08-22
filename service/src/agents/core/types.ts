@@ -230,6 +230,16 @@ export interface AgentDefinition {
   maxIterations: number;
 
   /**
+   * Optionally reject complete_task and resume the loop when domain-specific
+   * prerequisites are still outstanding.
+   */
+  validateCompletion?(
+    session: AgentSession,
+    proposedSuccess: boolean,
+    proposedMessage: string
+  ): { allowed: boolean; reason?: string };
+
+  /**
    * Build the initial user message sent to the LLM when creating a new session.
    * This is where domain-specific context (device states, etc.) gets injected.
    */

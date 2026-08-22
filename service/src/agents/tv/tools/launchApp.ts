@@ -103,7 +103,13 @@ async function execute(
     })}`;
   }
 
-  return { observation, needsScreenshot: false };
+  const verified = appLaunchStatus === "success";
+  if (!verified) {
+    observation +=
+      " Command verification failed; inspect the device integration documentation or Home Assistant Core component source before retrying.";
+  }
+
+  return { observation, needsScreenshot: false, toolSuccess: verified };
 }
 
 export const definition: TvToolDefinition = {
