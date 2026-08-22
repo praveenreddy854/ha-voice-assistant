@@ -289,11 +289,12 @@ function handleResult(
       return handleError(session, def, stepResult.error || "Unknown agent error");
 
     case "complete":
-      return handleComplete(
+      return handleProposedCompletion(
         session,
         def,
-        stepResult.message || "Task completed successfully",
-        stepResult.success !== false
+        stepResult,
+        abortSignal,
+        pauseGate
       );
 
     case "tool_calls":
@@ -305,6 +306,63 @@ function handleResult(
         pauseGate
       );
   }
+}
+
+async function handleProposedCompletion(
+  session: AgentSession,
+  def: AgentDefinition,
+  stepResult: AgentStepResult,
+  abortSignal?: AbortSignal,
+  pauseGate?: AgentPauseGate
+): Promise<AgentRunResult> {
+  const message = stepResult.message || "Task completed successfully";
+  const success = stepResult.success !== false;
+  const validation = def.validateCompletion?.(session, success, message);
+
+  if (!validation || validation.allowed) {
+    return handleComplete(session, def, message, success);
+  }
+
+  const toolCallId = stepResult.completionToolCallId;
+  if (!toolCallId) {
+    return handleError(
+      session,
+      def,
+      `Completion rejected but complete_task had no tool-call ID: ${validation.reason || "outstanding prerequisite"}`
+    );
+  }
+
+  const reason =
+    validation.reason ||
+    "Completion rejected because an outstanding prerequisite must be completed first.";
+  console.warn(`[Orchestrator] Rejected complete_task: ${reason}`);
+  addEvent(session.id, "agent.completion.rejected", reason);
+
+  const loop = getOrCreateLoop(def);
+  setActiveSession(session.id);
+  let nextResult: AgentStepResult;
+  try {
+    nextResult = await loop.submitToolResults(
+      session.agentLoopSessionId,
+      [
+        {
+          toolCallId,
+          toolName: "complete_task",
+          result: {
+            success: false,
+            observation: reason,
+            completion_rejected: true,
+          },
+        },
+      ],
+      abortSignal,
+      pauseGate
+    );
+  } finally {
+    setActiveSession(null);
+  }
+
+  return handleResult(session, def, nextResult, abortSignal, pauseGate);
 }
 
 async function handleError(

@@ -172,16 +172,19 @@ All keys are lowercase, all strings are double-quoted.
 { "url_path": "states/media_player.appletv", "entity_id": "media_player.appletv" }
 
 **User:** _Turn on Samsung TV_
-{ "url_path": "media_player/turn_on", "entity_id": "media_player.samsung_tv" }
+{ "url_path": "remote/turn_on", "entity_id": "remote.samsungtv" }
 
 **User:** _Turn off Samsung TV_
-{ "url_path": "media_player/turn_off", "entity_id": "media_player.samsung_tv" }
+{ "url_path": "remote/turn_off", "entity_id": "remote.samsungtv" }
+
+**User:** _Go home on Samsung TV_
+{ "url_path": "remote/send_command", "entity_id": "remote.samsungtv", "service_data": { "command": "KEY_HOME" } }
 
 **User:** _Open YouTube on Samsung TV_
 { "url_path": "media_player/play_media", "entity_id": "media_player.samsung_tv", "service_data": { "media_content_type": "app", "media_content_id": "com.google.ios.youtube" } }
 
 **User:** _Is Samsung TV on?_
-{ "url_path": "states/media_player.samsung_tv", "entity_id": "media_player.samsung_tv" }
+{ "url_path": "states/remote.samsungtv", "entity_id": "remote.samsungtv" }
 
 **User:** _What's Blue's battery level?_
 { "url_path": "states/sensor.blue_battery_level", "entity_id": "sensor.blue_battery_level" }

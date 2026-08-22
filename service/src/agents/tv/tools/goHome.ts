@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { TvToolDefinition, ToolExecutionContext, ToolExecutionResult } from "./types";
-import { executeHACommand } from "../../../ha";
+import { callHAServiceDirect, executeHACommand } from "../../../ha";
 import { delay } from "../../common/utils";
 import { TV_DEFAULT_WAIT_MS } from "../../../config";
+import { getDeviceIntegration } from "./webSearch";
 
 export const inputSchema = z.object({
   remote_entity_id: z.string().describe(
@@ -29,7 +30,14 @@ async function execute(
 
   console.log(`[TV Agent] Executing go_home: ${plainCommand}`);
 
-  const result = await executeHACommand(plainCommand);
+  const result = getDeviceIntegration(parsed.remote_entity_id) === "samsungtv"
+    ? await callHAServiceDirect(
+        "remote",
+        "send_command",
+        parsed.remote_entity_id,
+        { command: "KEY_HOME" }
+      )
+    : await executeHACommand(plainCommand);
 
   if (!result.success) {
     return {
