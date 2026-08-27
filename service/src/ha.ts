@@ -10,6 +10,8 @@ import {
   type AgentMemoryDocument,
 } from "./memory";
 import { getTracer } from "./tracing";
+import type { AgentPauseGate } from "./agents/core/types";
+import { delay } from "./agents/common/utils";
 
 const promptCache = new Map();
 const homeAssistantCacheKey = "HOMEASSISTANT";
@@ -18,12 +20,35 @@ const LIVING_ROOM_GUARD_SET_BUTTON_ENTITY_ID =
   "button.living_room_guard_set_current_position";
 const INTERNAL_WAIT_URL_PATH = "internal/wait";
 const GUARD_SET_WAIT_MS = 15000;
+const MEDIA_TRANSPORT_SERVICES: Record<string, string> = {
+  pause: "media_pause",
+  play: "media_play",
+  play_pause: "media_play_pause",
+  stop: "media_stop",
+  next: "media_next_track",
+  previous: "media_previous_track",
+};
+
+export interface HAExecutionOptions {
+  abortSignal?: AbortSignal;
+  pauseGate?: AgentPauseGate;
+}
+
+async function waitForRunPermission(
+  options?: HAExecutionOptions
+): Promise<void> {
+  options?.abortSignal?.throwIfAborted();
+  await options?.pauseGate?.waitIfPaused();
+  options?.abortSignal?.throwIfAborted();
+}
 
 export async function getHACommandBody(
   command: string,
-  messageHistory?: Array<{ role: string; content: string }>
+  messageHistory?: Array<{ role: string; content: string }>,
+  options?: HAExecutionOptions
 ): Promise<HassServiceCommandBody> {
-  const prompt = await getHAPrompt(command);
+  await waitForRunPermission(options);
+  const prompt = await getHAPrompt(command, options);
 
   // Combine message history with current prompt
   const messages = [
@@ -35,21 +60,26 @@ export async function getHACommandBody(
     const responseText = await generateCompletion({
       model: AI_MODEL_MINI || "",
       messages,
+      abortSignal: options?.abortSignal,
     });
+    await waitForRunPermission(options);
     return JSON.parse(responseText) as HassServiceCommandBody;
   } catch (error) {
+    if (options?.abortSignal?.aborted) {
+      throw options.abortSignal.reason ?? error;
+    }
     console.error("Failed to get Home Assistant command:", error);
     throw new Error("Failed to process Home Assistant command");
   }
 }
 
-async function getHAPrompt(command: string) {
+async function getHAPrompt(command: string, options?: HAExecutionOptions) {
   if (!promptCache.has(homeAssistantCacheKey)) {
     let prompt = fs.readFileSync(
       path.join(__dirname, "prompts", "HOMEASSISTANT.md"),
       "utf8"
     );
-    const deviceStates = await getDeviceStates();
+    const deviceStates = await getDeviceStates(undefined, options);
 
     prompt = prompt.replace(
       "{{{Devices}}}",
@@ -65,13 +95,21 @@ async function getHAPrompt(command: string) {
   return cachedPrompt;
 }
 
-export async function fetchAllStates(): Promise<HassState[]> {
-  const response = await axios.get(`${HOME_ASSISTANT_URL}/api/states`, {
-    headers: {
-      Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-  });
+export async function fetchAllStates(
+  options?: HAExecutionOptions
+): Promise<HassState[]> {
+  await waitForRunPermission(options);
+  const response = await axios.get(
+    `${HOME_ASSISTANT_URL}/api/states`,
+    {
+      headers: {
+        Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      signal: options?.abortSignal,
+    } as any
+  );
+  await waitForRunPermission(options);
 
   if (response.status < 200 || response.status >= 300) {
     throw new Error(`Failed to fetch devices: ${response.statusText}`);
@@ -80,10 +118,38 @@ export async function fetchAllStates(): Promise<HassState[]> {
   return response.data as HassState[];
 }
 
+/** Fetch one entity directly from Home Assistant's state endpoint. */
+export async function getHAEntityState(
+  entityId: string,
+  options?: HAExecutionOptions
+): Promise<HassState> {
+  await waitForRunPermission(options);
+  const response = await axios.get(
+    `${HOME_ASSISTANT_URL}/api/states/${encodeURIComponent(entityId)}`,
+    {
+      headers: {
+        Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      signal: options?.abortSignal,
+    } as any
+  );
+  await waitForRunPermission(options);
+
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(
+      `Failed to fetch state for ${entityId}: ${response.statusText}`
+    );
+  }
+
+  return response.data as HassState;
+}
+
 async function getDeviceStates(
-  devicesEntities?: string[]
+  devicesEntities?: string[],
+  options?: HAExecutionOptions
 ): Promise<Record<string, HassState[]>> {
-  const states = await fetchAllStates();
+  const states = await fetchAllStates(options);
 
   // Create devices object to devices.json
   // const devicesFilePath = path.join(__dirname, "devices.json");
@@ -181,11 +247,13 @@ export const getKnownDeviceStates = async (): Promise<HassState[]> => {
  *
  * @param command - Plain English command like "Turn on Apple TV" or "Scroll right 3 times on apple tv"
  * @param messageHistory - Optional message history for context
+ * @param options - Cooperative pause and cancellation controls for realtime runs
  * @returns Promise with success status and message
  */
 export async function executeHACommand(
   command: string,
-  messageHistory?: Array<{ role: string; content: string }>
+  messageHistory?: Array<{ role: string; content: string }>,
+  options?: HAExecutionOptions
 ): Promise<{ success: boolean; message: string; data?: any }> {
   const span = getTracer().startSpan("ha.command.execute", {
     attributes: {
@@ -195,37 +263,55 @@ export async function executeHACommand(
   });
 
   try {
+    await waitForRunPermission(options);
     const memory = await buildMemoryAwareCommand(command);
+    await waitForRunPermission(options);
     span.setAttribute("ha.memory.context_present", Boolean(memory.context));
     span.setAttribute("ha.memory.ids", memory.memories.map((item) => item.id).join(","));
 
     // Get the HA command body using the existing LLM function
-    const generatedHaBody = await getHACommandBody(memory.command, messageHistory);
+    const generatedHaBody = await getHACommandBody(
+      memory.command,
+      messageHistory,
+      options
+    );
+    const {
+      body: normalizedHaBody,
+      normalizedCount: mediaTransportNormalizedCount,
+    } = normalizeMediaTransportCommands(generatedHaBody);
     const { body: haBody, guardSetApplied } = applyMemoryCommandAugmentations(
-      generatedHaBody,
+      normalizedHaBody,
       command,
       memory.memories
     );
 
     span.setAttribute("ha.command.generated_body", JSON.stringify(generatedHaBody));
     span.setAttribute("ha.command.final_body", JSON.stringify(haBody));
+    span.setAttribute(
+      "ha.command.media_transport_normalized_count",
+      mediaTransportNormalizedCount
+    );
     span.setAttribute("ha.guard_set_current_position.applied", guardSetApplied);
     
     // Handle array of commands (multi-step operations)
     if (Array.isArray(haBody)) {
-      const result = await executeMultipleHACommands(haBody, command);
+      const result = await executeMultipleHACommands(haBody, command, options);
       span.setAttribute("ha.command.success", result.success);
       span.setAttribute("ha.command.result_message", result.message);
       return result;
     }
     
     // Handle single command
-    const result = await executeSingleHACommand(haBody, command);
+    const result = await executeSingleHACommand(haBody, command, options);
     span.setAttribute("ha.command.success", result.success);
     span.setAttribute("ha.command.result_message", result.message);
     return result;
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
+    if (options?.abortSignal?.aborted) {
+      span.setAttribute("ha.command.cancelled", true);
+      throw options.abortSignal.reason ?? err;
+    }
     console.error("Error executing HA command:", err);
     span.setAttribute("ha.command.success", false);
     span.setAttribute("ha.command.error", err.message);
@@ -348,6 +434,48 @@ function normalizeHAUrlPath(urlPath: string): string {
   return normalized;
 }
 
+/**
+ * Prefer Home Assistant's media_player transport services over emulating
+ * playback buttons through remote.send_command. The LLM prompt includes both
+ * APIs because navigation still needs the remote, so enforce this invariant
+ * after generation rather than relying on probabilistic model selection.
+ */
+export function normalizeMediaTransportCommands(
+  body: HassServiceCommandBody
+): { body: HassServiceCommandBody; normalizedCount: number } {
+  let normalizedCount = 0;
+
+  const normalize = (command: HassServiceCommand): HassServiceCommand => {
+    if (normalizeHAUrlPath(command.url_path || "") !== "remote/send_command") {
+      return command;
+    }
+
+    const topLevelCommand = (command as HassServiceCommand & {
+      command?: unknown;
+    }).command;
+    const remoteCommand = command.service_data?.command ?? topLevelCommand;
+    if (typeof remoteCommand !== "string") return command;
+
+    const mediaService =
+      MEDIA_TRANSPORT_SERVICES[remoteCommand.trim().toLowerCase()];
+    if (!mediaService) return command;
+
+    const entityId = command.entity_id.startsWith("remote.")
+      ? `media_player.${command.entity_id.substring("remote.".length)}`
+      : command.entity_id;
+    normalizedCount++;
+    return {
+      url_path: `media_player/${mediaService}`,
+      entity_id: entityId,
+    };
+  };
+
+  return {
+    body: Array.isArray(body) ? body.map(normalize) : normalize(body),
+    normalizedCount,
+  };
+}
+
 function stateLookupEntityId(urlPath: string): string | undefined {
   const parts = urlPath.split("/");
   if (parts.length !== 2 || parts[0] !== "states") {
@@ -359,19 +487,10 @@ function stateLookupEntityId(urlPath: string): string | undefined {
 
 async function executeHAStateLookup(
   entityId: string,
-  originalCommand: string
+  originalCommand: string,
+  options?: HAExecutionOptions
 ): Promise<{ success: boolean; message: string; data?: any }> {
-  const haResponse = await axios.get(
-    `${HOME_ASSISTANT_URL}/api/states/${encodeURIComponent(entityId)}`,
-    {
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
-      },
-    }
-  );
-
-  const state = haResponse.data as HassState;
+  const state = await getHAEntityState(entityId, options);
   const friendlyName = state.attributes?.friendly_name || entityId;
   console.log(`HA State retrieved: ${originalCommand}; Response:`, state);
 
@@ -384,8 +503,10 @@ async function executeHAStateLookup(
 
 async function executeSingleHACommand(
   haBody: HassServiceCommand,
-  originalCommand: string
+  originalCommand: string,
+  options?: HAExecutionOptions
 ): Promise<{ success: boolean; message: string; data?: any }> {
+  await waitForRunPermission(options);
   const urlPath = normalizeHAUrlPath(haBody.url_path || "");
   if (urlPath === INTERNAL_WAIT_URL_PATH) {
     const durationMs =
@@ -393,7 +514,8 @@ async function executeSingleHACommand(
         ? Math.max(0, Math.min(haBody.service_data.duration_ms, 30000))
         : 0;
     if (durationMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, durationMs));
+      await delay(durationMs, options?.abortSignal);
+      await waitForRunPermission(options);
     }
     return {
       success: true,
@@ -421,7 +543,7 @@ async function executeSingleHACommand(
   }
 
   if (stateEntityId) {
-    return executeHAStateLookup(entityId, originalCommand);
+    return executeHAStateLookup(entityId, originalCommand, options);
   }
 
   // Prepare the request body
@@ -441,8 +563,10 @@ async function executeSingleHACommand(
         "Content-Type": "application/json",
         Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
       },
-    }
+      signal: options?.abortSignal,
+    } as any
   );
+  await waitForRunPermission(options);
 
   if (haResponse.status < 200 || haResponse.status >= 300) {
     console.error("Home Assistant error response:", haResponse.data);
@@ -517,7 +641,8 @@ export async function callHAServiceDirect(
  */
 async function executeMultipleHACommands(
   commands: HassServiceCommand[],
-  originalCommand: string
+  originalCommand: string,
+  options?: HAExecutionOptions
 ): Promise<{ success: boolean; message: string; data?: any }> {
   console.log(`Executing ${commands.length} HA commands in sequence for: ${originalCommand}`);
   
@@ -525,10 +650,15 @@ async function executeMultipleHACommands(
   const errors: string[] = [];
   
   for (let i = 0; i < commands.length; i++) {
+    await waitForRunPermission(options);
     const cmd = commands[i];
     console.log(`Executing command ${i + 1}/${commands.length}:`, cmd);
     
-    const result = await executeSingleHACommand(cmd, `Step ${i + 1}: ${cmd.url_path}`);
+    const result = await executeSingleHACommand(
+      cmd,
+      `Step ${i + 1}: ${cmd.url_path}`,
+      options
+    );
     results.push(result.data);
     
     if (!result.success) {
@@ -539,7 +669,7 @@ async function executeMultipleHACommands(
     
     // Add a small delay between commands to allow the device to process
     if (i < commands.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 300));
+      await delay(300, options?.abortSignal);
     }
   }
   

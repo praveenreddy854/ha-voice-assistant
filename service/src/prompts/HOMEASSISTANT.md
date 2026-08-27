@@ -59,7 +59,8 @@ description: "";
    • `<domain>` is the text _before_ the “.” in `entity_id` (e.g. `light`, `media_player`).  
    • Map the user’s verb to a Home Assistant _service_ (e.g. “turn on” → `turn_on`,  
     “pause” → `media_pause`). Use official service names when possible.  
-   • For remote control commands (e.g. "mute", "go back", "click", "reverse", "forward"), use `send_command` service.
+   • For navigation and physical remote-button commands (e.g. "mute", "go back", "click", "reverse", "forward"), use `send_command`.
+   • For direct playback controls, always use the matching `media_player` service: `media_pause`, `media_play`, `media_play_pause`, `media_stop`, `media_next_track`, or `media_previous_track`. Do not translate direct playback controls to `remote/send_command`.
 
    - Extract the command from user input (e.g. "mute TV", "select/ click", "go to home", "scroll left", "scroll right", "scroll up", "scroll down")
    - For time-based commands like "forward 30 seconds" or "reverse 2 minutes", extract the duration
@@ -76,12 +77,6 @@ description: "";
      • menu – Go back / exit current screen
      • home – Go to Home screen (TV app or previous view)
      • top_menu – Go to top-level Home screen (Apps grid view)
-     • play – Start/resume playback
-     • pause – Pause playback
-     • play_pause – Toggle play/pause
-     • stop – Stop playback
-     • next – Skip to next item/track
-     • previous – Skip to previous item/track
      • skip_forward – Fast forward (typically 10–15s)
      • skip_backward – Rewind (typically 10–15s)
      • volume_up – Increase volume
@@ -104,7 +99,7 @@ Successful service call
 {
 "url_path": "<domain>/<service>",
 "entity_id": "<entity_id>",
-"service_data": {} // Optional: only for play_media service
+"service_data": {} // Optional: for services that require additional fields
 }
 
 Successful state lookup
@@ -136,6 +131,9 @@ All keys are lowercase, all strings are double-quoted.
 
 **User:** _Go back on Apple TV_  
 { "url_path": "remote/send_command", "entity_id": "remote.appletv", "service_data": { "command": "menu" } }
+
+**User:** _Pause playback on Apple TV_
+{ "url_path": "media_player/media_pause", "entity_id": "media_player.appletv" }
 
 **User:** _Click on Apple TV_  
 { "url_path": "remote/send_command", "entity_id": "remote.appletv", "service_data": { "command": "select" } }

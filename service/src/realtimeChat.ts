@@ -15,13 +15,15 @@ const HOME_ASSISTANT_DEVICES = (process.env.HOME_ASSISTANT_DEVICES || "")
   .filter(Boolean);
 import { executeHACommand } from "./ha";
 import { runAgent } from "./agents/core";
+import { startTvAgentJob } from "./tvJobManager";
 import {
-  cancelActiveTvJob,
-  getActiveTvJob,
-  pauseActiveTvJob,
-  resumeActiveTvJob,
-  startTvAgentJob,
-} from "./tvJobManager";
+  ActiveRunDomain,
+  cancelActiveRun,
+  getActiveRun,
+  pauseActiveRun,
+  resumeActiveRun,
+  startActiveRun,
+} from "./activeRunManager";
 import { getTracer } from "./tracing";
 import {
   deleteMemory,
@@ -167,6 +169,7 @@ let pendingFollowUp = false;
 let responseInFlight = false;
 let responseCreatePending = false;
 let queuedResponseInstructions: string | null = null;
+let queuedAssistantSpeechInstructions: string[] = [];
 let suppressCancelledResponseDone = false;
 let interruptedAssistantText: string | null = null;
 let readyCallbacks: Array<() => void> = [];
@@ -233,6 +236,12 @@ function sendAzure(payload: JsonRecord): void {
 function requestAssistantSpeech(instructions: string): void {
   if (!azureReady || !isClientActive()) return;
   fullTranscript = "";
+  if (responseInFlight || responseCreatePending) {
+    // Tool-result acknowledgements (for example "On it") must be
+    // spoken before a fast async run's completion announcement.
+    queuedAssistantSpeechInstructions.push(instructions);
+    return;
+  }
   requestDefaultResponse(instructions, "queue");
 }
 
@@ -261,10 +270,16 @@ function requestDefaultResponse(
 }
 
 function flushQueuedResponse(): void {
-  if (queuedResponseInstructions === null) return;
-  const instructions = queuedResponseInstructions;
-  queuedResponseInstructions = null;
-  requestDefaultResponse(instructions || undefined, "queue");
+  if (queuedResponseInstructions !== null) {
+    const instructions = queuedResponseInstructions;
+    queuedResponseInstructions = null;
+    requestDefaultResponse(instructions || undefined, "queue");
+    return;
+  }
+  const assistantSpeech = queuedAssistantSpeechInstructions.shift();
+  if (assistantSpeech) {
+    requestDefaultResponse(assistantSpeech, "queue");
+  }
 }
 
 async function requestDefaultResponseWithMemory(
@@ -284,14 +299,14 @@ async function requestDefaultResponseWithMemory(
   span.setAttribute("realtime.memory.context_present", Boolean(memoryContext));
   span.setAttribute("realtime.memory.has_guard", /guard/i.test(memoryContext));
   span.end();
-  const activeTvJob = getActiveTvJob();
-  const activeRunContext = activeTvJob
-    ? activeTvJob.status === "paused"
-      ? `Runtime state: TV agent job ${activeTvJob.id} is PAUSED at the user's wake phrase. Interpret the user's current message as the follow-up decision. Use control_tv_agent with action "continue" to resume the exact same run, "stop" to cancel it, or "change" with a full replacement prompt when the user changes/corrects the requested action. For an unrelated question, answer it without changing the paused job.`
-      : `Runtime state: TV agent job ${activeTvJob.id} is currently running.`
+  const activeRun = getActiveRun();
+  const activeRunContext = activeRun
+    ? activeRun.status === "paused"
+      ? `Runtime state: ${activeRunLabel(activeRun.domain)} job ${activeRun.id} is PAUSED at the user's wake phrase. Interpret the user's current message as the follow-up decision. Use control_active_run with action "continue" to resume the exact same run, "stop" to cancel it, or "change" with a full replacement prompt when the user changes/corrects the requested action. For an unrelated question, answer it without changing the paused job.`
+      : `Runtime state: ${activeRunLabel(activeRun.domain)} job ${activeRun.id} is currently running.`
     : "";
   const interruptedResponseContext = interruptedAssistantText
-    ? `Runtime state: The user interrupted your previous spoken response after hearing: "${interruptedAssistantText}". If the user says "continue speaking", "keep talking", or asks you to continue your answer, resume that response from where it stopped without repeating it. If they say stop, end the response. If they give a changed request, follow the new request. An explicit request to continue speaking refers to your interrupted answer, not a paused TV job.`
+    ? `Runtime state: The user interrupted your previous spoken response after hearing: "${interruptedAssistantText}". If the user says "continue speaking", "keep talking", or asks you to continue your answer, resume that response from where it stopped without repeating it. If they say stop, end the response. If they give a changed request, follow the new request. An explicit request to continue speaking refers to your interrupted answer, not a paused active run.`
     : "";
   const responseInstructions = [
     memoryContext,
@@ -332,42 +347,58 @@ function recordAudioAppend(base64Audio: string): void {
   audioLog.lastLoggedAt = now;
 }
 
-function shortCompletion(message: string): string {
-  const trimmed = message.trim();
-  if (!trimmed) return "Done";
-  const words = trimmed.split(/\s+/).slice(0, 4);
-  return words.join(" ").replace(/[.!?]+$/, "");
+function activeRunLabel(domain: ActiveRunDomain): string {
+  switch (domain) {
+    case "tv":
+      return "TV agent";
+    case "scheduled_task":
+      return "ScheduledTaskAgent";
+    case "home_assistant":
+      return "Home Assistant action";
+  }
 }
 
-function tvCompletion(prompt: string, resultMessage: string): string {
-  const normalizedPrompt = prompt.toLowerCase();
-  const normalizedResult = resultMessage.toLowerCase();
-  const target = normalizedPrompt.includes("apple tv") ? "Apple TV" : "TV";
+function isInformationalRequest(prompt: string): boolean {
+  const normalized = prompt.trim().toLowerCase();
+  return /^(?:what|when|where|who|why|how|which)\b|^(?:tell me|show me|give me|list|read|check (?:if|whether|the |my )|do i have|are there|is there|any\b|get (?:the )?(?:state|status))|^(?:can|could|would|will) you (?:tell|show|list|check|read)\b/.test(
+    normalized
+  );
+}
 
-  if (/\b(pause|stop)\b/.test(normalizedPrompt)) {
-    return `${target} paused`;
-  }
-  if (/\b(play|resume|continue)\b/.test(normalizedPrompt)) {
-    return `${target} playing`;
-  }
-  if (/\b(unmute)\b/.test(normalizedPrompt)) {
-    return `${target} unmuted`;
-  }
-  if (/\b(mute)\b/.test(normalizedPrompt)) {
-    return `${target} muted`;
-  }
-  if (/\b(wake|turn on|power on)\b/.test(normalizedPrompt)) {
-    return `${target} awake`;
-  }
-  if (/\b(sleep|turn off|power off)\b/.test(normalizedPrompt)) {
-    return `${target} off`;
-  }
+function messageNeedsUserAction(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  return (
+    /\?\s*$/.test(normalized) ||
+    /\b(?:please|need you to|you need to|need (?:more|additional) (?:information|details)|must|confirm|choose|select|provide|tell me which|try again|cannot proceed|can't proceed|unable to proceed|failed|error)\b/.test(
+      normalized
+    )
+  );
+}
 
-  if (/\b(i attempted|attempted|wake|wakeup|standby)\b/.test(normalizedResult)) {
-    return "TV action done";
+function completionSpeechInstructions(options: {
+  prompt: string;
+  message: string;
+  isAnswer?: boolean;
+}): string {
+  const detail = JSON.stringify(options.message || "Done");
+  if (messageNeedsUserAction(options.message)) {
+    return `Explain clearly what happened and exactly what the user needs to do next, using this result: ${detail}. If you ask the user a question, call await_user_followup before speaking. Do not shorten this to a generic completion.`;
   }
+  if (options.isAnswer || isInformationalRequest(options.prompt)) {
+    return `Answer the user's question clearly and completely in natural language using this result: ${detail}. Keep all details needed for the answer; the short command-completion rule does not apply.`;
+  }
+  return 'Say exactly "Done."';
+}
 
-  return shortCompletion(resultMessage || "TV done");
+function failureSpeechInstructions(subject: string, message: string): string {
+  const detail = JSON.stringify(message || `${subject} failed`);
+  return `Explain clearly that the ${subject} failed, using this detail: ${detail}. Include any action the user needs to take. If you ask a question, call await_user_followup before speaking. Do not impose the short success-completion limit.`;
+}
+
+function isHomeAssistantStateResult(data: unknown): boolean {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+  const record = data as Record<string, unknown>;
+  return typeof record.entity_id === "string" && "state" in record;
 }
 
 function needsActionConfirmation(command: string): boolean {
@@ -470,20 +501,265 @@ function startRealtimeTvJob(prompt: string) {
   const started = startTvAgentJob(prompt, {
     onComplete: (message) => {
       sendClient({ type: "async_job_finished", domain: "tv", status: "completed" });
-      requestAssistantSpeech(
-        `Say only this short completion to the user: "${tvCompletion(prompt, message)}".`
-      );
+      requestAssistantSpeech(completionSpeechInstructions({ prompt, message }));
     },
     onError: (message) => {
       sendClient({ type: "async_job_finished", domain: "tv", status: "error" });
-      const detail = (message || "TV job failed").replace(/"/g, "'");
-      requestAssistantSpeech(
-        `The TV job failed. Tell the user in three or four words what went wrong. Do not apologize or add filler. Failure detail: "${detail}".`
-      );
+      requestAssistantSpeech(failureSpeechInstructions("TV command", message));
     },
   });
   sendClient({ type: "async_job_started", domain: "tv", jobId: started.jobId });
   return started;
+}
+
+function startRealtimeScheduledTaskJob(prompt: string) {
+  const started = startActiveRun({
+    domain: "scheduled_task",
+    prompt,
+    execute: async (run) => {
+      const result = await runAgent({
+        agentType: "scheduled_task",
+        userPrompt: run.prompt,
+        maxSteps: 8,
+        abortSignal: run.abortSignal,
+        pauseGate: run.pauseGate,
+      });
+      if (result.status !== "completed" || !result.success) {
+        throw new Error(result.message || "Scheduled task job failed.");
+      }
+      return result.message || "Done";
+    },
+    onComplete: (message, run) => {
+      sendClient({
+        type: "async_job_finished",
+        domain: "scheduled_task",
+        status: "completed",
+        jobId: run.id,
+      });
+      requestAssistantSpeech(
+        completionSpeechInstructions({ prompt: run.prompt, message })
+      );
+    },
+    onError: (message, run) => {
+      sendClient({
+        type: "async_job_finished",
+        domain: "scheduled_task",
+        status: "error",
+        jobId: run.id,
+      });
+      requestAssistantSpeech(
+        failureSpeechInstructions("scheduled task command", message)
+      );
+    },
+  });
+  sendClient({
+    type: "async_job_started",
+    domain: "scheduled_task",
+    jobId: started.jobId,
+  });
+  return started;
+}
+
+function startRealtimeHomeAssistantJob(command: string) {
+  const started = startActiveRun({
+    domain: "home_assistant",
+    prompt: command,
+    execute: async (run) => {
+      const result = await executeHACommand(run.prompt, undefined, {
+        abortSignal: run.abortSignal,
+        pauseGate: run.pauseGate,
+      });
+      if (!result.success) {
+        throw new Error(result.message || "Home Assistant action failed.");
+      }
+      return {
+        message: result.message || "Done",
+        isAnswer: isHomeAssistantStateResult(result.data),
+      };
+    },
+    onComplete: (result, run) => {
+      sendClient({
+        type: "async_job_finished",
+        domain: "home_assistant",
+        status: "completed",
+        jobId: run.id,
+      });
+      requestAssistantSpeech(
+        completionSpeechInstructions({
+          prompt: run.prompt,
+          message: result.message,
+          isAnswer: result.isAnswer,
+        })
+      );
+    },
+    onError: (message, run) => {
+      sendClient({
+        type: "async_job_finished",
+        domain: "home_assistant",
+        status: "error",
+        jobId: run.id,
+      });
+      requestAssistantSpeech(
+        failureSpeechInstructions("Home Assistant command", message)
+      );
+    },
+  });
+  sendClient({
+    type: "async_job_started",
+    domain: "home_assistant",
+    jobId: started.jobId,
+  });
+  return started;
+}
+
+function startReplacementRun(
+  domain: ActiveRunDomain,
+  prompt: string,
+  confirmed: boolean
+) {
+  if (domain === "tv") return startRealtimeTvJob(prompt);
+  if (domain === "scheduled_task") {
+    return startRealtimeScheduledTaskJob(prompt);
+  }
+  if (needsActionConfirmation(prompt) && !confirmed) {
+    return null;
+  }
+  return startRealtimeHomeAssistantJob(prompt);
+}
+
+function controlActiveRun(
+  args: JsonRecord,
+  requiredDomain?: ActiveRunDomain
+): string {
+  const action = typeof args.action === "string" ? args.action : "";
+  if (action !== "continue" && action !== "stop" && action !== "change") {
+    return JSON.stringify({
+      success: false,
+      message:
+        requiredDomain === "tv"
+          ? "Unsupported TV job action."
+          : "Unsupported active-run action.",
+    });
+  }
+  const activeRun = getActiveRun(requiredDomain);
+  const runDescription = requiredDomain === "tv" ? "TV job" : "active run";
+
+  if (!activeRun) {
+    if (requiredDomain === "tv" && action === "change") {
+      const prompt = typeof args.prompt === "string" ? args.prompt.trim() : "";
+      if (!prompt) {
+        return JSON.stringify({
+          success: false,
+          message: "A full replacement TV instruction is required.",
+        });
+      }
+      const started = startRealtimeTvJob(prompt);
+      return JSON.stringify({
+        success: true,
+        jobId: started.jobId,
+        replacedJobId: started.replacedJobId,
+        message: "The prior TV job was replaced. Say exactly: On it.",
+      });
+    }
+    return JSON.stringify({
+      success: false,
+      message:
+        action === "continue"
+          ? `There is no paused ${runDescription} to continue.`
+          : action === "stop"
+            ? `There is no ${runDescription} to stop.`
+            : `There is no ${runDescription} to control.`,
+    });
+  }
+
+  if (action === "continue") {
+    const resumed = resumeActiveRun(requiredDomain);
+    if (!resumed) {
+      return JSON.stringify({
+        success: false,
+        message: `There is no paused ${runDescription} to continue.`,
+      });
+    }
+    sendClient({
+      type: "async_job_started",
+      domain: resumed.domain,
+      jobId: resumed.id,
+    });
+    return JSON.stringify({
+      success: true,
+      jobId: resumed.id,
+      domain: resumed.domain,
+      message:
+        resumed.domain === "tv"
+          ? "The same TV job resumed. Say exactly: On it."
+          : "The same active run resumed. Say exactly: On it.",
+    });
+  }
+
+  if (action === "stop") {
+    const stopped = cancelActiveRun(requiredDomain);
+    if (!stopped) {
+      return JSON.stringify({
+        success: false,
+        message: `There is no ${runDescription} to stop.`,
+      });
+    }
+    sendClient({
+      type: "async_job_finished",
+      domain: stopped.domain,
+      status: "cancelled",
+      jobId: stopped.id,
+    });
+    return JSON.stringify({
+      success: true,
+      jobId: stopped.id,
+      domain: stopped.domain,
+      message:
+        stopped.domain === "tv"
+          ? "The TV job was stopped. Say exactly: Done."
+          : "The active run was stopped. Say exactly: Done.",
+    });
+  }
+
+  if (action === "change") {
+    const prompt = typeof args.prompt === "string" ? args.prompt.trim() : "";
+    if (!prompt) {
+      return JSON.stringify({
+        success: false,
+        message:
+          requiredDomain === "tv"
+            ? "A full replacement TV instruction is required."
+            : `A full replacement ${activeRunLabel(activeRun.domain)} instruction is required.`,
+      });
+    }
+    const requestedDomain =
+      args.domain === "tv" ||
+      args.domain === "scheduled_task" ||
+      args.domain === "home_assistant"
+        ? args.domain
+        : activeRun.domain;
+    const replacementDomain = requiredDomain ?? requestedDomain;
+    const started = startReplacementRun(
+      replacementDomain,
+      prompt,
+      args.confirmed === true
+    );
+    if (!started) {
+      return "confirmation_required: Ask the user to confirm this protected or bulk destructive replacement before executing it.";
+    }
+    return JSON.stringify({
+      success: true,
+      jobId: started.jobId,
+      replacedJobId: activeRun.id,
+      domain: replacementDomain,
+      message:
+        replacementDomain === "tv"
+          ? "The prior TV job was replaced. Say exactly: On it."
+          : "The prior active run was replaced. Say exactly: On it.",
+    });
+  }
+
+  return JSON.stringify({ success: false, message: "Unsupported active-run action." });
 }
 
 async function executeRealtimeTool(
@@ -583,11 +859,12 @@ async function executeRealtimeTool(
       if (needsActionConfirmation(command) && !confirmed) {
         return "confirmation_required: Ask the user to confirm this protected or bulk destructive action before executing it.";
       }
-      const result = await executeHACommand(command);
+      const started = startRealtimeHomeAssistantJob(command);
       return JSON.stringify({
-        success: result.success,
-        message: result.message,
-        data: result.data,
+        success: true,
+        jobId: started.jobId,
+        replacedJobId: started.replacedRun?.id,
+        message: "Home Assistant job started. Say exactly: On it.",
       });
     }
 
@@ -596,15 +873,12 @@ async function executeRealtimeTool(
       if (!prompt.trim()) {
         return "Missing scheduled task prompt.";
       }
-      const result = await runAgent({
-        agentType: "scheduled_task",
-        userPrompt: prompt,
-        maxSteps: 8,
-      });
+      const started = startRealtimeScheduledTaskJob(prompt);
       return JSON.stringify({
-        success: result.success,
-        status: result.status,
-        message: result.message,
+        success: true,
+        jobId: started.jobId,
+        replacedJobId: started.replacedRun?.id,
+        message: "Scheduled task job started. Say exactly: On it.",
       });
     }
 
@@ -618,71 +892,16 @@ async function executeRealtimeTool(
         success: true,
         jobId: started.jobId,
         replacedJobId: started.replacedJobId,
-        message: "TV job started. Say exactly: working on it.",
+        message: "TV job started. Say exactly: On it.",
       });
     }
 
     case "control_tv_agent": {
-      const action = typeof args.action === "string" ? args.action : "";
+      return controlActiveRun(args, "tv");
+    }
 
-      if (action === "continue") {
-        const jobId = resumeActiveTvJob();
-        if (!jobId) {
-          return JSON.stringify({
-            success: false,
-            message: "There is no paused TV job to continue.",
-          });
-        }
-        sendClient({ type: "async_job_started", domain: "tv", jobId });
-        return JSON.stringify({
-          success: true,
-          jobId,
-          message: "The same TV job resumed. Say exactly: continuing.",
-        });
-      }
-
-      if (action === "stop") {
-        const jobId = cancelActiveTvJob();
-        if (!jobId) {
-          return JSON.stringify({
-            success: false,
-            message: "There is no TV job to stop.",
-          });
-        }
-        sendClient({
-          type: "async_job_finished",
-          domain: "tv",
-          status: "cancelled",
-          jobId,
-        });
-        return JSON.stringify({
-          success: true,
-          jobId,
-          message: "The TV job was stopped. Say exactly: stopped.",
-        });
-      }
-
-      if (action === "change") {
-        const prompt = typeof args.prompt === "string" ? args.prompt.trim() : "";
-        if (!prompt) {
-          return JSON.stringify({
-            success: false,
-            message: "A full replacement TV instruction is required.",
-          });
-        }
-        const started = startRealtimeTvJob(prompt);
-        return JSON.stringify({
-          success: true,
-          jobId: started.jobId,
-          replacedJobId: started.replacedJobId,
-          message: "The prior TV job was replaced. Say exactly: changing it.",
-        });
-      }
-
-      return JSON.stringify({
-        success: false,
-        message: "Unsupported TV job action.",
-      });
+    case "control_active_run": {
+      return controlActiveRun(args);
     }
 
     default:
@@ -836,7 +1055,7 @@ const REALTIME_TOOLS = [
     type: "function",
     name: "execute_home_assistant_command",
     description:
-      "Execute an immediate Home Assistant command or read-only state query. Routine commands do not need confirmation. Set confirmed=true only after the user confirms protected opening or bulk destructive actions.",
+      "Start a server-owned Home Assistant command or state-query run. It executes asynchronously so long-running or multi-step actions can be paused, resumed, stopped, or changed. Routine commands do not need confirmation. Set confirmed=true only after the user confirms protected opening or bulk destructive actions.",
     parameters: {
       type: "object",
       properties: {
@@ -858,7 +1077,7 @@ const REALTIME_TOOLS = [
     type: "function",
     name: "run_scheduled_task_agent",
     description:
-      "Run the ScheduledTaskAgent for creating, listing, querying, updating, or cancelling ScheduledTasks. This is blocking inside the active voice turn.",
+      "Start a server-owned ScheduledTaskAgent run for creating, listing, querying, updating, or cancelling ScheduledTasks. It runs asynchronously and can be paused, resumed, stopped, or changed.",
     parameters: {
       type: "object",
       properties: {
@@ -874,7 +1093,7 @@ const REALTIME_TOOLS = [
     type: "function",
     name: "start_tv_agent",
     description:
-      "Start a server-owned async TVAgent job for TV or streaming-app navigation. The assistant should acknowledge with 'working on it' and then stay silent unless user input or completion is needed.",
+      "Start a server-owned async TVAgent job for TV or streaming-app navigation. The assistant should acknowledge with 'On it' and then stay silent unless user input or completion is needed.",
     parameters: {
       type: "object",
       properties: {
@@ -888,9 +1107,42 @@ const REALTIME_TOOLS = [
   },
   {
     type: "function",
+    name: "control_active_run",
+    description:
+      "Control the active TV, ScheduledTaskAgent, or Home Assistant run after the wake phrase has paused it. Use continue to resume the exact run, stop to cancel it, or change to cancel it and start a replacement. For change, provide the complete revised instruction and its target domain.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["continue", "stop", "change"],
+          description: "How to handle the paused active run.",
+        },
+        prompt: {
+          type: "string",
+          description:
+            "Required for change: the user's complete revised instruction.",
+        },
+        domain: {
+          type: "string",
+          enum: ["tv", "scheduled_task", "home_assistant"],
+          description:
+            "For change, the capability that should execute the revised request. Omit to keep the current run's domain.",
+        },
+        confirmed: {
+          type: "boolean",
+          description:
+            "For a changed Home Assistant request, true only after protected or bulk destructive confirmation.",
+        },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    type: "function",
     name: "control_tv_agent",
     description:
-      "Control an existing TVAgent run after the wake phrase has paused it. Use continue to resume the exact same run, stop to cancel it, or change to cancel it and start a replacement with the user's complete revised instruction.",
+      "Compatibility tool for controlling an existing TVAgent run. Prefer control_active_run; this preserves the existing TV-only continue, stop, and change flow.",
     parameters: {
       type: "object",
       properties: {
@@ -912,7 +1164,7 @@ const REALTIME_TOOLS = [
 
 const REALTIME_INSTRUCTIONS = `You are the Realtime Voice Agent for a Home Assistant voice assistant.
 
-After the wake word, the user's live audio is streamed to you. Use Realtime turn detection. Keep speech concise.
+After the wake word, the user's live audio is streamed to you. Use Realtime turn detection. Use terse speech only for routine command acknowledgements and successful completions. Give questions and user-action requests enough detail to be understandable.
 
 Language:
 - Always speak English. Even if the user's request contains words in another language (song names, artist names, place names, etc.), keep your reply in English.
@@ -923,7 +1175,7 @@ Capabilities:
 - Use execute_home_assistant_command for immediate smart-home commands and read-only device state questions.
 - Use run_scheduled_task_agent for ScheduledTask creation, list/query, update, cancellation, and clarification.
 - Use start_tv_agent for TV or streaming-app tasks that require navigation, screenshots, remote actions, app launching, search, typing, or playback.
-- Use control_tv_agent to continue, stop, or change a TVAgent run that was paused by the wake phrase.
+- Use control_active_run to continue, stop, or change any TVAgent, ScheduledTaskAgent, or Home Assistant run that was paused by the wake phrase. control_tv_agent remains available only for compatibility with the existing TV flow.
 - Use web_search when live/current information is needed.
 
 Do not use a fixed priority order. Select the capability by request meaning. If the request is ambiguous, ask a short clarification question before acting.${
@@ -937,7 +1189,7 @@ Known smart-home devices ${HOME_ASSISTANT_DEVICES.join(", ")}.`
 Mic / follow-up policy:
 - An active voice turn remains open for at most 30 seconds so the user can interrupt or answer a follow-up. After that window closes, the user must say the wake word again.
 - If your next spoken response will be a question or a request for confirmation that the user must answer without saying the wake word, call await_user_followup BEFORE producing that response. This keeps the mic open for 30 seconds so the user can answer.
-- Do NOT call await_user_followup for routine completions, acknowledgements ("working on it", "Done"), or any response that does not require a user answer.
+- Do NOT call await_user_followup for routine completions, acknowledgements ("On it", "Done"), or any response that does not require a user answer.
 - The user can say the wake phrase while you are speaking to pause your response. A bare wake phrase is not a question: stop and wait silently for the follow-up utterance.
 - If the follow-up is "continue speaking", "keep talking", or equivalent, continue the interrupted response from where it stopped without repeating the beginning.
 - If the follow-up says stop, remain stopped. If it changes the request, answer the changed request instead.
@@ -950,18 +1202,19 @@ Confirmation policy:
 
 Specialist behavior:
 - Do not narrate tool calls or internal Specialist agent iterations.
-- TVAgent runs are async. When start_tv_agent succeeds, say exactly "working on it" and then stay silent.
-- When control_tv_agent continues a run, say exactly "continuing". When it stops a run, say exactly "stopped". When it changes a run, say exactly "changing it".
-- ScheduledTaskAgent runs are blocking; speak its final message.
-- Completion announcements should usually be three or four words.
+- TVAgent, ScheduledTaskAgent, and Home Assistant runs are server-owned and async. When one starts for a command, say exactly "On it" and then stay silent.
+- When control_active_run or control_tv_agent continues or changes a run, say exactly "On it". When it stops a run, say exactly "Done".
+- After a routine command succeeds, say exactly "Done". Do not restate the command or result.
+- Questions are different: answer them clearly and completely in language the user can understand. Do not shorten an answer to "Done" or impose the command-completion limit.
+- Failures, clarifications, confirmations, and any response requiring user action must explain the relevant detail and what the user needs to do. Do not shorten them to a generic acknowledgement or completion.
 
-Pausing and redirecting a TV action:
-- Saying the wake phrase while a TVAgent is active pauses that exact run; it does not cancel or restart it.
-- Interpret the user's follow-up in context of the paused run. For "continue", "resume", or equivalent, call control_tv_agent with action "continue".
-- For "stop", "cancel", "nevermind", or equivalent, call control_tv_agent with action "stop".
-- If the user corrects, redirects, or replaces the action, call control_tv_agent with action "change" and include the complete revised TV request in prompt.
-- If the follow-up is unrelated, answer it and leave the TVAgent paused. Do not silently resume it.
-- "Continue speaking" or "continue your answer" refers to your interrupted spoken response and must not resume a paused TVAgent. Only resume the TVAgent when the user refers to the TV action or simply says "continue" in that paused-action context.
+Pausing and redirecting an active run:
+- Saying the wake phrase while a TVAgent, ScheduledTaskAgent, or Home Assistant action is active pauses that exact run; it does not cancel or restart it.
+- Interpret the user's follow-up in context of the paused run. For "continue", "resume", or equivalent, call control_active_run with action "continue".
+- For "stop", "cancel", "nevermind", or equivalent, call control_active_run with action "stop".
+- If the user corrects, redirects, or replaces the action, call control_active_run with action "change", include the complete revised request in prompt, and set domain to the capability that should execute it.
+- If the follow-up is unrelated, answer it and leave the active run paused. Do not silently resume it.
+- "Continue speaking" or "continue your answer" refers to your interrupted spoken response and must not resume a paused active run. Only resume the run when the user refers to the active action or simply says "continue" in that paused-action context.
 
 Memory:
 - Use the recent conversation only as short conversational memory.
@@ -1059,6 +1312,7 @@ function connectAzure(onReady: () => void): void {
             if (fullTranscript.trim()) {
               interruptedAssistantText = fullTranscript.trim();
             }
+            queuedAssistantSpeechInstructions = [];
             suppressCancelledResponseDone = true;
             sendAzure({ type: "response.cancel" });
             sendClient({ type: "assistant_interrupted" });
@@ -1131,22 +1385,21 @@ function connectAzure(onReady: () => void): void {
           );
           if (event.transcript) {
             const transcript = String(event.transcript);
-            const activeTvJob = getActiveTvJob();
+            const activeRun = getActiveRun();
             const wakeMatch = matchWakePhrase(transcript);
 
             if (wakeMatch) {
-              const pausedJobId = activeTvJob
-                ? pauseActiveTvJob()
-                : undefined;
+              const pausedRun = activeRun ? pauseActiveRun() : undefined;
               console.log(
-                pausedJobId
-                  ? `[RealtimeChat] Wake phrase paused active TV job ${pausedJobId}`
+                pausedRun
+                  ? `[RealtimeChat] Wake phrase paused active ${pausedRun.domain} job ${pausedRun.id}`
                   : "[RealtimeChat] Wake phrase paused the active spoken response"
               );
               if (fullTranscript.trim()) {
                 interruptedAssistantText = fullTranscript.trim();
               }
               clearPendingAudioResponse();
+              queuedAssistantSpeechInstructions = [];
               pendingAudioResponseRequested = true;
               pendingFollowUp = true;
               lastUserTranscript = "";
@@ -1159,8 +1412,8 @@ function connectAzure(onReady: () => void): void {
               }
               sendClient({
                 type: "agent_run_paused",
-                domain: pausedJobId ? "tv" : "realtime",
-                jobId: pausedJobId,
+                domain: pausedRun?.domain ?? "realtime",
+                jobId: pausedRun?.id,
               });
               sendClient({ type: "user_transcript", text: transcript });
 
@@ -1287,6 +1540,7 @@ function connectAzure(onReady: () => void): void {
     azureReady = false;
     responseCreatePending = false;
     queuedResponseInstructions = null;
+    queuedAssistantSpeechInstructions = [];
     readyCallbacks = [];
     resetAudioLog();
     sendClient({
@@ -1301,6 +1555,7 @@ function connectAzure(onReady: () => void): void {
     azureReady = false;
     responseCreatePending = false;
     queuedResponseInstructions = null;
+    queuedAssistantSpeechInstructions = [];
     readyCallbacks = [];
     resetAudioLog();
     conversationItems.length = 0;
@@ -1342,6 +1597,7 @@ export function setupRealtimeChatProxy(server: http.Server): void {
       responseInFlight = false;
       responseCreatePending = false;
       queuedResponseInstructions = null;
+      queuedAssistantSpeechInstructions = [];
     }
 
     // Connect to Azure (reuses existing session if alive)
@@ -1383,15 +1639,15 @@ export function setupRealtimeChatProxy(server: http.Server): void {
           // the next response no matter what the model decides.
           pendingFollowUp = true;
         } else if (msg.type === "pause_active_agent") {
-          const pausedJobId = pauseActiveTvJob();
-          if (pausedJobId) {
+          const pausedRun = pauseActiveRun();
+          if (pausedRun) {
             console.log(
-              `[RealtimeChat] Client wake phrase paused active TV job ${pausedJobId}`
+              `[RealtimeChat] Client wake phrase paused active ${pausedRun.domain} job ${pausedRun.id}`
             );
             clientWs.send(JSON.stringify({
               type: "agent_run_paused",
-              domain: "tv",
-              jobId: pausedJobId,
+              domain: pausedRun.domain,
+              jobId: pausedRun.id,
             }));
           }
         }

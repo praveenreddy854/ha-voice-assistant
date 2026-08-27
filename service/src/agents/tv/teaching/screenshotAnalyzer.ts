@@ -31,7 +31,11 @@ export async function analyzeScreenshot(
   inferredAction: string;
 }> {
   try {
-    const visionModel = AI_MODEL_ADVANCED || "gpt-5.1-mini";
+    if (!AI_MODEL_ADVANCED) {
+      throw new Error(
+        "AI_MODEL_ADVANCED or its lower-tier fallback must be configured"
+      );
+    }
 
     let previousStepsContext = "";
     if (previousSteps.length > 0) {
@@ -86,7 +90,7 @@ Return JSON:
 Return ONLY the JSON, no other text.`;
 
     const responseText = await generateVisionText({
-      model: visionModel,
+      model: AI_MODEL_ADVANCED,
       prompt,
       imageBase64: screenshotBase64,
       imageContentType: contentType,

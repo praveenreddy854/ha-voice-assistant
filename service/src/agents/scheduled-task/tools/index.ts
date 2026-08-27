@@ -1,4 +1,8 @@
-import type { ToolDefinition } from "../../core/agentLoop";
+import type {
+  AgentToolExecutionOptions,
+  ToolDefinition,
+} from "../../core/agentLoop";
+import type { AgentPauseGate } from "../../core/types";
 import * as findMatchingEntities from "./findMatchingEntities";
 import * as saveScheduledTask from "./saveScheduledTask";
 import * as listTasks from "./listTasks";
@@ -13,6 +17,20 @@ const ALL_TOOLS = [
   deleteTask,
 ] as const;
 
+function pauseGateFrom(
+  options?: AgentToolExecutionOptions
+): AgentPauseGate | undefined {
+  return options?.context.pauseGate;
+}
+
+async function waitForRunPermission(
+  options?: AgentToolExecutionOptions
+): Promise<void> {
+  options?.abortSignal?.throwIfAborted();
+  await pauseGateFrom(options)?.waitIfPaused();
+  options?.abortSignal?.throwIfAborted();
+}
+
 export const SCHEDULED_TASK_TOOLS: ToolDefinition[] = ALL_TOOLS.map((mod) => ({
   type: "function" as const,
   function: {
@@ -21,8 +39,13 @@ export const SCHEDULED_TASK_TOOLS: ToolDefinition[] = ALL_TOOLS.map((mod) => ({
     parameters: {},
     inputSchema: mod.definition.inputSchema,
   },
-  execute: async (args: Record<string, unknown>) => {
+  execute: async (
+    args: Record<string, unknown>,
+    options?: AgentToolExecutionOptions
+  ) => {
+    await waitForRunPermission(options);
     const result = await mod.execute(args as never);
+    await waitForRunPermission(options);
     return result;
   },
 }));
@@ -36,7 +59,8 @@ for (const mod of ALL_TOOLS) {
 
 export async function executeScheduledTaskTool(
   toolName: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  options?: AgentToolExecutionOptions
 ): Promise<{ observation: string; toolSuccess: boolean; raw: unknown }> {
   const executor = EXECUTORS[toolName];
   if (!executor) {
@@ -47,13 +71,16 @@ export async function executeScheduledTaskTool(
     };
   }
   try {
+    await waitForRunPermission(options);
     const raw = (await executor(args)) as { observation?: string };
+    await waitForRunPermission(options);
     return {
       observation: raw.observation ?? `Tool ${toolName} completed.`,
       toolSuccess: true,
       raw,
     };
   } catch (err) {
+    if (options?.abortSignal?.aborted) throw err;
     const message = err instanceof Error ? err.message : String(err);
     return {
       observation: `Tool ${toolName} failed: ${message}`,

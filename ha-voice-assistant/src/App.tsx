@@ -263,7 +263,11 @@ function App() {
           text:
             domain === "tv"
               ? "Paused the active TV command. Listening for your follow-up."
-              : "Paused. Listening for your follow-up.",
+              : domain === "scheduled_task"
+                ? "Paused the scheduled task action. Listening for your follow-up."
+                : domain === "home_assistant"
+                  ? "Paused the Home Assistant action. Listening for your follow-up."
+                  : "Paused. Listening for your follow-up.",
         },
       ]);
     });

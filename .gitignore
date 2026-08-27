@@ -27,3 +27,6 @@ service/models/
 # Secrets / credentials
 *.key
 *.pem
+
+# Grphify
+service/graphify-out
