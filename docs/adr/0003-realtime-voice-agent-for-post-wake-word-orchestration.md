@@ -24,7 +24,7 @@ After wake-word detection, live user audio streams directly to a Realtime Voice 
 
 ## Consequences
 
-- Specialist-agent iterations are silent by default; the assistant speaks only for an async acknowledgement, required user input, or a short completion announcement.
+- Specialist-agent iterations are silent by default; the assistant says "On it" when accepting an async command and "Done" when it succeeds. Questions and responses requiring user action remain complete and understandable.
 - The Realtime Voice Agent can answer general chat directly; chat, direct Home Assistant commands, and Specialist agent delegation are selected by request meaning rather than by fixed priority.
 - Ambiguous capability or action selection is resolved by a short clarification question rather than by guessing.
 - Routine smart-home actions execute without confirmation, but bulk destructive actions and protected opening actions for the front door, back door, or garage door require confirmation.
@@ -33,7 +33,7 @@ After wake-word detection, live user audio streams directly to a Realtime Voice 
 - ScheduledTask creation, listing, querying, cancellation, clarification, and confirmation remain inside the active realtime voice turn; due-time firing remains server-side as described in ADR 0001.
 - ScheduledTask announcement effects use the existing announcement/TTS path at fire time; ScheduledTask action effects use a primitive server-side firing flow (availability check + stored HA command), not the ScheduledTaskAgent and not the Realtime Voice Agent.
 - ScheduledTask action-effect firing may skip, fail, or abort based on current device state, and those exceptions should be announced.
-- Successful ScheduledTask action-effect firing should also announce briefly, typically in three or four words.
+- Successful ScheduledTask action-effect firing should announce "Done"; failures should retain enough detail to explain any user action needed.
 - Recurring ScheduledTask action effects announce every successful occurrence.
 - Async TVAgent runs are server-owned jobs, not frontend-driven loops.
 - Server-side RTSP capture is the primary screenshot source for async TVAgent jobs; browser camera capture is a fallback.

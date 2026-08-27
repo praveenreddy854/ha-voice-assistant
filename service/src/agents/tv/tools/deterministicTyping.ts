@@ -134,8 +134,13 @@ async function checkSuggestion(
   if (!shot) return undefined;
 
   try {
+    if (!AI_MODEL_MINI) {
+      throw new Error(
+        "AI_MODEL_MINI or its AI_MODEL_NANO fallback must be configured"
+      );
+    }
     const raw = await generateVisionText({
-      model: AI_MODEL_MINI || "gpt-4o-mini",
+      model: AI_MODEL_MINI,
       prompt: `Look at this TV screen showing a search keyboard with a horizontal strip of letters.
 Below the keyboard strip there is a row of suggestion pills (small text bubbles with autocomplete suggestions).
 

@@ -52,12 +52,6 @@ function nextDueDate(task: ScheduledTask, now: Date): string | undefined {
   return next.toISOString();
 }
 
-function shortAnnouncement(message: string): string {
-  const words = message.trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return "Task done";
-  return words.slice(0, 4).join(" ").replace(/[.!?]+$/, "");
-}
-
 async function rescheduleOrDelete(task: ScheduledTask, now: Date): Promise<void> {
   const nextDue = nextDueDate(task, now);
   if (!nextDue) {
@@ -99,26 +93,26 @@ async function fireAction(task: ScheduledTask): Promise<FireResult> {
     : undefined;
 
   if (!entityState) {
-    const summary = `${task.title} unavailable`;
-    emitAnnouncement(shortAnnouncement(summary));
+    const summary = `${task.title} could not run because the device was not found`;
+    emitAnnouncement(summary);
     return { outcome: "skipped", summary, deviceStateAtFire };
   }
 
   if (entityState.state === "unavailable" || entityState.state === "unknown") {
-    const summary = `${task.title} skipped`;
-    emitAnnouncement(shortAnnouncement(summary));
+    const summary = `${task.title} could not run because the device is ${entityState.state}`;
+    emitAnnouncement(summary);
     return { outcome: "skipped", summary, deviceStateAtFire };
   }
 
   const result = await executeHACommand(effect.command);
   if (!result.success) {
-    const summary = `${task.title} failed`;
-    emitAnnouncement(shortAnnouncement(summary));
+    const summary = `${task.title} failed. ${result.message}`;
+    emitAnnouncement(summary);
     return { outcome: "failed", summary, deviceStateAtFire };
   }
 
   const summary = `${task.title} done`;
-  emitAnnouncement(shortAnnouncement(summary));
+  emitAnnouncement("Done");
   return { outcome: "succeeded", summary, deviceStateAtFire };
 }
 
@@ -140,7 +134,9 @@ async function fireTask(task: ScheduledTask): Promise<void> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     summary = `${task.title} failed: ${message}`;
-    emitAnnouncement(shortAnnouncement(`${task.title} failed`));
+    emitAnnouncement(
+      `${task.title} failed. Check Home Assistant and try again.`
+    );
   }
 
   const run: ScheduledTaskRun = {

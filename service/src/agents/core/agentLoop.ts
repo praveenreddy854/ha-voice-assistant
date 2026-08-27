@@ -17,8 +17,8 @@ import {
 } from "ai";
 import type {
   ModelMessage,
+  Tool,
   ToolExecutionOptions,
-  ToolSet,
 } from "ai";
 import type { z } from "zod";
 import { AI_MODEL_ADVANCED } from "../../config";
@@ -28,6 +28,13 @@ import type { AgentPauseGate } from "./types";
 // ============================================================================
 // Types
 // ============================================================================
+
+export type AgentToolContext = {
+  pauseGate?: AgentPauseGate;
+  toolExecutionState?: { activeTool: string | null };
+};
+
+export type AgentToolExecutionOptions = ToolExecutionOptions<AgentToolContext>;
 
 export interface ToolDefinition {
   type: "function";
@@ -46,7 +53,7 @@ export interface ToolDefinition {
    */
   execute?: (
     args: Record<string, unknown>,
-    options?: ToolExecutionOptions
+    options?: AgentToolExecutionOptions
   ) => Promise<unknown>;
 }
 
@@ -182,7 +189,7 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
   const maxIterations = config.maxIterations || 20;
 
   // Build AI SDK tool set from our definitions
-  const aiTools: ToolSet = {};
+  const aiTools: Record<string, Tool<any, any, AgentToolContext>> = {};
   for (const def of config.tools) {
     const desc = def.function.description ?? "";
     const schema = def.function.inputSchema ?? jsonSchema(def.function.parameters as any);
@@ -192,7 +199,7 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
       aiTools[def.function.name] = tool({
         description: desc,
         inputSchema: schema as any,
-        execute: async (args: any, options: ToolExecutionOptions) =>
+        execute: async (args: any, options: AgentToolExecutionOptions) =>
           executeFn(args, options),
       });
     } else {
@@ -285,16 +292,20 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
       const systemPrompt = [config.systemPrompt, ...session.systemMessages]
         .filter(Boolean)
         .join("\n\n");
-      const result = await generateText({
+      const sharedToolContext: AgentToolContext = {
+        pauseGate,
+        toolExecutionState: { activeTool: null },
+      };
+      const toolsContext = Object.fromEntries(
+        Object.keys(aiTools).map((toolName) => [toolName, sharedToolContext])
+      );
+      const result = await generateText<typeof aiTools, AgentToolContext>({
         model: azureProvider(model ?? ""),
         tools: aiTools,
         system: systemPrompt,
         messages: session.messages,
         abortSignal,
-        experimental_context: {
-          pauseGate,
-          toolExecutionState: { activeTool: null as string | null },
-        },
+        toolsContext,
         stopWhen: stepCountIs(maxIterations),
         onStepFinish: config.onStepFinish
           ? ({ text, toolCalls, finishReason }) => {

@@ -26,7 +26,7 @@ let currentOnListeningWindowChange:
   | undefined;
 
 // Global handlers for events that arrive outside an active voice turn
-// (e.g. async TV-job completion or follow-up question while the wake-word
+// (e.g. async active-run completion or follow-up question while the wake-word
 // listener is active).
 export type AsyncJobKind = "completed" | "cancelled" | "needs_input" | "error";
 let globalOnAsyncJobEvent: ((event: { kind: AsyncJobKind; domain?: string }) => void) | undefined;

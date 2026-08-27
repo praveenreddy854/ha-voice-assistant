@@ -157,12 +157,7 @@ function buildTools(): ToolDefinition[] {
     if (!TOOLS_NEEDING_EXTERNAL_INPUT.has(toolName)) {
       // Auto-execute: the ToolLoopAgent runs this inside its loop
       def.execute = async (args, options) => {
-        const runContext = options?.experimental_context as
-          | {
-              pauseGate?: AgentPauseGate;
-              toolExecutionState?: { activeTool: string | null };
-            }
-          | undefined;
+        const runContext = options?.context;
         const pauseGate = runContext?.pauseGate;
         const toolExecutionState = runContext?.toolExecutionState ?? {
           activeTool: null,

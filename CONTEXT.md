@@ -31,7 +31,7 @@ A delegated Specialist agent run that continues after the voice turn has delegat
 _Avoid_: Background intent, detached chat.
 
 **Async acknowledgement**:
-A brief spoken confirmation that an Async specialist run has started before the assistant returns to silent progress.
+A command-only spoken confirmation that an Async specialist run has started before the assistant returns to silent progress. It is exactly "On it" or "Working on it"; "On it" is the default.
 _Avoid_: Progress narration, tool-call narration.
 
 **Follow-up voice turn**:
@@ -43,7 +43,7 @@ User speech during a Follow-up voice turn interpreted only as an answer to the p
 _Avoid_: New command, topic switch, paused-session resume.
 
 **Completion announcement**:
-A brief spoken final result after user-requested work completes.
+A routine command's spoken success result after user-requested work completes. It is exactly "Done" or an equally terse equivalent. Answers to user questions and responses requiring user action are not Completion announcements: they remain complete and understandable.
 _Avoid_: Progress narration, detailed run summary.
 
 **Direct Home Assistant command**:
@@ -178,12 +178,14 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 - An **Announcement effect** fires through the existing announcement/TTS path.
 - An **Action effect** fires through a **ScheduledTask firing flow**.
 - A **ScheduledTask firing flow** may skip, fail, or abort an Action effect based on current device state, and then produce a **Firing exception announcement**.
-- A successful **Action effect** produces a short **Firing success announcement**, typically three or four words.
+- A successful **Action effect** produces a terse **Firing success announcement**, normally "Done".
 - A recurring **Action effect** produces a **Firing success announcement** for every successful occurrence.
-- An **Async specialist run** starts with an **Async acknowledgement** such as "working on it".
+- An **Async specialist run** handling a command starts with the **Async acknowledgement** "On it" by default.
 - When a Specialist agent needs user input, the assistant opens a **Follow-up voice turn**.
 - A **Follow-up voice turn** accepts only a **Scoped follow-up answer**.
-- A **Completion announcement** is short, typically three or four words.
+- A routine command's **Completion announcement** is "Done" or an equally terse equivalent.
+- Answers to user questions remain complete and understandable; they are not shortened into **Completion announcements**.
+- Failures, clarification requests, action confirmations, and other responses requiring user action state the relevant detail and what the user needs to do.
 - Async work may run alongside new commands. The only conflict rule is **Replace conflicting TV run**.
 - A **ScheduledTask** has exactly one effect (`announcement` | `action`) and exactly one `recurrenceFamilyId`.
 - A recurring **ScheduledTask** that fires produces one **ScheduledTaskRun** *and* a new **ScheduledTask** (the next occurrence) sharing the same `recurrenceFamilyId`.
@@ -247,13 +249,13 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 > **Domain expert:** "No — the **ScheduledTask firing flow** may skip or abort and produce a **Firing exception announcement**."
 
 > **Dev:** "Should a successful scheduled action stay silent?"
-> **Domain expert:** "No — use a short **Firing success announcement**, usually three or four words."
+> **Domain expert:** "No — use a terse **Firing success announcement**, normally 'Done'."
 
 > **Dev:** "Should a recurring scheduled action announce only the first success?"
 > **Domain expert:** "No — every successful occurrence produces a **Firing success announcement**."
 
 > **Dev:** "Should an async TV request be completely silent from the moment it starts?"
-> **Domain expert:** "No — the assistant should give an **Async acknowledgement** like 'working on it', then continue silently."
+> **Domain expert:** "No — the assistant should say 'On it' as its **Async acknowledgement**, then continue silently."
 
 > **Dev:** "If the **TVAgent** gets blocked after the original command, does the user need to say the wake word again?"
 > **Domain expert:** "No — the assistant asks briefly and opens a **Follow-up voice turn** for the answer."
@@ -268,7 +270,7 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 > **Domain expert:** "No — use **Replace conflicting TV run** because the new TV command is treated as the latest intent."
 
 > **Dev:** "How much should the assistant say after the work finishes?"
-> **Domain expert:** "Use a short **Completion announcement**, such as 'Done' or 'TV is playing'."
+> **Domain expert:** "For a routine successful command, use the **Completion announcement** 'Done'. Give full answers to questions, and explain anything the user must do."
 
 ## Flagged ambiguities
 

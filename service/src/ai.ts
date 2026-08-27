@@ -40,17 +40,34 @@ function isRetryable(error: any): boolean {
 async function withRetry<T>(
   fn: () => Promise<T>,
   maxRetries = 2,
-  baseDelay = 500
+  baseDelay = 500,
+  abortSignal?: AbortSignal
 ): Promise<T> {
   let lastError: any;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
+      abortSignal?.throwIfAborted();
       return await fn();
     } catch (error: any) {
       lastError = error;
+      abortSignal?.throwIfAborted();
       if (attempt === maxRetries || !isRetryable(error)) break;
       const delay = Math.min(baseDelay * Math.pow(2, attempt) * (1 + Math.random() * 0.1), 5000);
-      await new Promise((r) => setTimeout(r, delay));
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = () => {
+          clearTimeout(timer);
+          reject(abortSignal?.reason ?? new Error("Operation aborted"));
+        };
+        const timer = setTimeout(() => {
+          abortSignal?.removeEventListener("abort", onAbort);
+          resolve();
+        }, delay);
+        if (abortSignal?.aborted) {
+          onAbort();
+          return;
+        }
+        abortSignal?.addEventListener("abort", onAbort, { once: true });
+      });
     }
   }
   throw lastError;
@@ -68,16 +85,18 @@ export async function generateCompletion(params: {
   messages: Array<{ role: string; content: string }>;
   maxTokens?: number;
   temperature?: number;
+  abortSignal?: AbortSignal;
 }): Promise<string> {
   return withRetry(async () => {
     const result = await generateText({
       model: azureProvider(params.model),
       messages: params.messages as any,
+      abortSignal: params.abortSignal,
       maxOutputTokens: params.maxTokens ?? 1000,
       ...(params.temperature != null && { temperature: params.temperature }),
     });
     return result.text;
-  });
+  }, 2, 500, params.abortSignal);
 }
 
 /**
@@ -113,8 +132,8 @@ export async function generateVisionText(params: {
           content: [
             { type: "text", text: params.prompt },
             {
-              type: "image",
-              image: params.imageBase64,
+              type: "file",
+              data: { type: "data", data: params.imageBase64 },
               mediaType: params.imageContentType as
                 | "image/jpeg"
                 | "image/png"
