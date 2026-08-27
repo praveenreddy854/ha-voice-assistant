@@ -1,7 +1,9 @@
 import axios, { AxiosRequestConfig, AxiosResponse } from "axios";
 
 export const BASE_URL =
-  process.env.REACT_APP_API_BASE_URL || "http://localhost:3005/api";
+  import.meta.env.VITE_API_BASE_URL ||
+  import.meta.env.REACT_APP_API_BASE_URL ||
+  "http://localhost:3005/api";
 
 export async function httpGet<T = any>(
   urlPath: string,

@@ -1,9 +1,12 @@
-import React from 'react';
-import { render, screen } from '@testing-library/react';
-import App from './App';
+import { render, screen } from "@testing-library/react";
+import Header from "./components/Header";
 
-test('renders learn react link', () => {
-  render(<App />);
-  const linkElement = screen.getByText(/learn react/i);
-  expect(linkElement).toBeInTheDocument();
+test("renders the main navigation", () => {
+  render(<Header activeView="main" onChangeView={() => undefined} />);
+
+  expect(screen.getByText("🏠 HA Voice Assistant")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Assistant" })).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Scheduled Tasks" })
+  ).toBeInTheDocument();
 });
