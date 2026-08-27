@@ -16,6 +16,9 @@ yarn-error.log*
 .DS_Store
 # Ignore coverage output
 coverage/
+.playwright-results/
+playwright-report/
+test-results/
 node_modules/
 
 devices.json
