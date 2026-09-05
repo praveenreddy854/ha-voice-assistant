@@ -107,24 +107,35 @@ Each trace span includes:
 
 Tracing is automatically initialized when the server starts. All TV Agent operations are traced without any additional code changes needed.
 
-### Viewing Traces
+### Viewing Traces and Dashboards
 
-Traces are written to `logs/tv-agent-traces.jsonl`. Each line is a complete trace span in JSON format.
+Open the trace explorer at `http://localhost:3005/telemetry` for individual
+session timelines, prompts, tool calls, and screenshots.
+
+Open `http://localhost:3005/dashboards` for aggregate performance, quality
+proxy, and reliability dashboards. The same dashboard data is available as
+JSON from `GET /api/dashboards` (also aliased as
+`GET /api/telemetry/dashboards`). Supported query parameters are `range`
+(`24h`, `7d`, `30d`, or `all`), `from`, `to`, `agentType`, and `model`.
+
+Traces are written to daily `logs/service-telemetry-YYYY-MM-DD.jsonl` files.
+Each line is a complete OpenTelemetry span in JSON format. The legacy
+`logs/tv-agent-traces.jsonl` file is still read when present.
 
 ### Example Trace Analysis
 
 ```bash
 # View recent traces
-tail -f logs/tv-agent-traces.jsonl
+tail -f logs/service-telemetry-YYYY-MM-DD.jsonl
 
 # Count traces by operation
-grep -o '"name":"[^"]*"' logs/tv-agent-traces.jsonl | sort | uniq -c
+grep -o '"name":"[^"]*"' logs/service-telemetry-YYYY-MM-DD.jsonl | sort | uniq -c
 
 # Search for specific sessions
-grep "session-123" logs/tv-agent-traces.jsonl
+grep "session-123" logs/service-telemetry-YYYY-MM-DD.jsonl
 
 # Extract prompts only
-jq -r 'select(.events[]?.name == "prompt.input") | .events[] | select(.name == "prompt.input") | .attributes."prompt.content"' logs/tv-agent-traces.jsonl
+jq -r 'select(.events[]?.name == "prompt.input") | .events[] | select(.name == "prompt.input") | .attributes."prompt.content"' logs/service-telemetry-YYYY-MM-DD.jsonl
 ```
 
 ### Error Traces

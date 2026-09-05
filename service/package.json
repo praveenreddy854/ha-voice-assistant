@@ -12,7 +12,7 @@
     "traces": "node trace-viewer.js",
     "traces:prompts": "node trace-viewer.js prompts",
     "traces:errors": "node trace-viewer.js errors",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "tsx --test tests/*.test.ts"
   },
   "keywords": [],
   "author": "",

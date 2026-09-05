@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Operations Dashboard</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07111f;
+      --surface: #0d1b2d;
+      --surface-2: #12243a;
+      --border: #213955;
+      --text: #ecf4ff;
+      --muted: #8fa8c3;
+      --cyan: #4bd7ff;
+      --blue: #6d8cff;
+      --green: #45d99a;
+      --amber: #ffc56e;
+      --red: #ff7185;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 10% 0%, rgba(75, 215, 255, 0.13), transparent 30rem),
+        radial-gradient(circle at 90% 15%, rgba(109, 140, 255, 0.13), transparent 32rem),
+        var(--bg);
+      color: var(--text);
+      font: 14px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    a { color: var(--cyan); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    button, select { font: inherit; }
+
+    .shell { max-width: 1500px; margin: 0 auto; padding: 28px; }
+    .topbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 24px;
+    }
+    .eyebrow { color: var(--cyan); font-size: 12px; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
+    h1 { margin: 4px 0 4px; font-size: clamp(28px, 4vw, 44px); line-height: 1.08; letter-spacing: -.03em; }
+    .subtitle { color: var(--muted); max-width: 700px; }
+    .top-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+    .status { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); box-shadow: 0 0 14px var(--green); }
+    .dot.error { background: var(--red); box-shadow: 0 0 14px var(--red); }
+
+    .button, select {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: rgba(13, 27, 45, .9);
+      color: var(--text);
+      min-height: 40px;
+      padding: 8px 12px;
+    }
+    .button { cursor: pointer; font-weight: 700; }
+    .button:hover { border-color: var(--cyan); }
+
+    .filters {
+      display: flex;
+      gap: 12px;
+      align-items: end;
+      flex-wrap: wrap;
+      padding: 14px;
+      margin-bottom: 18px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: rgba(13, 27, 45, .76);
+      backdrop-filter: blur(14px);
+    }
+    .filter { display: grid; gap: 5px; min-width: 160px; }
+    .filter label { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .filter select { width: 100%; }
+    .updated { margin-left: auto; align-self: center; color: var(--muted); font-size: 12px; }
+
+    .metric-grid { display: grid; grid-template-columns: repeat(6, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .metric, .panel {
+      border: 1px solid var(--border);
+      background: linear-gradient(150deg, rgba(18, 36, 58, .96), rgba(10, 23, 39, .92));
+      border-radius: 14px;
+      box-shadow: 0 16px 42px rgba(0, 0, 0, .18);
+    }
+    .metric { padding: 16px; min-height: 122px; }
+    .metric-label { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .metric-value { margin-top: 12px; font-size: 30px; font-weight: 800; letter-spacing: -.03em; }
+    .metric-detail { margin-top: 3px; color: var(--muted); font-size: 12px; }
+
+    .dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(330px, .7fr); gap: 18px; }
+    .stack { display: grid; gap: 18px; align-content: start; }
+    .panel { overflow: hidden; }
+    .panel-header { display: flex; align-items: start; justify-content: space-between; gap: 16px; padding: 17px 18px; border-bottom: 1px solid var(--border); }
+    .panel-header h2 { margin: 0; font-size: 16px; }
+    .panel-header p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+    .panel-body { padding: 18px; }
+
+    .chart { height: 220px; display: flex; align-items: stretch; gap: 8px; padding-top: 16px; }
+    .chart-column { flex: 1; min-width: 14px; display: grid; grid-template-rows: 1fr auto; gap: 8px; text-align: center; }
+    .bar-area { display: flex; align-items: end; justify-content: center; height: 170px; border-bottom: 1px solid var(--border); }
+    .bar { width: min(34px, 80%); min-height: 3px; border-radius: 7px 7px 2px 2px; overflow: hidden; background: var(--surface-2); display: flex; flex-direction: column-reverse; }
+    .bar-success { background: linear-gradient(180deg, #45d99a, #2ca979); }
+    .bar-failure { background: var(--red); }
+    .bar-other { background: var(--blue); }
+    .chart-label { color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .quality-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .quality-stat { padding: 13px; background: rgba(7, 17, 31, .54); border: 1px solid var(--border); border-radius: 10px; }
+    .quality-stat strong { display: block; font-size: 23px; }
+    .quality-stat span { color: var(--muted); font-size: 11px; }
+    .notice { margin-top: 12px; padding: 12px; border: 1px solid rgba(255, 197, 110, .32); border-radius: 10px; background: rgba(255, 197, 110, .07); color: #ffe1ad; font-size: 12px; }
+
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 11px 13px; border-bottom: 1px solid rgba(33, 57, 85, .75); text-align: right; white-space: nowrap; }
+    th { color: var(--muted); font-size: 10px; letter-spacing: .07em; text-transform: uppercase; }
+    th:first-child, td:first-child { text-align: left; }
+    tbody tr:hover { background: rgba(75, 215, 255, .035); }
+    tbody tr:last-child td { border-bottom: 0; }
+    .model-name, .tool-name { color: var(--text); font-weight: 750; }
+    .provider { display: block; color: var(--muted); font-size: 11px; font-weight: 400; }
+    .good { color: var(--green); }
+    .warn { color: var(--amber); }
+    .bad { color: var(--red); }
+    .empty { padding: 34px; text-align: center; color: var(--muted); }
+    .loading { opacity: .52; pointer-events: none; }
+
+    @media (max-width: 1150px) {
+      .metric-grid { grid-template-columns: repeat(3, 1fr); }
+      .dashboard-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 680px) {
+      .shell { padding: 18px 12px; }
+      .topbar { flex-direction: column; }
+      .top-actions { justify-content: flex-start; }
+      .metric-grid { grid-template-columns: repeat(2, 1fr); }
+      .updated { width: 100%; margin-left: 0; }
+      .quality-grid { grid-template-columns: 1fr; }
+      .chart { gap: 3px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell" id="dashboard">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">Home Assistant · Agent operations</div>
+        <h1>Performance &amp; reliability</h1>
+        <div class="subtitle">Operational views built directly from the service's persisted OpenTelemetry spans.</div>
+      </div>
+      <div class="top-actions">
+        <span class="status"><span class="dot" id="statusDot"></span><span id="statusText">Connected</span></span>
+        <a class="button" href="/telemetry">Trace explorer</a>
+        <a class="button" href="/api/dashboards">JSON API</a>
+        <button class="button" type="button" id="refreshButton">Refresh</button>
+      </div>
+    </header>
+
+    <section class="filters" aria-label="Dashboard filters">
+      <div class="filter">
+        <label for="rangeFilter">Time range</label>
+        <select id="rangeFilter">
+          <option value="24h">Last 24 hours</option>
+          <option value="7d">Last 7 days</option>
+          <option value="30d" selected>Last 30 days</option>
+          <option value="all">All history</option>
+        </select>
+      </div>
+      <div class="filter">
+        <label for="agentFilter">Agent</label>
+        <select id="agentFilter"><option value="">All agents</option></select>
+      </div>
+      <div class="filter">
+        <label for="modelFilter">Model</label>
+        <select id="modelFilter"><option value="">All models</option></select>
+      </div>
+      <div class="updated" id="updatedAt">Waiting for telemetry…</div>
+    </section>
+
+    <section class="metric-grid" id="metricGrid"></section>
+
+    <section class="dashboard-grid">
+      <div class="stack">
+        <article class="panel">
+          <div class="panel-header">
+            <div><h2>Activity</h2><p>Successful, failed, and unfinished sessions by UTC day</p></div>
+          </div>
+          <div class="panel-body"><div class="chart" id="timelineChart"></div></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <div><h2>Model performance</h2><p>Model attribution, response time, usage, and outcome proxies</p></div>
+          </div>
+          <div class="table-wrap" id="modelsTable"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <div><h2>Tool reliability</h2><p>Calls, failures, and tail latency by tool</p></div>
+          </div>
+          <div class="table-wrap" id="toolsTable"></div>
+        </article>
+      </div>
+
+      <div class="stack">
+        <article class="panel">
+          <div class="panel-header">
+            <div><h2>Quality signals</h2><p>Existing telemetry proxies</p></div>
+          </div>
+          <div class="panel-body">
+            <div class="quality-grid" id="qualityGrid"></div>
+            <div class="notice" id="qualityNotice"></div>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <div><h2>Agent reliability</h2><p>Outcome and latency by specialist</p></div>
+          </div>
+          <div class="table-wrap" id="agentsTable"></div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const dashboard = document.getElementById('dashboard');
+    const rangeFilter = document.getElementById('rangeFilter');
+    const agentFilter = document.getElementById('agentFilter');
+    const modelFilter = document.getElementById('modelFilter');
+    const refreshButton = document.getElementById('refreshButton');
+
+    async function loadDashboard() {
+      dashboard.classList.add('loading');
+      const params = new URLSearchParams({ range: rangeFilter.value });
+      if (agentFilter.value) params.set('agentType', agentFilter.value);
+      if (modelFilter.value) params.set('model', modelFilter.value);
+      try {
+        const response = await fetch(`/api/dashboards?${params}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        updateSelect(agentFilter, data.options.agentTypes, 'All agents');
+        updateSelect(modelFilter, data.options.models, 'All models');
+        renderMetrics(data.overview);
+        renderTimeline(data.timeline);
+        renderModels(data.models);
+        renderAgents(data.agents);
+        renderTools(data.tools);
+        renderQuality(data.overview, data.quality);
+        document.getElementById('updatedAt').textContent = `Updated ${new Date(data.generatedAt).toLocaleTimeString()}`;
+        setConnection(true, `${data.overview.sessions} sessions`);
+      } catch (error) {
+        setConnection(false, 'Dashboard API unavailable');
+        document.getElementById('updatedAt').textContent = error.message;
+      } finally {
+        dashboard.classList.remove('loading');
+      }
+    }
+
+    function updateSelect(select, values, allLabel) {
+      const selected = select.value;
+      select.innerHTML = `<option value="">${allLabel}</option>` + values
+        .map(value => `<option value="${esc(value)}">${esc(value)}</option>`)
+        .join('');
+      if (values.includes(selected)) select.value = selected;
+    }
+
+    function renderMetrics(data) {
+      const metrics = [
+        ['Sessions', formatNumber(data.sessions), `${data.activeSessions} active`],
+        ['Reported success', formatPercent(data.reportedSuccessRate), `${data.successfulSessions} successful · ${data.failedSessions} failed`],
+        ['P50 duration', formatDuration(data.p50DurationMs), 'End-to-end session time'],
+        ['P95 duration', formatDuration(data.p95DurationMs), 'Includes external waits'],
+        ['Tool success', formatPercent(data.toolSuccessRate), 'Across all tool executions'],
+        ['Model calls', formatNumber(data.modelCalls), `${compactNumber(data.inputTokens + data.outputTokens)} tokens captured`],
+      ];
+      document.getElementById('metricGrid').innerHTML = metrics.map(([label, value, detail]) => `
+        <article class="metric">
+          <div class="metric-label">${label}</div>
+          <div class="metric-value">${value}</div>
+          <div class="metric-detail">${detail}</div>
+        </article>`).join('');
+    }
+
+    function renderTimeline(rows) {
+      const chart = document.getElementById('timelineChart');
+      if (!rows.length) {
+        chart.innerHTML = '<div class="empty">No sessions in this time range.</div>';
+        return;
+      }
+      const max = Math.max(...rows.map(row => row.sessions), 1);
+      chart.innerHTML = rows.map(row => {
+        const height = Math.max(3, Math.round((row.sessions / max) * 100));
+        const success = Math.round((row.successes / Math.max(row.sessions, 1)) * 100);
+        const failure = Math.round((row.failures / Math.max(row.sessions, 1)) * 100);
+        const other = Math.max(0, 100 - success - failure);
+        return `<div class="chart-column" title="${esc(row.date)}: ${row.sessions} sessions, ${row.successes} successful, ${row.failures} failed">
+          <div class="bar-area"><div class="bar" style="height:${height}%">
+            <div class="bar-success" style="height:${success}%"></div>
+            <div class="bar-failure" style="height:${failure}%"></div>
+            <div class="bar-other" style="height:${other}%"></div>
+          </div></div>
+          <div class="chart-label">${esc(row.date.slice(5))}</div>
+        </div>`;
+      }).join('');
+    }
+
+    function renderModels(rows) {
+      document.getElementById('modelsTable').innerHTML = table(rows, [
+        ['Model', row => `<span class="model-name">${esc(row.model)}</span><span class="provider">${esc(row.provider)}</span>`],
+        ['Sessions', row => row.sessions],
+        ['Calls', row => row.calls],
+        ['Success', row => outcome(row.reportedSuccessRate)],
+        ['Clean run', row => formatPercent(row.cleanRunRate)],
+        ['P50 model', row => formatDuration(row.p50ResponseTimeMs)],
+        ['P95 model', row => formatDuration(row.p95ResponseTimeMs)],
+        ['Avg input', row => formatNumber(row.averageInputTokens)],
+        ['Avg output', row => formatNumber(row.averageOutputTokens)],
+        ['Tokens/success', row => formatNumber(row.tokensPerSuccessfulSession)],
+      ], 'Model metadata will appear for new sessions; historical spans are grouped as unknown (legacy).');
+    }
+
+    function renderAgents(rows) {
+      document.getElementById('agentsTable').innerHTML = table(rows, [
+        ['Agent', row => `<span class="model-name">${esc(row.agentType)}</span>`],
+        ['Runs', row => row.sessions],
+        ['Success', row => outcome(row.reportedSuccessRate)],
+        ['Tool failures', row => formatPercent(row.toolFailureRate)],
+        ['P50', row => formatDuration(row.p50DurationMs)],
+        ['P95', row => formatDuration(row.p95DurationMs)],
+        ['Avg steps', row => row.averageSteps.toFixed(1)],
+      ], 'No agent sessions in this time range.');
+    }
+
+    function renderTools(rows) {
+      document.getElementById('toolsTable').innerHTML = table(rows, [
+        ['Tool', row => `<span class="tool-name">${esc(row.toolName)}</span>`],
+        ['Calls', row => row.calls],
+        ['Failures', row => row.failures ? `<span class="bad">${row.failures}</span>` : '0'],
+        ['Success', row => outcome(row.successRate)],
+        ['Average', row => formatDuration(row.averageDurationMs)],
+        ['P95', row => formatDuration(row.p95DurationMs)],
+      ], 'No tool calls in this time range.');
+    }
+
+    function renderQuality(overview, quality) {
+      const items = [
+        ['Reported success', formatPercent(overview.reportedSuccessRate)],
+        ['Clean-run success', formatPercent(overview.cleanRunRate)],
+        ['Single-step success', formatPercent(overview.singleStepSuccessRate)],
+      ];
+      document.getElementById('qualityGrid').innerHTML = items.map(([label, value]) => `
+        <div class="quality-stat"><strong>${value}</strong><span>${label}</span></div>`).join('');
+      document.getElementById('qualityNotice').textContent = quality.message;
+    }
+
+    function table(rows, columns, emptyMessage) {
+      if (!rows.length) return `<div class="empty">${emptyMessage}</div>`;
+      return `<table><thead><tr>${columns.map(([label]) => `<th>${label}</th>`).join('')}</tr></thead>
+        <tbody>${rows.map(row => `<tr>${columns.map(([, value]) => `<td>${value(row)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+    }
+
+    function outcome(value) {
+      if (value == null) return '—';
+      const cls = value >= .9 ? 'good' : value >= .75 ? 'warn' : 'bad';
+      return `<span class="${cls}">${formatPercent(value)}</span>`;
+    }
+
+    function formatPercent(value) { return value == null ? '—' : `${(value * 100).toFixed(1)}%`; }
+    function formatNumber(value) { return value == null ? '—' : Math.round(value).toLocaleString(); }
+    function compactNumber(value) { return value ? Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value) : '0'; }
+    function formatDuration(ms) {
+      if (ms == null) return '—';
+      if (ms < 1000) return `${Math.round(ms)}ms`;
+      if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+      return `${(ms / 60000).toFixed(1)}m`;
+    }
+    function esc(value) {
+      return String(value).replace(/[&<>'"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character]);
+    }
+    function setConnection(ok, text) {
+      document.getElementById('statusDot').classList.toggle('error', !ok);
+      document.getElementById('statusText').textContent = text;
+    }
+
+    [rangeFilter, agentFilter, modelFilter].forEach(element => element.addEventListener('change', loadDashboard));
+    refreshButton.addEventListener('click', loadDashboard);
+    loadDashboard();
+    setInterval(loadDashboard, 30000);
+  </script>
+</body>
+</html>

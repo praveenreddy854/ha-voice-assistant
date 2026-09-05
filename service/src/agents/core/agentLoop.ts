@@ -71,6 +71,22 @@ export interface StepEvent {
   text: string;
   toolCalls: Array<{ toolName: string; args: unknown }>;
   finishReason: string;
+  requestModel: string;
+  responseModel?: string;
+  responseId?: string;
+  provider: string;
+  usage: {
+    inputTokens?: number;
+    outputTokens?: number;
+    reasoningTokens?: number;
+    cacheReadTokens?: number;
+    totalTokens?: number;
+  };
+  performance: {
+    responseTimeMs?: number;
+    stepTimeMs?: number;
+    outputTokensPerSecond?: number;
+  };
   /** Snapshot of the conversation messages at the time of this step. */
   messages: ModelMessage[];
   /** Per-session system context sent with this step, such as retrieved memory. */
@@ -308,7 +324,7 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
         toolsContext,
         stopWhen: stepCountIs(maxIterations),
         onStepFinish: config.onStepFinish
-          ? ({ text, toolCalls, finishReason }) => {
+          ? ({ text, toolCalls, finishReason, usage, performance, response }) => {
               stepCounter++;
               config.onStepFinish!({
                 stepNumber: stepCounter,
@@ -318,6 +334,22 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
                   args: (tc as { input?: unknown }).input,
                 })),
                 finishReason: finishReason || "unknown",
+                requestModel: model ?? "unknown",
+                responseModel: response.modelId || model || undefined,
+                responseId: response.id,
+                provider: "azure.ai.openai",
+                usage: {
+                  inputTokens: usage.inputTokens,
+                  outputTokens: usage.outputTokens,
+                  reasoningTokens: usage.outputTokenDetails?.reasoningTokens,
+                  cacheReadTokens: usage.inputTokenDetails?.cacheReadTokens,
+                  totalTokens: usage.totalTokens,
+                },
+                performance: {
+                  responseTimeMs: performance.responseTimeMs,
+                  stepTimeMs: performance.stepTimeMs,
+                  outputTokensPerSecond: performance.outputTokensPerSecond,
+                },
                 messages: [...session.messages],
                 systemMessages: [...session.systemMessages],
               });

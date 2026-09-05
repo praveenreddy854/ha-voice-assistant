@@ -46,6 +46,18 @@ export interface TraceLLMStep {
   stepNumber: number;
   timestamp: string;
   finishReason: string;
+  requestModel?: string;
+  responseModel?: string;
+  responseId?: string;
+  provider?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  cacheReadTokens?: number;
+  totalTokens?: number;
+  responseTimeMs?: number;
+  stepTimeMs?: number;
+  outputTokensPerSecond?: number;
   text: string;
   toolCalls: TraceToolCall[];
   /** Per-run system context, including retrieved memory injected before the step. */
@@ -279,9 +291,38 @@ export function addLLMStep(sessionId: string, step: TraceLLMStep): void {
       })
     : undefined;
 
+  const now = Date.now();
+  const responseTimeMs = Math.max(step.responseTimeMs ?? 0, 0);
+  const modelAttributes: Record<string, string | number> = {};
+  setOptionalAttribute(modelAttributes, "gen_ai.request.model", step.requestModel);
+  setOptionalAttribute(modelAttributes, "gen_ai.response.model", step.responseModel);
+  setOptionalAttribute(modelAttributes, "gen_ai.response.id", step.responseId);
+  setOptionalAttribute(modelAttributes, "gen_ai.provider.name", step.provider);
+  setOptionalAttribute(modelAttributes, "gen_ai.usage.input_tokens", step.inputTokens);
+  setOptionalAttribute(modelAttributes, "gen_ai.usage.output_tokens", step.outputTokens);
+  setOptionalAttribute(
+    modelAttributes,
+    "gen_ai.usage.reasoning.output_tokens",
+    step.reasoningTokens
+  );
+  setOptionalAttribute(
+    modelAttributes,
+    "gen_ai.usage.cache_read.input_tokens",
+    step.cacheReadTokens
+  );
+  setOptionalAttribute(modelAttributes, "agent.step.total_tokens", step.totalTokens);
+  setOptionalAttribute(modelAttributes, "agent.step.response_time_ms", step.responseTimeMs);
+  setOptionalAttribute(modelAttributes, "agent.step.total_time_ms", step.stepTimeMs);
+  setOptionalAttribute(
+    modelAttributes,
+    "agent.step.output_tokens_per_second",
+    step.outputTokensPerSecond
+  );
+
   const llmSpan = tracer.startSpan(
     "agent.step.llm",
     {
+      startTime: new Date(now - responseTimeMs),
       attributes: {
         "agent.session.id": sessionId,
         "agent.type": session.agentType,
@@ -294,11 +335,12 @@ export function addLLMStep(sessionId: string, step: TraceLLMStep): void {
           ? JSON.stringify(step.systemMessages)
           : "",
         "agent.step.messages": sanitizedMessages ? JSON.stringify(sanitizedMessages) : "",
+        ...modelAttributes,
       },
     },
     session.rootContext
   );
-  llmSpan.end();
+  llmSpan.end(new Date(now));
 }
 
 export function trackToolResult(sessionId: string, result: TraceToolResult): void {
@@ -636,6 +678,27 @@ function hydrateLlmStep(traceEntry: AgentTrace, span: ExportedTelemetrySpan): vo
     stepNumber,
     timestamp: hrTimeToISOString(span.startTime),
     finishReason: getStringAttribute(span.attributes, "agent.step.finish_reason") || "unknown",
+    requestModel: getStringAttribute(span.attributes, "gen_ai.request.model"),
+    responseModel: getStringAttribute(span.attributes, "gen_ai.response.model"),
+    responseId: getStringAttribute(span.attributes, "gen_ai.response.id"),
+    provider: getStringAttribute(span.attributes, "gen_ai.provider.name"),
+    inputTokens: getNumberAttribute(span.attributes, "gen_ai.usage.input_tokens"),
+    outputTokens: getNumberAttribute(span.attributes, "gen_ai.usage.output_tokens"),
+    reasoningTokens: getNumberAttribute(
+      span.attributes,
+      "gen_ai.usage.reasoning.output_tokens"
+    ),
+    cacheReadTokens: getNumberAttribute(
+      span.attributes,
+      "gen_ai.usage.cache_read.input_tokens"
+    ),
+    totalTokens: getNumberAttribute(span.attributes, "agent.step.total_tokens"),
+    responseTimeMs: getNumberAttribute(span.attributes, "agent.step.response_time_ms"),
+    stepTimeMs: getNumberAttribute(span.attributes, "agent.step.total_time_ms"),
+    outputTokensPerSecond: getNumberAttribute(
+      span.attributes,
+      "agent.step.output_tokens_per_second"
+    ),
     text: getStringAttribute(span.attributes, "agent.step.text") || "",
     toolCalls,
     systemMessages,
@@ -777,6 +840,22 @@ function normalizeAttributes(data?: Record<string, unknown>): Record<string, str
   }
 
   return normalized;
+}
+
+function setOptionalAttribute(
+  attributes: Record<string, string | number>,
+  key: string,
+  value: string | number | undefined
+): void {
+  if (typeof value === "number") {
+    if (Number.isFinite(value)) {
+      attributes[key] = value;
+    }
+    return;
+  }
+  if (value) {
+    attributes[key] = value;
+  }
 }
 
 function extractEventData(attributes: Record<string, unknown>): Record<string, unknown> | undefined {
