@@ -64,3 +64,12 @@ if (fs.existsSync(traceViewerSrc)) {
   fs.copyFileSync(traceViewerSrc, traceViewerDest);
   console.log("Copied traceViewer.html to dist/tracing/");
 }
+
+// Also copy telemetry dashboard HTML
+const dashboardViewerSrc = path.join(__dirname, "..", "src", "tracing", "dashboardViewer.html");
+const dashboardViewerDest = path.join(__dirname, "..", "dist", "tracing", "dashboardViewer.html");
+if (fs.existsSync(dashboardViewerSrc)) {
+  fs.mkdirSync(path.dirname(dashboardViewerDest), { recursive: true });
+  fs.copyFileSync(dashboardViewerSrc, dashboardViewerDest);
+  console.log("Copied dashboardViewer.html to dist/tracing/");
+}

@@ -44,6 +44,7 @@ import { saveScreenshot, getLatestScreenshot } from "./agents/common/screenshotS
 import { isRtspMode, startRtspCapture, stopRtspCapture } from "./agents/common/rtspCapture";
 import { startGestureMonitor } from "./gestureMonitor";
 import { traceRouter } from "./tracing/traceApi";
+import { dashboardRouter } from "./tracing/dashboardApi";
 import { setupRealtimeChatProxy } from "./realtimeChat";
 import { addAnnouncementClient } from "./announcementBus";
 import { startScheduledTaskFirer } from "./scheduledTaskFirer";
@@ -113,6 +114,7 @@ app.use(payloadTooLargeHandler);
 
 // ── Trace viewer routes ──
 app.use(traceRouter);
+app.use(dashboardRouter);
 
 // Serve telemetry viewer HTML
 app.get("/telemetry", (_req, res) => {
@@ -121,6 +123,10 @@ app.get("/telemetry", (_req, res) => {
 
 app.get("/traces", (_req, res) => {
   res.redirect("/telemetry");
+});
+
+app.get("/dashboards", (_req, res) => {
+  res.sendFile(path.join(__dirname, "./tracing/dashboardViewer.html"));
 });
 
 startDeviceStateLogging();
@@ -1210,6 +1216,7 @@ const server = app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
   console.log(`Visit http://localhost:${port} to access the application`);
   console.log(`Telemetry Viewer: http://localhost:${port}/telemetry`);
+  console.log(`Telemetry Dashboards: http://localhost:${port}/dashboards`);
 });
 
 setupRealtimeChatProxy(server);
