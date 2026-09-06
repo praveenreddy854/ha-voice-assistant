@@ -16,6 +16,7 @@ import {
   stepCountIs,
 } from "ai";
 import type {
+  LanguageModel,
   ModelMessage,
   Tool,
   ToolExecutionOptions,
@@ -190,16 +191,17 @@ interface GenerateResultShape {
     }>;
     readonly finishReason: string;
   }>;
-  readonly response: {
-    readonly messages: ReadonlyArray<ModelMessage>;
-  };
+  readonly responseMessages: ReadonlyArray<ModelMessage>;
 }
 
 // ============================================================================
 // Implementation
 // ============================================================================
 
-export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
+export function createAgentLoop(
+  config: AgentLoopConfig,
+  resolveModel: (modelId: string) => LanguageModel = azureProvider
+): AgentLoop {
   const sessions = new Map<string, AgentLoopSession>();
   const model = config.model || AI_MODEL_ADVANCED;
   const maxIterations = config.maxIterations || 20;
@@ -316,7 +318,7 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
         Object.keys(aiTools).map((toolName) => [toolName, sharedToolContext])
       );
       const result = await generateText<typeof aiTools, AgentToolContext>({
-        model: azureProvider(model ?? ""),
+        model: resolveModel(model ?? ""),
         tools: aiTools,
         system: systemPrompt,
         messages: session.messages,
@@ -378,9 +380,9 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
       session.currentIteration++;
     }
 
-    // Store the response messages so we can resume
-    const responseMessages = result.response.messages;
-    session.messages.push(...(responseMessages as ModelMessage[]));
+    // AI SDK 7's response.messages contains only the final step. Preserve every
+    // generated tool call/result so external-input continuations keep their history.
+    session.messages.push(...result.responseMessages);
 
     // Check if complete_task was called
     const allToolCalls = result.steps.flatMap((s) => s.toolCalls);
