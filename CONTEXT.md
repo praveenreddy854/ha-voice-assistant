@@ -118,6 +118,28 @@ _Avoid_: Device-only memory, memory category.
 A background process that turns recent interactions and explicit memory requests into durable Persistent agent memory.
 _Avoid_: L3 memory scan, trace summarization.
 
+### Task execution learning
+
+**Verified task outcome**:
+A result supported by observed evidence or explicit user feedback that the requested smart-home objective was achieved.
+_Avoid_: Reported success, successful tool call.
+
+**Task step**:
+An intermediate smart-home objective within a multi-step agent request, such as making Disney+ ready for use on the requested Apple TV.
+_Avoid_: Tool call, remote-button press.
+
+**Execution method**:
+An alternative way to achieve a Task step from a particular device or app state.
+_Avoid_: Task step, entire task.
+
+**Execution history summary**:
+A compact account of comparable attempts at an Execution method, including observed outcomes and time spent, with references to the original interactions.
+_Avoid_: Entire conversation, persistent user preference, reported success alone.
+
+**Execution record**:
+An account of one attempt at an Execution method, including its observed result and time spent.
+_Avoid_: Execution history summary, verified success alone.
+
 ### Scheduled tasks
 
 **ScheduledTask**:
@@ -144,6 +166,15 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 
 ## Relationships
 
+- A multi-step agent request contains several **Task step**s, each of which may have multiple applicable **Execution method**s.
+- An **Execution method** may involve one or several device actions to achieve the same **Task step**.
+- Completing an individual **Task step** does not establish a **Verified task outcome** for the whole request.
+- An **Execution history summary** describes an **Execution method** using evidence from successful and failed attempts in comparable circumstances.
+- An **Execution history summary** draws on **Execution record**s for comparable attempts; an **Execution record** can describe success, failure, or an outcome that remains unverified.
+- An **Execution history summary** describes past attempts, while **Persistent agent memory** holds durable preferences, facts, and guidance.
+- A **Specialist agent** chooses **Execution method**s using the current request, current observations, and relevant **Execution history summary** evidence.
+- **Execution history summary** evidence can be reused across household devices and assistant channels, with its source device, app, starting state, and time identified.
+- Sharing **Execution history summary** evidence does not merge the separate browser and Siri **Short conversational memory** scopes.
 - The **Realtime Voice Agent** is the single post-wake-word voice entry point.
 - A **Realtime voice turn** starts after wake-word detection and is handled as live audio, not as a finalized command transcript.
 - The **Voice turn boundary** is owned by the realtime voice session, not by browser-side command recording.
@@ -193,6 +224,21 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 - Active and history live in **separate Cosmos containers**: `scheduled-tasks` (active upcoming only) and `scheduled-tasks-history` (all past runs).
 
 ## Example dialogue
+
+> **Dev:** "Are directly launching Disney+ and opening it with remote navigation different Task steps?"
+> **Domain expert:** "No — they are different **Execution method**s for the same **Task step**: Disney+ is open and ready on the requested Apple TV."
+
+> **Dev:** "If Disney+ opens successfully, have we fulfilled 'Play The Mandalorian on Disney+ on Apple TV'?"
+> **Domain expert:** "No — that is one completed **Task step**; a **Verified task outcome** for the request needs evidence that the requested content is playing on the requested device."
+
+> **Dev:** "Does an Execution history summary contain every conversation about Disney+?"
+> **Domain expert:** "No — it describes comparable attempts at an **Execution method**, including their successes and failures, and points back to the original interactions for supporting detail."
+
+> **Dev:** "Does a method's past score determine what the Specialist agent must do next?"
+> **Domain expert:** "No — the **Execution history summary** supplies evidence; the **Specialist agent** chooses an **Execution method** for the current request and circumstances."
+
+> **Dev:** "Can a Siri request benefit from a Disney+ method learned during a browser voice request?"
+> **Domain expert:** "Yes — the **Execution history summary** is shared evidence, but 'do that again' in Siri still refers to Siri's own **Short conversational memory**."
 
 > **Dev:** "If a user says 'remind me to take medicine at 9 AM', is that the same kind of thing as 'start vacuuming at 9 AM'?"
 > **Domain expert:** "Yes — both are **ScheduledTask**s. The medicine one has an announcement effect; the vacuum one has an action effect. The latter gets disambiguated at create time — 'vacuuming' becomes 'start roborock vacuum' once the agent has confirmed the entity."
@@ -274,6 +320,7 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 
 ## Flagged ambiguities
 
+- "Step" in execution learning means a **Task step**, an intermediate objective; it does not necessarily correspond to one tool call or remote-button press.
 - "Main agent" means **Realtime Voice Agent** when discussing the post-wake-word voice entry point.
 - "Sub-agent" means **Specialist agent** when discussing delegated TV or ScheduledTask behavior.
 - "TV agents" was a typo. The resolved term is one **TVAgent** with skills and tools, not multiple TV-specific agents.
