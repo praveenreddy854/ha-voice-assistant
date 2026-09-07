@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { mockBackend } from "./backendFixture";
 
 test("loads the assistant and scheduled-task views without browser errors", async ({
   page,
@@ -9,6 +10,7 @@ test("loads the assistant and scheduled-task views without browser errors", asyn
   });
   page.on("pageerror", (error) => browserErrors.push(error.message));
 
+  await mockBackend(page);
   const response = await page.goto("/", { waitUntil: "networkidle" });
   expect(response?.ok()).toBe(true);
   await expect(page).toHaveTitle("HA Voice Assistant");

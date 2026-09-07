@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { TvToolDefinition, ToolExecutionContext, ToolExecutionResult } from "./types";
 import { executeHACommand } from "../../../ha";
-import { delay } from "../../common/utils";
-import { TV_DEFAULT_WAIT_MS } from "../../../config";
+import { getDeviceIntegration } from "./webSearch";
+import { sendRemoteCommands } from "./remoteCommands";
 
 export const inputSchema = z.object({
   direction: z.enum(["up", "down", "left", "right"]).describe(
@@ -26,48 +26,31 @@ async function execute(
   context: ToolExecutionContext
 ): Promise<ToolExecutionResult> {
   const parsed = inputSchema.parse(args);
-  const defaultWait = Number.isFinite(TV_DEFAULT_WAIT_MS)
-    ? Math.max(300, TV_DEFAULT_WAIT_MS)
-    : 1000;
   const count = Math.min(Math.max(parsed.count, 1), 10);
   const deviceName = parsed.remote_entity_id.replace("remote.", "");
 
   console.log(`[TV Agent] Executing navigate: ${parsed.direction} x${count} on ${deviceName}`);
 
-  let successCount = 0;
-  let lastError = "";
+  const integration = getDeviceIntegration(parsed.remote_entity_id);
+  await context.waitIfPaused?.();
+  context.abortSignal?.throwIfAborted();
+  const result = integration
+    ? await sendRemoteCommands(
+        parsed.remote_entity_id,
+        integration === "samsungtv" ? `KEY_${parsed.direction.toUpperCase()}` : parsed.direction,
+        context,
+        count,
+      )
+    : await executeHACommand(`Scroll ${parsed.direction} ${count} times on ${deviceName}`,
+        undefined, { abortSignal: context.abortSignal });
+  await context.waitIfPaused?.();
+  context.abortSignal?.throwIfAborted();
 
-  for (let i = 0; i < count; i++) {
-    await context.waitIfPaused?.();
-    context.abortSignal?.throwIfAborted();
-    const plainCommand = `Scroll ${parsed.direction} on ${deviceName}`;
-    const result = await executeHACommand(plainCommand);
-
-    if (result.success) {
-      successCount++;
-      if (i < count - 1) {
-        await delay(200, context.abortSignal);
-      }
-    } else {
-      lastError = result.message;
-      console.warn(`[TV Agent] Navigation press ${i + 1}/${count} failed: ${lastError}`);
-    }
-  }
-
-  await delay(defaultWait, context.abortSignal);
-
-  if (successCount === 0) {
+  if (!result.success) {
     return {
-      observation: `❌ Failed to navigate ${parsed.direction}: ${lastError}. The UI may be unresponsive or the remote entity may be incorrect.`,
+      observation: `Navigation failed: ${result.message}. The batch may have partly executed; verify the cursor from a fresh screenshot before retrying.`,
       needsScreenshot: true,
       toolSuccess: false,
-    };
-  }
-
-  if (successCount < count) {
-    return {
-      observation: `⚠️ Partial navigation: Pressed ${parsed.direction.toUpperCase()} ${successCount}/${count} times on ${deviceName}.\n📍 Reason: ${parsed.reason}\n⚠️ Some commands failed, verify position in screenshot.`,
-      needsScreenshot: true,
     };
   }
 

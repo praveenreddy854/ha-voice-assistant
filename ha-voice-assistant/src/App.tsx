@@ -2,9 +2,8 @@ import React, { useRef, useState, useCallback, useEffect } from "react";
 import "./App.css";
 import Chat from "./Chat";
 import { Message } from "./types/chat";
-import SpeechRecognition, {
-  useSpeechRecognition,
-} from "react-speech-recognition";
+import { useWakeWordListener } from "./hooks/useWakeWordListener";
+import { useVoiceWakeLock } from "./hooks/useVoiceWakeLock";
 import {
   playAudioFromBuffer,
   synthesizeTextToBuffer,
@@ -51,7 +50,39 @@ function App() {
   const isListeningForWakeWord = useRef(false);
   const hasActiveAgentRun = useRef(false);
 
-  const { finalTranscript, resetTranscript } = useSpeechRecognition();
+  const assistantEnabled = useRef(false);
+  const assistantLifecycle = useRef(0);
+  const voiceTurnVersion = useRef(0);
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const {
+    finalTranscript, resetTranscript, status: wakeWordStatus, error: microphoneError,
+    startListening: startWakeListener, stopListening: stopWakeListener,
+  } = useWakeWordListener();
+  useVoiceWakeLock(voiceEnabled);
+
+  const stopVoiceAssistant = useCallback(() => {
+    assistantEnabled.current = false;
+    assistantLifecycle.current++;
+    voiceTurnVersion.current++;
+    setVoiceEnabled(false);
+    isListeningForWakeWord.current = false;
+    void stopWakeListener();
+    stopRealtimeChat({ closeAudioOutput: true });
+    setIsListening(false);
+    setCountdown(null);
+    setIsWakeWordMode(false);
+    setIsGestureCameraActive(false);
+  }, [stopWakeListener]);
+
+  useEffect(() => {
+    if (microphoneError) stopVoiceAssistant();
+  }, [microphoneError, stopVoiceAssistant]);
+
+  useEffect(() => () => {
+    assistantEnabled.current = false;
+    assistantLifecycle.current++;
+    stopRealtimeChat({ closeAudioOutput: true });
+  }, []);
 
   useEffect(() => {
     saveSkillToggleState(skillState);
@@ -130,8 +161,25 @@ function App() {
     setMessages((prev) => [...prev, message]);
   }, []);
 
+  const startWakeWordListening = useCallback(() => {
+    if (!assistantEnabled.current) return;
+    setIsGestureCameraActive(false);
+    isListeningForWakeWord.current = true;
+    setIsWakeWordMode(true);
+    startWakeListener();
+  }, [startWakeListener]);
+
   const handleTextCommand = useCallback(
-    async (text: string) => {
+    async (text: string, resumeWakeWord = true) => {
+      const lifecycle = assistantLifecycle.current;
+      const version = ++voiceTurnVersion.current;
+      isListeningForWakeWord.current = false;
+      setIsWakeWordMode(false);
+      setIsListening(false);
+      setCountdown(null);
+      setIsGestureCameraActive(false);
+      await stopWakeListener();
+      if (lifecycle !== assistantLifecycle.current || version !== voiceTurnVersion.current) return;
       handleRecognizedText({ sender: "user", text });
       let fullTranscript = "";
       await startRealtimeChat(
@@ -155,69 +203,65 @@ function App() {
           });
         }
       );
+      if (resumeWakeWord && lifecycle === assistantLifecycle.current && version === voiceTurnVersion.current) {
+        startWakeWordListening();
+      }
     },
-    [handleRecognizedText]
+    [handleRecognizedText, startWakeWordListening, stopWakeListener]
   );
 
-  const startWakeWordListening = useCallback(() => {
-    console.log("Starting wake word listening...");
-    resetTranscript(); // Clear any existing transcript
-    setIsGestureCameraActive(false);
-    SpeechRecognition.startListening({
-      continuous: true,
-      language: "en-US",
-    });
-    isListeningForWakeWord.current = true;
-    setIsWakeWordMode(true);
-    console.log(
-      "Wake word listening started, isListeningForWakeWord:",
-      isListeningForWakeWord.current
-    );
-  }, [resetTranscript]);
-
   const enterVoiceTurn = useCallback(() => {
+    if (!assistantEnabled.current) return;
+    const lifecycle = assistantLifecycle.current;
+    const version = ++voiceTurnVersion.current;
+    isListeningForWakeWord.current = false;
+    setIsWakeWordMode(false);
     setIsListening(true);
     setIsGestureCameraActive(true);
     playPing();
     let fullTranscript = "";
     let asyncJobStarted = false;
-    startRealtimeVoiceTurn(
-      (delta) => {
-        fullTranscript += delta;
-      },
-      (finalText) => {
-        const responseText =
-          finalText || fullTranscript || "Response received.";
-        handleRecognizedText({
-          sender: "assistant",
-          text: responseText,
-        });
-        noteAnnouncement(responseText);
-        fullTranscript = "";
-      },
-      (error) => {
-        handleRecognizedText({
-          sender: "assistant",
-          text: `Realtime error: ${error}`,
-        });
-      },
-      (userTranscript) => {
-        handleRecognizedText({
-          sender: "user",
-          text: userTranscript,
-        });
-      },
-      () => {
-        asyncJobStarted = true;
-        hasActiveAgentRun.current = true;
-      },
-      () => {
-        hasActiveAgentRun.current = false;
-      },
-      {
-        onListeningWindowChange: setCountdown,
-      }
-    ).finally(() => {
+    stopWakeListener().then(() => {
+      if (!assistantEnabled.current || lifecycle !== assistantLifecycle.current || version !== voiceTurnVersion.current) return;
+      return startRealtimeVoiceTurn(
+        (delta) => {
+          fullTranscript += delta;
+        },
+        (finalText) => {
+          const responseText =
+            finalText || fullTranscript || "Response received.";
+          handleRecognizedText({
+            sender: "assistant",
+            text: responseText,
+          });
+          noteAnnouncement(responseText);
+          fullTranscript = "";
+        },
+        (error) => {
+          handleRecognizedText({
+            sender: "assistant",
+            text: `Realtime error: ${error}`,
+          });
+        },
+        (userTranscript) => {
+          handleRecognizedText({
+            sender: "user",
+            text: userTranscript,
+          });
+        },
+        () => {
+          asyncJobStarted = true;
+          hasActiveAgentRun.current = true;
+        },
+        () => {
+          hasActiveAgentRun.current = false;
+        },
+        {
+          onListeningWindowChange: setCountdown,
+        }
+      );
+    }).finally(() => {
+      if (!assistantEnabled.current || lifecycle !== assistantLifecycle.current || version !== voiceTurnVersion.current) return;
       setIsListening(false);
       setCountdown(null);
       isListeningForWakeWord.current = true;
@@ -228,18 +272,20 @@ function App() {
       playPing();
       startWakeWordListening();
     });
-  }, [handleRecognizedText, startWakeWordListening]);
+  }, [handleRecognizedText, startWakeWordListening, stopWakeListener]);
 
   useEffect(() => {
     setAsyncJobEventHandler((event) => {
+      if (!assistantEnabled.current) return;
       if (event.kind !== "needs_input") {
         hasActiveAgentRun.current = false;
       }
-      SpeechRecognition.abortListening();
+      void stopWakeListener();
       isListeningForWakeWord.current = false;
       setIsWakeWordMode(false);
     });
     setAsyncAssistantSpeechEndHandler(({ followupExpected }) => {
+      if (!assistantEnabled.current) return;
       if (followupExpected) {
         enterVoiceTurn();
       } else {
@@ -277,7 +323,7 @@ function App() {
       setCommandCancelledHandler(undefined);
       setAgentRunPausedHandler(undefined);
     };
-  }, [enterVoiceTurn, startWakeWordListening]);
+  }, [enterVoiceTurn, startWakeWordListening, stopWakeListener]);
 
   React.useEffect(() => {
     if (finalTranscript) {
@@ -291,7 +337,8 @@ function App() {
       const wakeMatch = lower.match(
         /^\s*(?:hey[,\s]+|ok[,\s]+)?assistant\b[,.\s]*(.*)$/
       );
-      if (wakeMatch) {
+      if (wakeMatch && assistantEnabled.current && isListeningForWakeWord.current) {
+        const lifecycle = assistantLifecycle.current;
         const trailing = wakeMatch[1]?.trim() ?? "";
         console.log("Wake word detected:", finalTranscript, "trailing:", trailing);
         handleRecognizedText({ sender: "user", text: finalTranscript });
@@ -308,14 +355,16 @@ function App() {
         isListeningForWakeWord.current = false;
         setIsWakeWordMode(false);
 
-        Promise.all([SpeechRecognition.abortListening(), pauseRequest]).then(() => {
+        Promise.all([stopWakeListener(), pauseRequest]).then(() => {
+          if (!assistantEnabled.current || lifecycle !== assistantLifecycle.current) return;
           if (trailing) {
             // User said the question in the same breath as the wake word —
             // route it via user_text so the realtime API responds immediately,
             // then open the realtime mic so the user can ask a follow-up
             // within the 30s listening window without re-saying the wake word.
             console.log("Routing trailing text as command:", trailing);
-            handleTextCommand(trailing).finally(() => {
+            handleTextCommand(trailing, false).finally(() => {
+              if (!assistantEnabled.current || lifecycle !== assistantLifecycle.current) return;
               enterVoiceTurn();
             });
           } else {
@@ -337,9 +386,13 @@ function App() {
     enterVoiceTurn,
     handleTextCommand,
     startWakeWordListening,
+    stopWakeListener,
   ]);
 
   const handleOnStartRecognition = () => {
+    assistantEnabled.current = true;
+    assistantLifecycle.current++;
+    setVoiceEnabled(true);
     prepareRealtimeAudioOutput();
     startWakeWordListening();
   };
@@ -352,25 +405,21 @@ function App() {
       <>
       <button
         onClick={handleOnStartRecognition}
-        disabled={isListening || isListeningForWakeWord.current}
+        disabled={voiceEnabled}
         style={{ marginBottom: 16 }}
       >
         {isWakeWordMode
-          ? "Listening for wake word..."
+          ? wakeWordStatus === "listening"
+            ? "Listening for wake word..."
+            : wakeWordStatus === "starting" ? "Starting microphone..." : "Reconnecting microphone..."
           : isListening
           ? `Listening for commands${countdown !== null ? `... (${countdown}s)` : "..."}`
+          : voiceEnabled ? "Processing command..."
           : "Start Voice Assistant"}
       </button>
       <button
-        onClick={() => {
-          SpeechRecognition.abortListening();
-          stopRealtimeChat({ closeAudioOutput: true });
-          setIsListening(false);
-          isListeningForWakeWord.current = false;
-          setIsWakeWordMode(false);
-          setIsGestureCameraActive(false);
-        }}
-        disabled={!isListening && !isListeningForWakeWord.current}
+        onClick={stopVoiceAssistant}
+        disabled={!voiceEnabled}
         style={{ marginBottom: 16, marginLeft: 16 }}
       >
         {isWakeWordMode
@@ -379,6 +428,7 @@ function App() {
           ? "Stop Command Listening"
           : "Stop Voice Assistant"}
       </button>
+      {microphoneError && <p role="alert">{microphoneError}</p>}
       {countdown !== null && (
         <div
           style={{

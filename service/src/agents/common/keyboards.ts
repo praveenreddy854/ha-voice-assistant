@@ -84,6 +84,14 @@ export interface NavigationStep {
   character: string;
 }
 
+export function resolveKeyboardPosition(
+  character: string,
+  layout: KeyboardLayoutMap,
+): number | undefined {
+  const key = character.toLowerCase();
+  return layout.positions[key === "space" ? " " : key];
+}
+
 /**
  * Compute the deterministic sequence of navigate + select actions
  * to type `text` starting from `currentPosition`.
