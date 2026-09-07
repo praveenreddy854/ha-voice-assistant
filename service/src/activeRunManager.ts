@@ -33,6 +33,7 @@ export interface StartActiveRunOptions<T> {
   execute: (context: ActiveRunContext) => Promise<T>;
   onComplete?: (result: T, run: ActiveRunSnapshot) => void | Promise<void>;
   onError?: (message: string, run: ActiveRunSnapshot) => void | Promise<void>;
+  onCancelled?: (run: ActiveRunSnapshot) => void | Promise<void>;
   onFinally?: (runId: string) => void | Promise<void>;
 }
 
@@ -70,7 +71,7 @@ export class AgentPauseController implements AgentPauseGate {
   }
 }
 
-let activeRun: ManagedActiveRun | null = null;
+const activeRuns = new Map<ActiveRunDomain, ManagedActiveRun>();
 
 function snapshot(run: ManagedActiveRun): ActiveRunSnapshot {
   return {
@@ -91,54 +92,67 @@ function matchesDomain(
   );
 }
 
+function latestActiveRun(): ManagedActiveRun | null {
+  const candidates = Array.from(activeRuns.values()).filter(
+    (run) => run.status !== "cancelled"
+  );
+  return (
+    candidates.sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0] ?? null
+  );
+}
+
 export function getActiveRun(
   domain?: ActiveRunDomain
 ): ActiveRunSnapshot | null {
-  return matchesDomain(activeRun, domain) ? snapshot(activeRun) : null;
+  const run = domain ? activeRuns.get(domain) ?? null : latestActiveRun();
+  return matchesDomain(run, domain) ? snapshot(run) : null;
 }
 
 /** Pause the active run at its next cooperative checkpoint. */
 export function pauseActiveRun(
   domain?: ActiveRunDomain
 ): ActiveRunSnapshot | undefined {
-  if (!matchesDomain(activeRun, domain)) return undefined;
-  if (activeRun.status !== "paused") {
-    activeRun.status = "paused";
-    activeRun.pauseController.pause();
+  const run = domain ? activeRuns.get(domain) ?? null : latestActiveRun();
+  if (!matchesDomain(run, domain)) return undefined;
+  if (run.status !== "paused") {
+    run.status = "paused";
+    run.pauseController.pause();
   }
-  return snapshot(activeRun);
+  return snapshot(run);
 }
 
 /** Resume the exact same run, promise, and specialist model session. */
 export function resumeActiveRun(
   domain?: ActiveRunDomain
 ): ActiveRunSnapshot | undefined {
-  if (!matchesDomain(activeRun, domain) || activeRun.status !== "paused") {
+  const run = domain ? activeRuns.get(domain) ?? null : latestActiveRun();
+  if (!matchesDomain(run, domain) || run.status !== "paused") {
     return undefined;
   }
-  activeRun.status = "running";
-  activeRun.pauseController.resume();
-  return snapshot(activeRun);
+  run.status = "running";
+  run.pauseController.resume();
+  return snapshot(run);
 }
 
 export function cancelActiveRun(
   domain?: ActiveRunDomain,
   reason = "Active run cancelled by the user or a replacement run"
 ): ActiveRunSnapshot | undefined {
-  if (!matchesDomain(activeRun, domain)) return undefined;
-  const cancelled = snapshot(activeRun);
-  activeRun.status = "cancelled";
-  activeRun.abortController.abort(new Error(reason));
+  const run = domain ? activeRuns.get(domain) ?? null : latestActiveRun();
+  if (!matchesDomain(run, domain)) return undefined;
+  const cancelled = snapshot(run);
+  run.status = "cancelled";
+  run.abortController.abort(new Error(reason));
   // Release a paused checkpoint so the AbortSignal is observed immediately.
-  activeRun.pauseController.resume();
+  run.pauseController.resume();
   return cancelled;
 }
 
 export function startActiveRun<T>(
   options: StartActiveRunOptions<T>
 ): StartActiveRunResult {
-  const replacedRun = getActiveRun() ?? undefined;
-  cancelActiveRun();
+  const replacedRun = getActiveRun(options.domain) ?? undefined;
+  cancelActiveRun(options.domain);
 
   const run: ManagedActiveRun = {
     id: randomUUID(),
@@ -149,7 +163,7 @@ export function startActiveRun<T>(
     pauseController: new AgentPauseController(),
     startedAt: new Date().toISOString(),
   };
-  activeRun = run;
+  activeRuns.set(run.domain, run);
 
   void executeManagedRun(run, options);
   return { jobId: run.id, replacedRun };
@@ -159,6 +173,7 @@ async function executeManagedRun<T>(
   run: ManagedActiveRun,
   options: StartActiveRunOptions<T>
 ): Promise<void> {
+  let cancellationNotified = false;
   try {
     const result = await options.execute({
       ...snapshot(run),
@@ -167,20 +182,29 @@ async function executeManagedRun<T>(
     });
     if (run.status !== "cancelled") {
       await options.onComplete?.(result, snapshot(run));
+    } else {
+      await options.onCancelled?.(snapshot(run));
+      cancellationNotified = true;
     }
   } catch (error) {
-    if (run.status !== "cancelled") {
+    if (run.status === "cancelled") {
+      await options.onCancelled?.(snapshot(run));
+      cancellationNotified = true;
+    } else {
       const message = error instanceof Error ? error.message : String(error);
       await options.onError?.(message, snapshot(run));
     }
   } finally {
     try {
+      if (run.status === "cancelled" && !cancellationNotified) {
+        await options.onCancelled?.(snapshot(run));
+      }
       await options.onFinally?.(run.id);
     } catch (error) {
       console.error(`[ActiveRun] Finalizer failed for ${run.id}:`, error);
     } finally {
-      if (activeRun?.id === run.id) {
-        activeRun = null;
+      if (activeRuns.get(run.domain)?.id === run.id) {
+        activeRuns.delete(run.domain);
       }
     }
   }

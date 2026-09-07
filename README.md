@@ -173,6 +173,14 @@ The application integrates with Home Assistant through:
 
 After browser wake-word detection, raw audio streams to the Realtime Voice Agent. It answers general chat directly or calls tools for Home Assistant commands, ScheduledTasks, and TV automation.
 
+### Apple Shortcut
+
+Apple devices on the home network can invoke the same assistant capabilities
+through the `Ask Assistant` personal Shortcut. The checked-in workflow contains
+a local-URL placeholder; local packaging injects that URL and produces an
+ignored, signed `.shortcut` file. See
+[`docs/apple-shortcuts.md`](docs/apple-shortcuts.md) for setup and safety notes.
+
 ### Proactive Reminders
 
 When Azure Cosmos DB logging is enabled, a scheduled job reads the captured

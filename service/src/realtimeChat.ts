@@ -13,8 +13,6 @@ const HOME_ASSISTANT_DEVICES = (process.env.HOME_ASSISTANT_DEVICES || "")
   .split(",")
   .map((d) => d.trim())
   .filter(Boolean);
-import { executeHACommand } from "./ha";
-import { runAgent } from "./agents/core";
 import { startTvAgentJob } from "./tvJobManager";
 import {
   ActiveRunDomain,
@@ -37,124 +35,14 @@ import {
   updateMemory,
   validateMemoryWrite,
 } from "./memory";
+import { needsActionConfirmation } from "./assistantPolicy";
+import {
+  executeHomeAssistantCapability,
+  executeScheduledTaskCapability,
+} from "./assistantCapabilities";
+import { executeWebSearch } from "./webSearch";
 
 type JsonRecord = Record<string, unknown>;
-
-// ============================================================================
-// Web Search via DuckDuckGo HTML
-// ============================================================================
-
-const MAX_CONTENT_LENGTH = 4000;
-
-function stripHtml(html: string): string {
-  return html
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
-    .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, "")
-    .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, "")
-    .replace(/<header[^>]*>[\s\S]*?<\/header>/gi, "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-interface SearchResult {
-  title: string;
-  url: string;
-  snippet: string;
-}
-
-function parseDdgResults(html: string): SearchResult[] {
-  const results: SearchResult[] = [];
-  const resultBlocks = html.split(/class="result\s/);
-
-  for (const block of resultBlocks.slice(1, 6)) {
-    const urlMatch = block.match(/class="result__a"[^>]*href="([^"]+)"/);
-    const titleMatch = block.match(/class="result__a"[^>]*>([^<]+)</);
-    const snippetMatch = block.match(/class="result__snippet"[^>]*>([\s\S]*?)<\/a>/);
-
-    if (urlMatch?.[1]) {
-      let url = urlMatch[1];
-      const uddgMatch = url.match(/uddg=([^&]+)/);
-      if (uddgMatch?.[1]) {
-        url = decodeURIComponent(uddgMatch[1]);
-      }
-
-      results.push({
-        title: titleMatch?.[1]?.trim() || url,
-        url,
-        snippet: snippetMatch?.[1] ? stripHtml(snippetMatch[1]).substring(0, 200) : "",
-      });
-    }
-  }
-
-  return results;
-}
-
-async function fetchPageContent(url: string): Promise<string> {
-  try {
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; HAVoiceAssistant/1.0)",
-        Accept: "text/html",
-      },
-      signal: AbortSignal.timeout(8000),
-    });
-
-    if (!response.ok) return "";
-
-    const html = await response.text();
-    let content = html;
-    const mainMatch = html.match(/<main[^>]*>([\s\S]*?)<\/main>/i);
-    const articleMatch = html.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
-    if (mainMatch?.[1]) content = mainMatch[1];
-    else if (articleMatch?.[1]) content = articleMatch[1];
-
-    return stripHtml(content).substring(0, MAX_CONTENT_LENGTH);
-  } catch {
-    return "";
-  }
-}
-
-async function executeWebSearch(query: string): Promise<string> {
-  try {
-    const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-    const response = await fetch(ddgUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; HAVoiceAssistant/1.0)",
-        Accept: "text/html",
-      },
-      signal: AbortSignal.timeout(10000),
-    });
-
-    if (!response.ok) return `Search failed: HTTP ${response.status}`;
-
-    const html = await response.text();
-    const results = parseDdgResults(html);
-
-    if (results.length === 0) return `No results found for "${query}".`;
-
-    const resultsList = results
-      .map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`)
-      .join("\n\n");
-
-    // Fetch top result content for richer context
-    const topContent = await fetchPageContent(results[0].url);
-    const topSection = topContent
-      ? `\n\n--- Top Result Content (${results[0].title}) ---\n${topContent}`
-      : "";
-
-    return `Search results for "${query}":\n\n${resultsList}${topSection}`;
-  } catch (error) {
-    return `Search error: ${error instanceof Error ? error.message : String(error)}`;
-  }
-}
 
 // ============================================================================
 // Persistent Azure Realtime Session
@@ -401,17 +289,6 @@ function isHomeAssistantStateResult(data: unknown): boolean {
   return typeof record.entity_id === "string" && "state" in record;
 }
 
-function needsActionConfirmation(command: string): boolean {
-  const normalized = command.toLowerCase();
-  const protectedOpening =
-    /\b(open|unlock)\b/.test(normalized) &&
-    /\b(front door|back door|garage door|garage)\b/.test(normalized);
-  const bulkDestructive =
-    /\b(cancel|delete|remove|clear|turn off|shut off|disable)\b/.test(normalized) &&
-    /\b(all|every|everything|entire|whole)\b/.test(normalized);
-  return protectedOpening || bulkDestructive;
-}
-
 function matchWakePhrase(
   transcript: string
 ): { trailingText: string } | null {
@@ -517,14 +394,11 @@ function startRealtimeScheduledTaskJob(prompt: string) {
     domain: "scheduled_task",
     prompt,
     execute: async (run) => {
-      const result = await runAgent({
-        agentType: "scheduled_task",
-        userPrompt: run.prompt,
-        maxSteps: 8,
+      const result = await executeScheduledTaskCapability(run.prompt, {
         abortSignal: run.abortSignal,
         pauseGate: run.pauseGate,
       });
-      if (result.status !== "completed" || !result.success) {
+      if (!result.success) {
         throw new Error(result.message || "Scheduled task job failed.");
       }
       return result.message || "Done";
@@ -565,7 +439,7 @@ function startRealtimeHomeAssistantJob(command: string) {
     domain: "home_assistant",
     prompt: command,
     execute: async (run) => {
-      const result = await executeHACommand(run.prompt, undefined, {
+      const result = await executeHomeAssistantCapability(run.prompt, {
         abortSignal: run.abortSignal,
         pauseGate: run.pauseGate,
       });
@@ -615,14 +489,22 @@ function startRealtimeHomeAssistantJob(command: string) {
 function startReplacementRun(
   domain: ActiveRunDomain,
   prompt: string,
-  confirmed: boolean
+  confirmed: boolean,
+  replacedDomain: ActiveRunDomain
 ) {
+  if (
+    domain === "home_assistant" &&
+    needsActionConfirmation(prompt) &&
+    !confirmed
+  ) {
+    return null;
+  }
+  if (replacedDomain !== domain) {
+    cancelActiveRun(replacedDomain);
+  }
   if (domain === "tv") return startRealtimeTvJob(prompt);
   if (domain === "scheduled_task") {
     return startRealtimeScheduledTaskJob(prompt);
-  }
-  if (needsActionConfirmation(prompt) && !confirmed) {
-    return null;
   }
   return startRealtimeHomeAssistantJob(prompt);
 }
@@ -742,7 +624,8 @@ function controlActiveRun(
     const started = startReplacementRun(
       replacementDomain,
       prompt,
-      args.confirmed === true
+      args.confirmed === true,
+      activeRun.domain
     );
     if (!started) {
       return "confirmation_required: Ask the user to confirm this protected or bulk destructive replacement before executing it.";

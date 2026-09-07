@@ -51,6 +51,8 @@ import { startScheduledTaskFirer } from "./scheduledTaskFirer";
 import { startOutDirCleaner } from "./outDirCleaner";
 import { startProactiveReminders } from "./proactiveReminders";
 import { startMemoryConsolidation } from "./memory";
+import { createAppleShortcutRouter } from "./appleShortcutRouter";
+import { TextAssistantSessionManager } from "./textAssistantSessions";
 // Teaching mode imports - for recording manual steps and fine-tuning data
 import {
   startTeachingSession,
@@ -81,6 +83,14 @@ declare global {
 const app = express();
 const port = process.env.PORT || 3005;
 const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || "15mb";
+const appleShortcutSessions = new TextAssistantSessionManager();
+
+app.use(
+  "/api/integrations/apple-shortcuts",
+  createAppleShortcutRouter({
+    sessions: appleShortcutSessions,
+  })
+);
 
 // Ensure data directory exists
 const DATA_DIR = path.join(__dirname, "../data");

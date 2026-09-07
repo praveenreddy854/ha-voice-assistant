@@ -16,6 +16,7 @@ import {
 interface TvJobCallbacks {
   onComplete?: (message: string) => void;
   onError?: (message: string) => void;
+  onCancelled?: () => void;
 }
 
 export { AgentPauseController };
@@ -99,6 +100,7 @@ export function startTvAgentJob(
     },
     onComplete: (message) => callbacks.onComplete?.(message),
     onError: (message) => callbacks.onError?.(message),
+    onCancelled: () => callbacks.onCancelled?.(),
     onFinally: (jobId) => {
       if (isRtspMode()) stopRtspCapture(jobId);
     },

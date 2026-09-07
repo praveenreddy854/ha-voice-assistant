@@ -1,0 +1,482 @@
+{
+  "WFWorkflowName": "Ask Assistant",
+  "WFQuickActionSurfaces": [],
+  "WFWorkflowActions": [
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.ask",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000001",
+        "WFAskActionPrompt": "What should I do?",
+        "WFInputType": "Text"
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.url",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000002",
+        "WFURLActionURL": "__APPLE_SHORTCUT_BASE_URL__/api/integrations/apple-shortcuts/sessions"
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.downloadurl",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000003",
+        "WFURL": {
+          "Value": {
+            "OutputUUID": "00000000-0000-4000-8000-000000000002",
+            "Type": "ActionOutput",
+            "OutputName": "URL"
+          },
+          "WFSerializationType": "WFTextTokenAttachment"
+        },
+        "WFHTTPMethod": "POST",
+        "WFHTTPBodyType": "JSON",
+        "WFJSONValues": {
+          "Value": {
+            "WFDictionaryFieldValueItems": [
+              {
+                "WFItemType": 0,
+                "WFKey": {
+                  "Value": {
+                    "string": "command"
+                  },
+                  "WFSerializationType": "WFTextTokenString"
+                },
+                "WFValue": {
+                  "Value": {
+                    "string": "￼",
+                    "attachmentsByRange": {
+                      "{0, 1}": {
+                        "OutputUUID": "00000000-0000-4000-8000-000000000001",
+                        "Type": "ActionOutput",
+                        "OutputName": "Ask for Input"
+                      }
+                    }
+                  },
+                  "WFSerializationType": "WFTextTokenString"
+                }
+              }
+            ]
+          },
+          "WFSerializationType": "WFDictionaryFieldValue"
+        }
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.setvariable",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000004",
+        "WFVariableName": "response",
+        "WFInput": {
+          "Value": {
+            "OutputUUID": "00000000-0000-4000-8000-000000000003",
+            "Type": "ActionOutput",
+            "OutputName": "Contents of URL"
+          },
+          "WFSerializationType": "WFTextTokenAttachment"
+        }
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.repeat.count",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000005",
+        "GroupingIdentifier": "00000000-0000-4000-8000-000000000031",
+        "WFControlFlowMode": 0,
+        "WFRepeatCount": 60
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.getvalueforkey",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000006",
+        "WFGetDictionaryValueType": "Value",
+        "WFDictionaryKey": "status",
+        "WFInput": {
+          "Value": {
+            "VariableName": "response",
+            "Type": "Variable"
+          },
+          "WFSerializationType": "WFTextTokenAttachment"
+        }
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.conditional",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000007",
+        "GroupingIdentifier": "00000000-0000-4000-8000-000000000032",
+        "WFControlFlowMode": 0,
+        "WFCondition": 4,
+        "WFConditionalActionString": "input_required",
+        "WFInput": {
+          "Type": "Variable",
+          "Variable": {
+            "Value": {
+              "OutputUUID": "00000000-0000-4000-8000-000000000006",
+              "Type": "ActionOutput",
+              "OutputName": "Dictionary Value"
+            },
+            "WFSerializationType": "WFTextTokenAttachment"
+          }
+        }
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.getvalueforkey",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000008",
+        "WFGetDictionaryValueType": "Value",
+        "WFDictionaryKey": "message",
+        "WFInput": {
+          "Value": {
+            "VariableName": "response",
+            "Type": "Variable"
+          },
+          "WFSerializationType": "WFTextTokenAttachment"
+        }
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.ask",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000009",
+        "WFInputType": "Text",
+        "WFAskActionPrompt": {
+          "Value": {
+            "string": "￼",
+            "attachmentsByRange": {
+              "{0, 1}": {
+                "OutputUUID": "00000000-0000-4000-8000-000000000008",
+                "Type": "ActionOutput",
+                "OutputName": "Dictionary Value"
+              }
+            }
+          },
+          "WFSerializationType": "WFTextTokenString"
+        }
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.getvalueforkey",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000010",
+        "WFGetDictionaryValueType": "Value",
+        "WFDictionaryKey": "conversationId",
+        "WFInput": {
+          "Value": {
+            "VariableName": "response",
+            "Type": "Variable"
+          },
+          "WFSerializationType": "WFTextTokenAttachment"
+        }
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.url",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000011",
+        "WFURLActionURL": {
+          "Value": {
+            "string": "__APPLE_SHORTCUT_BASE_URL__/api/integrations/apple-shortcuts/sessions/￼/input",
+            "attachmentsByRange": {
+              "{70, 1}": {
+                "OutputUUID": "00000000-0000-4000-8000-000000000010",
+                "Type": "ActionOutput",
+                "OutputName": "Dictionary Value"
+              }
+            }
+          },
+          "WFSerializationType": "WFTextTokenString"
+        }
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.downloadurl",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000012",
+        "WFURL": {
+          "Value": {
+            "OutputUUID": "00000000-0000-4000-8000-000000000011",
+            "Type": "ActionOutput",
+            "OutputName": "URL"
+          },
+          "WFSerializationType": "WFTextTokenAttachment"
+        },
+        "WFHTTPMethod": "POST",
+        "WFHTTPBodyType": "JSON",
+        "WFJSONValues": {
+          "Value": {
+            "WFDictionaryFieldValueItems": [
+              {
+                "WFItemType": 0,
+                "WFKey": {
+                  "Value": {
+                    "string": "answer"
+                  },
+                  "WFSerializationType": "WFTextTokenString"
+                },
+                "WFValue": {
+                  "Value": {
+                    "string": "￼",
+                    "attachmentsByRange": {
+                      "{0, 1}": {
+                        "OutputUUID": "00000000-0000-4000-8000-000000000009",
+                        "Type": "ActionOutput",
+                        "OutputName": "Ask for Input"
+                      }
+                    }
+                  },
+                  "WFSerializationType": "WFTextTokenString"
+                }
+              }
+            ]
+          },
+          "WFSerializationType": "WFDictionaryFieldValue"
+        }
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.setvariable",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000013",
+        "WFVariableName": "response",
+        "WFInput": {
+          "Value": {
+            "OutputUUID": "00000000-0000-4000-8000-000000000012",
+            "Type": "ActionOutput",
+            "OutputName": "Contents of URL"
+          },
+          "WFSerializationType": "WFTextTokenAttachment"
+        }
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.conditional",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000014",
+        "GroupingIdentifier": "00000000-0000-4000-8000-000000000032",
+        "WFControlFlowMode": 1
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.getvalueforkey",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000034",
+        "WFGetDictionaryValueType": "Value",
+        "WFDictionaryKey": "status",
+        "WFInput": {
+          "Value": {
+            "VariableName": "response",
+            "Type": "Variable"
+          },
+          "WFSerializationType": "WFTextTokenAttachment"
+        }
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.conditional",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000015",
+        "GroupingIdentifier": "00000000-0000-4000-8000-000000000033",
+        "WFControlFlowMode": 0,
+        "WFCondition": 4,
+        "WFConditionalActionString": "running",
+        "WFInput": {
+          "Type": "Variable",
+          "Variable": {
+            "Value": {
+              "OutputUUID": "00000000-0000-4000-8000-000000000034",
+              "Type": "ActionOutput",
+              "OutputName": "Dictionary Value"
+            },
+            "WFSerializationType": "WFTextTokenAttachment"
+          }
+        }
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.delay",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000016",
+        "WFDelayTime": 2
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.getvalueforkey",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000017",
+        "WFGetDictionaryValueType": "Value",
+        "WFDictionaryKey": "conversationId",
+        "WFInput": {
+          "Value": {
+            "VariableName": "response",
+            "Type": "Variable"
+          },
+          "WFSerializationType": "WFTextTokenAttachment"
+        }
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.url",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000018",
+        "WFURLActionURL": {
+          "Value": {
+            "string": "__APPLE_SHORTCUT_BASE_URL__/api/integrations/apple-shortcuts/sessions/￼",
+            "attachmentsByRange": {
+              "{70, 1}": {
+                "OutputUUID": "00000000-0000-4000-8000-000000000017",
+                "Type": "ActionOutput",
+                "OutputName": "Dictionary Value"
+              }
+            }
+          },
+          "WFSerializationType": "WFTextTokenString"
+        }
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.downloadurl",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000019",
+        "WFURL": {
+          "Value": {
+            "OutputUUID": "00000000-0000-4000-8000-000000000018",
+            "Type": "ActionOutput",
+            "OutputName": "URL"
+          },
+          "WFSerializationType": "WFTextTokenAttachment"
+        }
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.setvariable",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000020",
+        "WFVariableName": "response",
+        "WFInput": {
+          "Value": {
+            "OutputUUID": "00000000-0000-4000-8000-000000000019",
+            "Type": "ActionOutput",
+            "OutputName": "Contents of URL"
+          },
+          "WFSerializationType": "WFTextTokenAttachment"
+        }
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.conditional",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000021",
+        "GroupingIdentifier": "00000000-0000-4000-8000-000000000033",
+        "WFControlFlowMode": 1
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.getvalueforkey",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000022",
+        "WFGetDictionaryValueType": "Value",
+        "WFDictionaryKey": "message",
+        "WFInput": {
+          "Value": {
+            "VariableName": "response",
+            "Type": "Variable"
+          },
+          "WFSerializationType": "WFTextTokenAttachment"
+        }
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.speaktext",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000023"
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.exit",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000024"
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.conditional",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000025",
+        "GroupingIdentifier": "00000000-0000-4000-8000-000000000033",
+        "WFControlFlowMode": 2
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.conditional",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000026",
+        "GroupingIdentifier": "00000000-0000-4000-8000-000000000032",
+        "WFControlFlowMode": 2
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.repeat.count",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000027",
+        "GroupingIdentifier": "00000000-0000-4000-8000-000000000031",
+        "WFControlFlowMode": 2
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.gettext",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000028",
+        "WFTextActionText": "The request timed out after two minutes."
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.speaktext",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000029"
+      }
+    },
+    {
+      "WFWorkflowActionIdentifier": "is.workflow.actions.exit",
+      "WFWorkflowActionParameters": {
+        "UUID": "00000000-0000-4000-8000-000000000030"
+      }
+    }
+  ],
+  "WFWorkflowClientVersion": "4528.0.4.2",
+  "WFWorkflowHasOutputFallback": false,
+  "WFWorkflowHasShortcutInputVariables": false,
+  "WFWorkflowIcon": {
+    "WFWorkflowIconGlyphNumber": 61440,
+    "WFWorkflowIconStartColor": -1263359489
+  },
+  "WFWorkflowImportQuestions": [],
+  "WFWorkflowInputContentItemClasses": [
+    "WFAppContentItem",
+    "WFAppStoreAppContentItem",
+    "WFArticleContentItem",
+    "WFContactContentItem",
+    "WFDateContentItem",
+    "WFEmailAddressContentItem",
+    "WFFolderContentItem",
+    "WFGenericFileContentItem",
+    "WFImageContentItem",
+    "WFiTunesProductContentItem",
+    "WFLocationContentItem",
+    "WFDCMapsLinkContentItem",
+    "WFAVAssetContentItem",
+    "WFPDFContentItem",
+    "WFPhoneNumberContentItem",
+    "WFRichTextContentItem",
+    "WFSafariWebPageContentItem",
+    "WFStringContentItem",
+    "WFURLContentItem"
+  ],
+  "WFWorkflowMinimumClientVersion": 900,
+  "WFWorkflowMinimumClientVersionString": "900",
+  "WFWorkflowOutputContentItemClasses": [],
+  "WFWorkflowTypes": [
+    "WFWorkflowTypeShowInSearch"
+  ]
+}

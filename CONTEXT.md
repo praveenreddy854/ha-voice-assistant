@@ -98,6 +98,34 @@ _Avoid_: Ask-to-cancel, queue TV command, generic domain lock.
 A post-wake-word interaction where the user's live speech is handled directly by the Realtime Voice Agent until the turn is complete.
 _Avoid_: Command transcript, text-only turn.
 
+**Shortcut voice turn**:
+A Siri-triggered interaction whose speech is submitted as finalized text for the same assistant capabilities available through the Realtime Voice Agent.
+_Avoid_: Realtime voice turn, Siri webhook, Home Assistant-only command.
+
+**Shortcut follow-up turn**:
+An additional answer captured inside the active Shortcut voice turn in response to a pending clarification, confirmation, or Specialist agent question.
+_Avoid_: New Shortcut voice turn, Realtime follow-up turn, new command.
+
+**Shortcut turn boundary**:
+The moment a Shortcut voice turn ends because its Text Assistant session completes, fails, is cancelled, or expires.
+_Avoid_: Initial acknowledgement, first HTTP response, polling interval.
+
+**Text Assistant session**:
+A server-owned assistant conversation that receives finalized text from an external voice channel without sharing the browser Realtime voice session.
+_Avoid_: Siri webhook, Realtime voice session, Home Assistant command endpoint.
+
+**Home-network Shortcut access**:
+The rule that Shortcut voice turns are accepted only from Apple devices connected to the same trusted private network as the service.
+_Avoid_: Public webhook, remote access, internet-facing integration.
+
+**Shortcut template**:
+The Shortcut source artifact kept in the repository with a placeholder for the installation's local service address.
+_Avoid_: Installed Shortcut, packaged Shortcut.
+
+**Packaged Shortcut**:
+A locally generated, signed Shortcut containing the installation's local service address.
+_Avoid_: Shortcut template, source artifact.
+
 **Voice turn boundary**:
 The moment a Realtime voice turn is considered complete. A turn ends when the assistant finishes its response, unless that response is a pending question or confirmation that opens a Follow-up voice turn.
 _Avoid_: Browser silence timeout, command recording timeout, fixed listening window.
@@ -177,6 +205,25 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 - Sharing **Execution history summary** evidence does not merge the separate browser and Siri **Short conversational memory** scopes.
 - The **Realtime Voice Agent** is the single post-wake-word voice entry point.
 - A **Realtime voice turn** starts after wake-word detection and is handled as live audio, not as a finalized command transcript.
+- A **Shortcut voice turn** is a full assistant entry point for General chat, Direct Home Assistant commands and state queries, and Specialist agent delegation.
+- A **Shortcut voice turn** is finalized text from Siri rather than live audio and is therefore not a **Realtime voice turn**.
+- A **Shortcut voice turn** starts when Siri runs the personal Shortcut by name and the Shortcut then asks the user for the command.
+- A **Shortcut voice turn** is handled by an independent **Text Assistant session** that shares assistant capability policy without sharing the browser Realtime voice session.
+- A **Text Assistant session** uses the same **Short conversational memory** bound as the browser Realtime voice path: at most 10 conversation items or about five minutes, whichever is smaller.
+- Shortcut voice turns share one Apple Shortcut **Short conversational memory** scope; it is not shared with browser Realtime history.
+- A pending question in a **Shortcut voice turn** opens a **Shortcut follow-up turn** without requiring another Siri invocation.
+- A **Shortcut follow-up turn** is scoped to the pending question and remains part of the original **Shortcut voice turn**.
+- The assistant owns the pending context for a **Shortcut follow-up turn**; the Shortcut supplies an answer but cannot independently assert an **Action confirmation**.
+- An initial acknowledgement does not create a **Shortcut turn boundary**; the Shortcut voice turn remains active while its Text Assistant session is running or awaiting input.
+- A **Shortcut voice turn** lasts at most two minutes; expiry cancels its active work and creates a **Shortcut turn boundary** with a timeout result.
+- A service restart ends active **Shortcut voice turn**s; Text Assistant sessions are not recovered or resumed across process lifetimes.
+- **Home-network Shortcut access** is the only supported v1 network boundary; remote and internet-facing Shortcut voice turns are out of scope.
+- **Home-network Shortcut access** is unauthenticated in v1; any caller that can reach the endpoint can invoke the assistant and continue a session whose identifier it knows.
+- **Home-network Shortcut access** permits plain HTTP in v1 and therefore trusts the private network with the confidentiality of commands and responses.
+- **Home-network Shortcut access** is established by configuring the Shortcut with a local hostname or LAN IP; the service does not enforce source-network restrictions.
+- A **Shortcut template** is safe to keep in the repository because it contains no secret.
+- A **Packaged Shortcut** is produced locally from the **Shortcut template** after local-address injection.
+- A **Packaged Shortcut** is signed locally for People Who Know Me.
 - The **Voice turn boundary** is owned by the realtime voice session, not by browser-side command recording.
 - The **Realtime Voice Agent** may use **Short conversational memory**, but current device state and active specialist state remain authoritative.
 - **Short conversational memory** keeps the last 10 user/assistant messages or about five minutes of interaction, whichever is smaller.
@@ -276,6 +323,42 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 > **Dev:** "After the wake word, should the assistant wait for a completed transcript before routing the command?"
 > **Domain expert:** "No — the command is a **Realtime voice turn**, so live speech goes directly to the **Realtime Voice Agent**."
 
+> **Dev:** "Is a Siri request limited to direct Home Assistant commands?"
+> **Domain expert:** "No — a **Shortcut voice turn** exposes the full assistant capability set, but it arrives as finalized text rather than live audio."
+
+> **Dev:** "Can the user include an arbitrary command in the same phrase that invokes the personal Shortcut?"
+> **Domain expert:** "Not in v1 — Siri runs 'Ask Assistant' by name, and the Shortcut then prompts for the command. A one-sentence parameterized phrase requires a native App Intent."
+
+> **Dev:** "Must the user invoke Siri again to confirm opening the garage?"
+> **Domain expert:** "No — the active **Shortcut voice turn** asks for confirmation and captures the answer as a **Shortcut follow-up turn**."
+
+> **Dev:** "Can the Shortcut mark a protected action as confirmed?"
+> **Domain expert:** "No — it can only submit the user's answer. The assistant decides whether that answer satisfies the pending **Action confirmation**."
+
+> **Dev:** "Does Siri inject its command into the browser's live voice connection?"
+> **Domain expert:** "No — a **Shortcut voice turn** has its own **Text Assistant session**, even when no browser is connected."
+
+> **Dev:** "Does the Shortcut voice turn end when Siri says 'On it'?"
+> **Domain expert:** "No — it stays active until the Text Assistant session reaches the **Shortcut turn boundary** or asks for a follow-up answer."
+
+> **Dev:** "Can a stuck Shortcut voice turn poll forever?"
+> **Domain expert:** "No — it expires after two minutes, cancels its active work, and ends at the **Shortcut turn boundary**."
+
+> **Dev:** "Does an active Shortcut voice turn resume after the service restarts?"
+> **Domain expert:** "No — the restart ends the turn, and the user starts a new Siri request."
+
+> **Dev:** "Does the Shortcut store the Home Assistant token?"
+> **Domain expert:** "No — the Shortcut endpoint is unauthenticated on the trusted home network, while Home Assistant credentials remain inside the service."
+
+> **Dev:** "Can the Shortcut invoke the assistant while the Apple device is away from home?"
+> **Domain expert:** "No — v1 uses **Home-network Shortcut access** and does not expose the integration to the public internet."
+
+> **Dev:** "Can we commit the Apple Shortcut to the repository?"
+> **Domain expert:** "Commit the **Shortcut template** with its local-address placeholder. Generate the **Packaged Shortcut** locally."
+
+> **Dev:** "Does 'do that again' in Siri refer to the browser's last command?"
+> **Domain expert:** "No — Apple Shortcut calls share a separate **Short conversational memory** scope. Persistent agent memory remains shared."
+
 > **Dev:** "Can the assistant use the previous exchange to understand 'do that again tomorrow'?"
 > **Domain expert:** "Yes — use **Short conversational memory**, but never as the source of current device state."
 
@@ -333,6 +416,12 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 - "No confirmation needed" applies to routine actions, not a **Bulk destructive action**.
 - Opening or unlocking the front door, back door, or garage door is a **Protected opening action**, not a routine command.
 - "Raw audio" means a **Realtime voice turn**, not the existing finalized transcript path.
+- "Works for everything" means a **Shortcut voice turn** exposes the full assistant capability set rather than acting as a Home Assistant-only command channel.
+- The example “Hey Siri, ask Assistant to turn on the bathroom light” is a two-stage personal Shortcut interaction in v1, not a one-sentence parameterized App Intent.
+- "The same prompt history as the browser" means the same **Short conversational memory** bound for Text Assistant sessions, in addition to the existing Persistent agent memory behavior.
+- "The same prompt history as the browser" does not provide request idempotency; v1 accepts that an identical HTTP retry may repeat a device action.
+- "Home-network only" does not imply encrypted transport in v1; plain HTTP is accepted as an explicit trusted-LAN trade-off.
+- "Home-network only" is not an application-level CIDR allowlist; local addressing and network configuration provide the boundary.
 - Wake-word detection remains browser-based; only post-wake-word audio becomes a **Realtime voice turn**.
 - Azure Speech text-to-speech remains the announcement playback path; Azure Speech command transcription is replaced by **Realtime voice turn** handling.
 - "Hybrid delegation" means choosing between **Blocking specialist run** and **Async specialist run** per delegated request.

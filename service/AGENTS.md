@@ -23,6 +23,7 @@ This document provides comprehensive documentation for the service package's age
 The service package is a Node.js/Express backend that provides:
 
 - **Realtime Voice Agent**: Handles post-wake-word voice turns, tool calls, and Specialist agent delegation
+- **Text Assistant**: Handles finalized text from external voice channels through independent server-owned sessions
 - **Home Assistant Integration**: Executes smart home commands via Home Assistant APIs
 - **Multi-Agent System**: Orchestrates specialized AI agents for complex TV automation tasks
 - **Persistent Agent Memory**: Stores scoped user preferences, stable facts, and reusable guidance for all agents
@@ -71,6 +72,13 @@ The service package is a Node.js/Express backend that provides:
 ### Realtime Voice Agent (`src/realtimeChat.ts`)
 
 Owns the post-wake-word voice turn, streams raw audio to Azure OpenAI Realtime, and selects direct Home Assistant tools or Specialist agents based on request meaning.
+
+### Text Assistant (`src/textAssistant.ts`, `src/textAssistantSessions.ts`)
+
+Owns finalized-text voice turns from integrations such as Apple Shortcuts. It
+shares capability executors and confirmation policy with the Realtime Voice
+Agent while keeping its own in-memory conversation sessions and a bounded
+history scope per external channel.
 
 ### Home Assistant Integration (`src/ha.ts`)
 
@@ -348,6 +356,7 @@ npm run traces:errors
 | `MEMORY_CONSOLIDATION_INTERVAL_MS` | Background memory consolidation cadence | `60000` |
 | `AZURE_SPEECH_KEY` | Azure Speech Service key | - |
 | `AZURE_SPEECH_REGION` | Speech Service region | `eastus` |
+| `APPLE_SHORTCUT_BASE_URL` | Local hostname/IP injected when packaging the Shortcut | - |
 
 ### Prompt Templates
 
@@ -369,6 +378,7 @@ Located in `src/prompts/`:
 |----------|--------|-------------|
 | `/` | GET | Health check |
 | `/api/realtime-chat` | WS | Realtime Voice Agent audio/tool proxy |
+| `/api/integrations/apple-shortcuts/sessions*` | Various | LAN-only, unauthenticated Text Assistant session lifecycle |
 | `/api/agent/run` | POST | Run registered Specialist agents |
 | `/api/teaching/*` | Various | Teaching mode endpoints |
 | `/api/scheduled-tasks/*` | Various | ScheduledTask read/cancel endpoints |

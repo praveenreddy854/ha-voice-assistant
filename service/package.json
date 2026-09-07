@@ -12,6 +12,7 @@
     "traces": "node trace-viewer.js",
     "traces:prompts": "node trace-viewer.js prompts",
     "traces:errors": "node trace-viewer.js errors",
+    "shortcut:package": "tsx scripts/package-apple-shortcut.ts",
     "test": "tsx --test tests/*.test.ts"
   },
   "keywords": [],
