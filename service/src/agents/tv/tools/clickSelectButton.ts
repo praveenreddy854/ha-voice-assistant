@@ -3,6 +3,8 @@ import { TvToolDefinition, ToolExecutionContext, ToolExecutionResult } from "./t
 import { executeHACommand } from "../../../ha";
 import { delay } from "../../common/utils";
 import { TV_DEFAULT_WAIT_MS } from "../../../config";
+import { getDeviceIntegration } from "./webSearch";
+import { sendRemoteCommands } from "./remoteCommands";
 
 export const inputSchema = z.object({
   remote_entity_id: z.string().describe(
@@ -27,7 +29,15 @@ async function execute(
   const deviceName = parsed.remote_entity_id.replace("remote.", "");
   const plainCommand = `Select on ${deviceName}`;
 
-  const result = await executeHACommand(plainCommand);
+  const integration = getDeviceIntegration(parsed.remote_entity_id);
+  await context.waitIfPaused?.();
+  context.abortSignal?.throwIfAborted();
+  const result = integration
+    ? await sendRemoteCommands(parsed.remote_entity_id,
+        integration === "samsungtv" ? "KEY_ENTER" : "select", context)
+    : await executeHACommand(plainCommand, undefined, { abortSignal: context.abortSignal });
+  await context.waitIfPaused?.();
+  context.abortSignal?.throwIfAborted();
 
   if (!result.success) {
     return {

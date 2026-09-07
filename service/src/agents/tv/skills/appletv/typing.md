@@ -23,7 +23,8 @@ ALWAYS use `deterministic_typing` for this keyboard layout. Pass the **full text
 ### What you need to do:
 1. Look at the screenshot and identify which character the cursor is currently on.
 2. Call `deterministic_typing` with the **complete text** and the current cursor position.
-3. The tool types word by word, validates each word via background screenshots, and stops if something goes wrong.
+3. Use the shortest query preserving the request. "Play latest telugu songs" becomes `latest telugu songs`; do not add "music video", "official", or "HD" unless requested.
+4. The tool sends ordered key batches with no per-word screenshot or AI delays. Verify the completed search field in the returned screenshot before selecting results.
 
 ### Example:
 ```
@@ -31,6 +32,5 @@ deterministic_typing(text="latest telugu songs", current_cursor_position="a")
 ```
 
 ### If the tool reports an error:
-1. It tells you what it expected vs what it actually saw on screen.
-2. Use delete key on the keyboard to remove the incorrect characters.
-3. Call `deterministic_typing` again with the remaining text and current cursor position.
+1. A failed batch may have partly executed. Read the current text and cursor from a fresh screenshot.
+2. Call `deterministic_typing` with the **full target**, `already_typed` from the screenshot, and the current cursor. It preserves the matching prefix and corrects only the remainder.

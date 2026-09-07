@@ -594,8 +594,10 @@ export async function callHAServiceDirect(
   domain: string,
   service: string,
   entityId: string,
-  serviceData?: Record<string, unknown>
+  serviceData?: Record<string, unknown>,
+  options?: HAExecutionOptions
 ): Promise<{ success: boolean; message: string; data?: any }> {
+  await waitForRunPermission(options);
   try {
     const requestBody: Record<string, unknown> = { entity_id: entityId };
     if (serviceData) {
@@ -610,8 +612,11 @@ export async function callHAServiceDirect(
           "Content-Type": "application/json",
           Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
         },
+        signal: options?.abortSignal,
+        timeout: 30000,
       }
     );
+    await waitForRunPermission(options);
 
     if (response.status < 200 || response.status >= 300) {
       return {
@@ -627,6 +632,7 @@ export async function callHAServiceDirect(
       data: response.data,
     };
   } catch (error) {
+    if (options?.abortSignal?.aborted) throw options.abortSignal.reason ?? error;
     const err = error instanceof Error ? error : new Error(String(error));
     return {
       success: false,

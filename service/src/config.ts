@@ -70,6 +70,12 @@ export const TV_DEFAULT_WAIT_MS = Number.parseInt(
   process.env.TV_DEFAULT_WAIT_MS || "1500",
   10
 );
+// Override HA's 400ms per-key default. Set a small positive value only if a
+// particular device drops rapid key presses.
+const remoteKeyDelay = Number(process.env.TV_REMOTE_KEY_DELAY_MS ?? "0");
+export const TV_REMOTE_KEY_DELAY_MS = Number.isFinite(remoteKeyDelay)
+  ? Math.max(0, Math.min(1000, remoteKeyDelay))
+  : 0;
 export const TV_AGENT_DEVICES = process.env.TV_AGENT_DEVICES
   ? process.env.TV_AGENT_DEVICES.split(",").map((d) => d.trim())
   : [];

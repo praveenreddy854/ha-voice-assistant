@@ -1,11 +1,7 @@
 import { z } from "zod";
 import { TvToolDefinition, ToolExecutionContext, ToolExecutionResult } from "./types";
-import { callHAServiceDirect } from "../../../ha";
-import { delay } from "../../common/utils";
-import { resolveKeyboardLayout } from "../../common/keyboards";
-
-const NAV_WAIT_MS = 300;
-const SELECT_WAIT_MS = 400;
+import { resolveKeyboardLayout, resolveKeyboardPosition } from "../../common/keyboards";
+import { sendRemoteCommands } from "./remoteCommands";
 
 export const inputSchema = z.object({
   remote_entity_id: z.string().describe(
@@ -36,45 +32,21 @@ async function execute(
     };
   }
 
-  const cursorChar = parsed.current_cursor_position.toLowerCase();
-  const currentPos = layout.positions[cursorChar] ?? deletePos;
-  const diff = deletePos - currentPos;
-
-  if (diff !== 0) {
-    await context.waitIfPaused?.();
-    context.abortSignal?.throwIfAborted();
-    const direction = diff > 0 ? "right" : "left";
-    const navResult = await callHAServiceDirect(
-      "remote", "send_command", parsed.remote_entity_id,
-      { command: direction, num_repeats: Math.abs(diff) }
-    );
-
-    if (!navResult.success) {
-      return {
-        observation: `❌ Failed to navigate to DELETE key: ${navResult.message}`,
-        needsScreenshot: true,
-        toolSuccess: false,
-      };
-    }
-    await delay(NAV_WAIT_MS, context.abortSignal);
+  const currentPos = resolveKeyboardPosition(parsed.current_cursor_position, layout);
+  if (currentPos === undefined) {
+    return { observation: "Unknown cursor position. Inspect the keyboard before deleting.", needsScreenshot: true, toolSuccess: false };
   }
-
-  await context.waitIfPaused?.();
-  context.abortSignal?.throwIfAborted();
-  const selectResult = await callHAServiceDirect(
-    "remote", "send_command", parsed.remote_entity_id,
-    { command: "select" }
-  );
-
-  if (!selectResult.success) {
+  const diff = deletePos - currentPos;
+  const commands: string[] = Array(Math.abs(diff)).fill(diff > 0 ? "right" : "left");
+  commands.push("select");
+  const result = await sendRemoteCommands(parsed.remote_entity_id, commands, context);
+  if (!result.success) {
     return {
-      observation: `❌ Failed to press DELETE: ${selectResult.message}`,
+      observation: `Failed to delete: ${result.message}. The batch may have partly executed; inspect the field and cursor before retrying.`,
       needsScreenshot: true,
       toolSuccess: false,
     };
   }
-
-  await delay(SELECT_WAIT_MS, context.abortSignal);
 
   return {
     observation: `✅ Navigated to DELETE key and deleted last character. Cursor is now on DELETE (position ${deletePos}). ${parsed.reason}`,

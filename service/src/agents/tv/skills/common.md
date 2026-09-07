@@ -24,8 +24,7 @@ Never interpret a black screenshot as valid — always re-capture.
 
 - 1500–2000ms after power on / wakeup
 - 2000–3000ms after app launch
-- 1000–1500ms after typing
-- 1000ms after navigation before screenshot
+- Capture a screenshot after typing or navigation without an extra fixed wait. If it still shows a transition, use `wait` once and capture again.
 
 ## Navigation Tips
 
@@ -38,5 +37,6 @@ Never interpret a black screenshot as valid — always re-capture.
 1. Navigate to search icon → `click_select_button`
 2. `get_latest_screenshot` — confirm keyboard appeared
 3. `load_skill` for typing — get keyboard layout and cursor position
-4. `deterministic_typing` with text and cursor position from screenshot
-5. If keyboard not visible: `click_select_button` again, re-check with screenshot
+4. Choose the shortest search phrase preserving the user's intent: "Play latest telugu songs" → `latest telugu songs`. Do not expand it to `latest telugu music video songs`. Preserve exact titles and explicitly requested qualifiers.
+5. `deterministic_typing` with the full search phrase and cursor position from screenshot, then verify the final text
+6. If keyboard not visible: `click_select_button` again, re-check with screenshot

@@ -11,6 +11,8 @@ let activeMicOutput: GainNode | null = null;
 let activeMicStart: Promise<void> | null = null;
 let micLifecycleVersion = 0;
 let activeSessionReady = false;
+let activeConnectTimer: ReturnType<typeof setTimeout> | null = null;
+let turnLifecycleVersion = 0;
 let pendingConnectResolvers: Array<(ws: WebSocket) => void> = [];
 let pendingConnectRejectors: Array<(error: Error) => void> = [];
 
@@ -130,11 +132,22 @@ function resolveCurrentTurn(): void {
   if (currentMode === "voice") {
     voiceTurnResolved = true;
   }
+  turnLifecycleVersion++;
   clearListeningWindow();
   stopMicStreaming();
   currentMode = null;
   currentResolve?.();
   currentResolve = null;
+}
+
+function failCurrentTurn(message: string): void {
+  currentOnError?.(message);
+  resolveCurrentTurn();
+  if (assistantSpeakingOutsideTurn) {
+    assistantSpeakingOutsideTurn = false;
+    assistantSpeakingOutsideTurnFollowup = false;
+    globalOnAsyncAssistantSpeechEnd?.({ followupExpected: false });
+  }
 }
 
 function startListeningWindow(durationMs: number): void {
@@ -222,6 +235,7 @@ async function waitForQueuedAudio(): Promise<void> {
 }
 
 async function finishResponse(fullText: string, followupExpected: boolean): Promise<void> {
+  const lifecycleVersion = turnLifecycleVersion;
   const isVoiceTurn = currentMode === "voice";
   const wasInterrupted = assistantInterrupted;
   assistantInterrupted = false;
@@ -233,6 +247,7 @@ async function finishResponse(fullText: string, followupExpected: boolean): Prom
   }
 
   await waitForQueuedAudio();
+  if (lifecycleVersion !== turnLifecycleVersion) return;
   if (audioChunksInResponse === 0 && fullText.trim() && !wasInterrupted) {
     console.warn("[RealtimeChat] Response completed without audio deltas");
   }
@@ -274,6 +289,7 @@ async function finishResponse(fullText: string, followupExpected: boolean): Prom
   try {
     await startMicStreaming();
   } catch (error) {
+    if (lifecycleVersion !== turnLifecycleVersion) return;
     const message = error instanceof Error ? error.message : String(error);
     currentOnError?.(message);
     resolveCurrentTurn();
@@ -305,6 +321,8 @@ function handleMessage(event: MessageEvent): void {
 
     switch (msg.type) {
       case "session_ready":
+        if (activeConnectTimer) clearTimeout(activeConnectTimer);
+        activeConnectTimer = null;
         activeSessionReady = true;
         if (activeWs) {
           resolvePendingConnections(activeWs);
@@ -408,10 +426,9 @@ function handleMessage(event: MessageEvent): void {
 
       case "error":
         console.error("[RealtimeChat] Error:", msg.message);
+        resetRealtimeSocket();
         rejectPendingConnections(new Error(msg.message || "Realtime API error"));
-        currentOnError?.(msg.message);
-        stopMicStreaming();
-        resolveCurrentTurn();
+        failCurrentTurn(msg.message || "Realtime API error");
         break;
     }
   } catch (err) {
@@ -547,16 +564,20 @@ async function startMicStreaming(): Promise<void> {
 }
 
 async function ensureMicStreamingForFollowUp(): Promise<void> {
+  const lifecycleVersion = turnLifecycleVersion;
   const micIsActive =
     activeMicStream?.active === true &&
     activeMicStream.getAudioTracks().some((track) => track.readyState === "live") &&
     activeProcessor !== null &&
     activeMicCtx?.state !== "closed";
-  if (micIsActive) return;
-
   try {
-    await startMicStreaming();
+    if (micIsActive && activeMicCtx) {
+      if (activeMicCtx.state !== "running") await activeMicCtx.resume();
+    } else {
+      await startMicStreaming();
+    }
   } catch (error) {
+    if (lifecycleVersion !== turnLifecycleVersion) return;
     const message = errorMessage(error, "Unable to reopen the microphone");
     currentOnError?.(message);
     resolveCurrentTurn();
@@ -586,15 +607,8 @@ function stopMicStreaming(): void {
 }
 
 export function stopRealtimeChat(options: { closeAudioOutput?: boolean } = {}): void {
-  stopMicStreaming();
-  clearListeningWindow();
-  if (activeWs) {
-    if (activeWs.readyState === WebSocket.OPEN || activeWs.readyState === WebSocket.CONNECTING) {
-      activeWs.close();
-    }
-    activeWs = null;
-  }
-  activeSessionReady = false;
+  resolveCurrentTurn();
+  resetRealtimeSocket();
   rejectPendingConnections(new Error("Realtime chat stopped"));
   currentMode = null;
   voiceTurnResolved = true;
@@ -604,14 +618,20 @@ export function stopRealtimeChat(options: { closeAudioOutput?: boolean } = {}): 
   }
   nextPlayTime = 0;
   currentResolve = null;
+  assistantSpeakingOutsideTurn = false;
+  assistantSpeakingOutsideTurnFollowup = false;
 }
 
 function resetRealtimeSocket(): void {
+  if (activeConnectTimer) clearTimeout(activeConnectTimer);
+  activeConnectTimer = null;
   activeSessionReady = false;
   if (!activeWs) return;
 
   activeWs.onclose = null;
   activeWs.onerror = null;
+  activeWs.onmessage = null;
+  activeWs.onopen = null;
   if (activeWs.readyState === WebSocket.OPEN || activeWs.readyState === WebSocket.CONNECTING) {
     activeWs.close();
   }
@@ -638,25 +658,32 @@ function connectRealtime(): Promise<WebSocket> {
     pendingConnectResolvers.push(resolve);
     pendingConnectRejectors.push(reject);
 
+    const disconnected = (message: string): void => {
+      if (activeWs !== ws) return;
+      resetRealtimeSocket();
+      rejectPendingConnections(new Error(message));
+      failCurrentTurn(message);
+    };
+    activeConnectTimer = setTimeout(() => {
+      disconnected("Realtime connection timed out. Please try again.");
+    }, 15000);
+
     ws.onopen = () => {
       console.log("[RealtimeChat] Connected to backend proxy");
     };
 
     ws.onmessage = (event) => {
-      handleMessage(event);
+      if (activeWs === ws) handleMessage(event);
     };
 
     ws.onerror = (err) => {
       console.error("[RealtimeChat] WebSocket error:", err);
-      rejectPendingConnections(new Error("Realtime websocket error"));
+      disconnected("Realtime websocket error");
     };
 
     ws.onclose = () => {
       console.log("[RealtimeChat] WebSocket closed");
-      activeWs = null;
-      activeSessionReady = false;
-      stopMicStreaming();
-      rejectPendingConnections(new Error("WebSocket closed before session was ready"));
+      disconnected("Realtime connection closed. Listening can be restarted.");
     };
   });
 }
@@ -670,6 +697,8 @@ export async function startRealtimeVoiceTurn(
   onAsyncJobFinished?: () => void,
   options: RealtimeVoiceTurnOptions = {}
 ): Promise<void> {
+  resolveCurrentTurn();
+  const lifecycleVersion = ++turnLifecycleVersion;
   currentOnTranscriptDelta = onTranscriptDelta;
   currentOnDone = onDone;
   currentOnError = onError;
@@ -685,6 +714,7 @@ export async function startRealtimeVoiceTurn(
     currentResolve = resolve;
 
     const fail = (error: unknown): void => {
+      if (lifecycleVersion !== turnLifecycleVersion) return;
       currentOnError?.(errorMessage(error, "Realtime connection error"));
       stopMicStreaming();
       resolveCurrentTurn();
@@ -693,12 +723,15 @@ export async function startRealtimeVoiceTurn(
     (async () => {
       try {
         await ensureAudioContext();
+        if (lifecycleVersion !== turnLifecycleVersion) return;
         const ws = await connectRealtime();
+        if (lifecycleVersion !== turnLifecycleVersion) return;
         // Bare wake-word opens the mic for a real conversation — force the
         // first response to keep the mic open so the user can actually speak,
         // even if the model forgets to call await_user_followup.
         ws.send(JSON.stringify({ type: "force_followup" }));
         await startMicStreaming();
+        if (lifecycleVersion !== turnLifecycleVersion) return;
         startListeningWindow(LISTENING_WINDOW_MS);
       } catch (error) {
         fail(error);
@@ -713,6 +746,8 @@ export function startRealtimeChat(
   onDone?: (fullText: string) => void,
   onError?: (error: string) => void
 ): Promise<void> {
+  resolveCurrentTurn();
+  const lifecycleVersion = ++turnLifecycleVersion;
   // Update per-request callbacks
   currentOnTranscriptDelta = onTranscriptDelta;
   currentOnDone = onDone;
@@ -724,7 +759,9 @@ export function startRealtimeChat(
 
   const sendText = async (): Promise<void> => {
     await ensureAudioContext();
+    if (lifecycleVersion !== turnLifecycleVersion) return;
     const ws = await connectRealtime();
+    if (lifecycleVersion !== turnLifecycleVersion) return;
     ws.send(JSON.stringify({ type: "user_text", text }));
   };
 
@@ -732,11 +769,13 @@ export function startRealtimeChat(
     currentResolve = resolve;
     sendText()
       .catch(async (error) => {
+        if (lifecycleVersion !== turnLifecycleVersion) return;
         console.warn("[RealtimeChat] Retrying text turn after connection issue:", error);
         resetRealtimeSocket();
         try {
           await sendText();
         } catch (retryError) {
+          if (lifecycleVersion !== turnLifecycleVersion) return;
           currentOnError?.(errorMessage(retryError, "Realtime connection error"));
           currentMode = null;
           currentResolve?.();
