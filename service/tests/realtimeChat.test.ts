@@ -34,8 +34,8 @@ function proxyFixture(run = async (..._args: any[]): Promise<string> => "Done.")
     "../src/activeRunManager": { getActiveRun: () => undefined },
     "../src/tracing": { getTracer: () => ({ startSpan: () => ({ setAttribute() {}, end() {} }) }) },
     "../src/memory": { getPromptMemoryContext: async () => "", recordMemoryInteraction() {} },
-    "../src/ha": {},
-    "../src/agents/core": {},
+    "../src/assistantCapabilities": {},
+    "../src/webSearch": { executeWebSearch: async () => "Sunny" },
     "../src/liveVoiceAgent": { runLiveVoiceAgent: run },
   };
   const previous = new Map<string, NodeModule | undefined>();

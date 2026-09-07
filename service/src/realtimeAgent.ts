@@ -350,13 +350,4 @@ export function buildRealtimeTurnInstructions(options: {
   return [memoryContext, activeRunContext, interruptedResponseContext].filter(Boolean).join("\n\n");
 }
 
-export function needsActionConfirmation(command: string): boolean {
-  const normalized = command.toLowerCase();
-  const protectedOpening =
-    /\b(open|unlock)\b/.test(normalized) &&
-    /\b(front door|back door|garage door|garage)\b/.test(normalized);
-  const bulkDestructive =
-    /\b(cancel|delete|remove|clear|turn off|shut off|disable)\b/.test(normalized) &&
-    /\b(all|every|everything|entire|whole)\b/.test(normalized);
-  return protectedOpening || bulkDestructive;
-}
+export { needsActionConfirmation } from "./assistantPolicy";

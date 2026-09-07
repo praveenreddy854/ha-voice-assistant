@@ -34,3 +34,7 @@ service/models/
 # Graphify
 /graphify-out/
 service/graphify-out
+
+# Locally generated Apple Shortcut build output.
+service/shortcuts/*.shortcut
+service/dist/shortcuts/
