@@ -7,6 +7,7 @@
 
 import fs from "fs";
 import path from "path";
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   context,
   trace,
@@ -130,7 +131,7 @@ const activeSessions = new Map<string, ActiveTraceSession>();
 const exportedSpans: ExportedTelemetrySpan[] = [];
 const persistedSpanCache: PersistedSpanCache = { mtimeMs: -1, spans: [] };
 
-let activeSessionId: string | null = null;
+const traceSessionContext = new AsyncLocalStorage<string>();
 
 export class TelemetrySpanExporter implements SpanExporter {
   export(
@@ -166,12 +167,13 @@ export class TelemetrySpanExporter implements SpanExporter {
 
 export const telemetrySpanExporter = new TelemetrySpanExporter();
 
-export function setActiveSession(sessionId: string | null): void {
-  activeSessionId = sessionId;
+/** Bind attribution to this async chain, including tool and model callbacks. */
+export function withTraceSession<T>(sessionId: string, callback: () => T): T {
+  return traceSessionContext.run(sessionId, callback);
 }
 
 export function getActiveSessionId(): string | null {
-  return activeSessionId;
+  return traceSessionContext.getStore() ?? null;
 }
 
 export function getSessionTraceContext(sessionId: string): Context | undefined {

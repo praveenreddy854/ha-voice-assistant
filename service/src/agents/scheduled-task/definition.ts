@@ -50,9 +50,8 @@ export const scheduledTaskAgentDefinition: AgentDefinition = {
   agentType: "scheduled_task",
   name: SCHEDULED_TASK_AGENT_NAME,
   description: SCHEDULED_TASK_AGENT_DESCRIPTION,
-  // systemPrompt is rendered fresh per-session via buildInitialMessage; this
-  // field is required by the interface but the per-call render below is what
-  // actually controls timing context.
+  // The cached AgentLoop resolves this getter on every run/resumption, after
+  // any pause, so relative dates never use a clock frozen at service startup.
   get systemPrompt(): string {
     return renderSystemPrompt();
   },

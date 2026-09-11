@@ -72,11 +72,11 @@ export async function executeScheduledTaskTool(
   }
   try {
     await waitForRunPermission(options);
-    const raw = (await executor(args)) as { observation?: string };
+    const raw = (await executor(args)) as { observation?: string; toolSuccess?: boolean };
     await waitForRunPermission(options);
     return {
       observation: raw.observation ?? `Tool ${toolName} completed.`,
-      toolSuccess: true,
+      toolSuccess: raw.toolSuccess !== false,
       raw,
     };
   } catch (err) {

@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { z } from "zod";
 import { upsertScheduledTask } from "../../../cosmos";
+import { dueDateSchema, dueDateError } from "./dueDate";
 import type {
   ScheduledTask,
   ScheduledTaskCategory,
@@ -34,11 +35,7 @@ export const inputSchema = z.object({
     .describe("Short, user-facing label and the announcement text."),
   description: z.string().optional(),
   effect: z.union([announcementEffect, actionEffect]),
-  dueDate: z
-    .string()
-    .describe(
-      "Absolute ISO-8601 timestamp when this occurrence should fire. Convert relative phrases ('9 AM tomorrow') against the current date/time provided in the system prompt."
-    ),
+  dueDate: dueDateSchema,
   isRecurring: z.boolean(),
   recurringPattern: recurrenceSchema.optional(),
   category: z.enum([
@@ -61,12 +58,18 @@ export type SaveScheduledTaskInput = z.infer<typeof inputSchema>;
 export async function execute(args: SaveScheduledTaskInput): Promise<{
   saved: ScheduledTask | null;
   observation: string;
+  toolSuccess: boolean;
 }> {
   const parsed = inputSchema.parse(args);
+  const dateError = dueDateError(parsed.dueDate);
+  if (dateError) {
+    return { saved: null, observation: `Cannot save: ${dateError}`, toolSuccess: false };
+  }
 
   if (parsed.isRecurring && !parsed.recurringPattern) {
     return {
       saved: null,
+      toolSuccess: false,
       observation:
         "Cannot save: isRecurring is true but recurringPattern was not provided.",
     };
@@ -96,6 +99,7 @@ export async function execute(args: SaveScheduledTaskInput): Promise<{
   if (!saved) {
     return {
       saved: null,
+      toolSuccess: false,
       observation:
         "Cosmos DB is not configured or the upsert failed. Task not saved.",
     };
@@ -103,6 +107,7 @@ export async function execute(args: SaveScheduledTaskInput): Promise<{
 
   return {
     saved,
+    toolSuccess: true,
     observation:
       `Saved ScheduledTask id=${saved.id} title="${saved.title}" ` +
       `effect=${saved.effect.kind}` +

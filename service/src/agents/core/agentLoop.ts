@@ -58,7 +58,8 @@ export interface ToolDefinition {
 }
 
 export interface AgentLoopConfig {
-  systemPrompt: string;
+  /** Resolve dynamic context after the pause gate on every run or resumption. */
+  systemPrompt: string | (() => string);
   tools: ToolDefinition[];
   maxIterations?: number;
   model?: string;
@@ -89,7 +90,7 @@ export interface StepEvent {
   };
   /** Snapshot of the conversation messages at the time of this step. */
   messages: ModelMessage[];
-  /** Per-session system context sent with this step, such as retrieved memory. */
+  /** System context sent for this run, including the refreshed prompt and memory. */
   systemMessages?: string[];
 }
 
@@ -305,7 +306,11 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
       await pauseGate?.waitIfPaused();
       abortSignal?.throwIfAborted();
       let stepCounter = 0;
-      const systemPrompt = [config.systemPrompt, ...session.systemMessages]
+      const systemMessages = [
+        typeof config.systemPrompt === "function" ? config.systemPrompt() : config.systemPrompt,
+        ...session.systemMessages,
+      ];
+      const systemPrompt = systemMessages
         .filter(Boolean)
         .join("\n\n");
       const sharedToolContext: AgentToolContext = {
@@ -351,7 +356,7 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
                   outputTokensPerSecond: performance.outputTokensPerSecond,
                 },
                 messages: [...session.messages],
-                systemMessages: [...session.systemMessages],
+                systemMessages: [...systemMessages],
               });
             }
           : undefined,
