@@ -115,7 +115,7 @@ export {
   addScreenshot,
   completeTrace,
   updateTraceStatus,
-  setActiveSession,
+  withTraceSession,
   getActiveSessionId,
   getSessionTraceContext,
 } from "./agentTraceStore";

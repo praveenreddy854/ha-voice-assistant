@@ -44,7 +44,7 @@ import {
   addScreenshot,
   completeTrace,
   updateTraceStatus,
-  setActiveSession,
+  withTraceSession,
   getActiveSessionId,
 } from "../../tracing/agentTraceStore";
 import {
@@ -91,7 +91,7 @@ function getOrCreateLoop(def: AgentDefinition): AgentLoop {
     });
 
     loop = createAgentLoop({
-      systemPrompt: `${def.systemPrompt}\n\n${AGENT_MEMORY_SYSTEM_INSTRUCTIONS}`,
+      systemPrompt: () => `${def.systemPrompt}\n\n${AGENT_MEMORY_SYSTEM_INSTRUCTIONS}`,
       tools,
       maxIterations: def.maxIterations,
       model: def.model,
@@ -263,18 +263,13 @@ async function processLoop(
     `[Orchestrator] Running agent "${def.agentType}" session ${session.id}`
   );
   addEvent(session.id, "agent.loop.started", `Running agent loop for session ${session.id}`);
-  setActiveSession(session.id);
-
-  let stepResult: AgentStepResult;
-  try {
-    stepResult = await loop.run(
+  const stepResult = await withTraceSession(session.id, () =>
+    loop.run(
       session.agentLoopSessionId,
       abortSignal,
       pauseGate
-    );
-  } finally {
-    setActiveSession(null);
-  }
+    )
+  );
   abortSignal?.throwIfAborted();
 
   console.log(`[Orchestrator] Agent result type: ${stepResult.type}`);
@@ -351,10 +346,8 @@ async function handleProposedCompletion(
   addEvent(session.id, "agent.completion.rejected", reason);
 
   const loop = getOrCreateLoop(def);
-  setActiveSession(session.id);
-  let nextResult: AgentStepResult;
-  try {
-    nextResult = await loop.submitToolResults(
+  const nextResult = await withTraceSession(session.id, () =>
+    loop.submitToolResults(
       session.agentLoopSessionId,
       [
         {
@@ -369,10 +362,8 @@ async function handleProposedCompletion(
       ],
       abortSignal,
       pauseGate
-    );
-  } finally {
-    setActiveSession(null);
-  }
+    )
+  );
 
   return handleResult(session, def, nextResult, abortSignal, pauseGate);
 }
@@ -654,10 +645,8 @@ async function handleExternalInput(
   session.pendingExternalInput = undefined;
 
   // Submit the tool result (with image if available) and re-run the agent
-  setActiveSession(session.id);
-  let nextResult: AgentStepResult;
-  try {
-    nextResult = await loop.submitToolResults(
+  const nextResult = await withTraceSession(session.id, () =>
+    loop.submitToolResults(
       session.agentLoopSessionId,
       [{
         toolCallId,
@@ -668,10 +657,8 @@ async function handleExternalInput(
       }],
       abortSignal,
       pauseGate
-    );
-  } finally {
-    setActiveSession(null);
-  }
+    )
+  );
 
   return handleResult(session, def, nextResult, abortSignal, pauseGate);
 }
