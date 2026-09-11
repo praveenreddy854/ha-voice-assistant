@@ -10,6 +10,9 @@ export const inputSchema = z.object({
   remote_entity_id: z.string().describe(
     "Home Assistant entity ID of the remote control to use (e.g., 'remote.loft_tv', 'remote.family_room_tv', 'remote.appletv')."
   ),
+  desired_state: z.enum(["on", "off"]).describe(
+    "The requested power state: on to wake/power on, off to sleep/power off. Choose from the user's intent, never by inverting Home Assistant's reported state."
+  ),
   reason: z.string().describe(
     "Why you're using power button (e.g., 'to turn on TV for user request')."
   ),
@@ -26,29 +29,32 @@ async function execute(
     ? Math.max(250, TV_DEFAULT_WAIT_MS)
     : 1500;
 
-  // Query the exact remote entity before deciding whether to turn it on/off.
+  // Read state for verification only. It can be stale and must never invert
+  // the requested action, including when retrying a wake/sleep command.
   const remoteState = await getDeviceEntityState(
     parsed.remote_entity_id,
     context
   );
-  const isOff = remoteState.state === "off";
   const integration = getDeviceIntegration(parsed.remote_entity_id);
 
   // Use the integration-specific power service directly for reliability.
-  const command = isOff ? "turn_on" : "turn_off";
+  const command = parsed.desired_state === "on" ? "turn_on" : "turn_off";
   await context.waitIfPaused?.();
   context.abortSignal?.throwIfAborted();
   const result = integration === "samsungtv"
     ? await callHAServiceDirect(
         "remote",
         command,
-        parsed.remote_entity_id
+        parsed.remote_entity_id,
+        undefined,
+        context
       )
     : await callHAServiceDirect(
         "remote",
         "send_command",
         parsed.remote_entity_id,
-        { command: isOff ? "wakeup" : "suspend" }
+        { command: parsed.desired_state === "on" ? "wakeup" : "suspend" },
+        context
       );
 
   if (!result.success) {
@@ -60,10 +66,10 @@ async function execute(
   }
 
   // Poll the same remote entity used for the pre-command state check.
-  const offStates = new Set(["off", "standby", "unavailable", "unknown"]);
   const reachedTarget = (state: string | undefined): boolean => {
-    if (!state) return false;
-    return command === "turn_on" ? !offStates.has(state) : offStates.has(state);
+    // Only an explicit remote power state verifies the target. Losing contact
+    // with a device is not confirmation that it powered off.
+    return state?.toLowerCase() === parsed.desired_state;
   };
 
   await delay(defaultWait, context.abortSignal);
@@ -86,8 +92,8 @@ async function execute(
 
   const confirmed = reachedTarget(currentState);
   const note = confirmed
-    ? "State change confirmed by Home Assistant."
-    : "The power service was accepted, but Home Assistant still reports the original state. The command is not verified; inspect the device integration or Home Assistant Core component before retrying.";
+    ? "Requested remote power state confirmed by Home Assistant."
+    : `The power service was accepted, but Home Assistant has not confirmed the requested "${parsed.desired_state}" state (previously "${remoteState.state}"). The command is not verified; inspect the device integration or Home Assistant Core component before retrying.`;
 
   return {
     observation: `${confirmed ? "Successfully completed" : "Sent"} "${command}" to ${parsed.remote_entity_id}. ${parsed.reason}. ${note} Remote state: ${currentState}`,
@@ -99,7 +105,7 @@ async function execute(
 export const definition: TvToolDefinition = {
   name: "click_power_button",
   description:
-    "Turn the TV or device on/off using the power button. Use this for device power management. Returns updated device state automatically - no screenshot needed for verification.",
+    "Set the TV or device to the explicit desired_state (on to wake, off to sleep). Never toggle or infer the target by inverting observed state. Returns Home Assistant's remote state for verification; an accepted command alone does not verify the display.",
   inputSchema,
   execute,
 };

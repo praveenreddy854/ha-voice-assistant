@@ -221,7 +221,7 @@ export function getToolActionSummary(
 ): string {
   switch (toolName) {
     case "click_power_button":
-      return "Press power";
+      return `Set power ${args.desired_state ?? "(target required)"}`;
     case "media_control":
       return `Media control: ${args.action || "action"}`;
     case "click_select_button":
