@@ -6,6 +6,7 @@
 // New tool-specific argument types
 export interface ClickPowerButtonArgs {
   remote_entity_id: string;
+  desired_state: "on" | "off";
   reason: string;
 }
 

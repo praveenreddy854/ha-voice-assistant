@@ -17,7 +17,7 @@ If the observation says "device went to STANDBY" or screenshot is black:
 2. `get_latest_screenshot` for a fresh image
 3. Then proceed
 
-If `get_device_state` returns `standby` mid-flow, `click_power_button` first.
+If `get_device_state` returns `standby` mid-flow, use `click_power_button` with `desired_state: "on"` first. Power requests always name the intended state; never toggle based on a stale Home Assistant state.
 Never interpret a black screenshot as valid — always re-capture.
 
 ## Waiting Strategy
