@@ -3,6 +3,7 @@ import type {
   ToolDefinition,
 } from "../../core/agentLoop";
 import type { AgentPauseGate } from "../../core/types";
+import { getActiveSessionId, trackToolResult } from "../../../tracing/agentTraceStore";
 import * as findMatchingEntities from "./findMatchingEntities";
 import * as saveScheduledTask from "./saveScheduledTask";
 import * as listTasks from "./listTasks";
@@ -43,51 +44,58 @@ export const SCHEDULED_TASK_TOOLS: ToolDefinition[] = ALL_TOOLS.map((mod) => ({
     args: Record<string, unknown>,
     options?: AgentToolExecutionOptions
   ) => {
-    await waitForRunPermission(options);
-    const result = await mod.execute(args as never);
-    await waitForRunPermission(options);
-    return result;
+    const result = await executeScheduledTaskTool(mod.definition.name, args, options);
+    return result.raw ?? { observation: result.observation, toolSuccess: result.toolSuccess };
   },
 }));
-
-const EXECUTORS: Record<string, (args: unknown) => Promise<unknown>> = {};
-for (const mod of ALL_TOOLS) {
-  EXECUTORS[mod.definition.name] = mod.execute as (
-    args: unknown
-  ) => Promise<unknown>;
-}
 
 export async function executeScheduledTaskTool(
   toolName: string,
   args: Record<string, unknown>,
   options?: AgentToolExecutionOptions
 ): Promise<{ observation: string; toolSuccess: boolean; raw: unknown }> {
-  const executor = EXECUTORS[toolName];
-  if (!executor) {
-    return {
-      observation: `Unknown tool: ${toolName}`,
-      toolSuccess: false,
-      raw: null,
-    };
-  }
+  // Capture attribution before any await. Both SDK and direct execution use
+  // this boundary, so each actual attempt produces exactly one result span.
+  const sessionId = getActiveSessionId();
+  await waitForRunPermission(options);
+  const startedAt = Date.now();
+  const mod = ALL_TOOLS.find((tool) => tool.definition.name === toolName);
+  let traceArgs: Record<string, unknown> = {};
+  const record = (result: { observation: string; toolSuccess: boolean }) => {
+    if (sessionId) trackToolResult(sessionId, {
+      ...result, toolName, toolCallId: options?.toolCallId ?? "",
+      durationMs: Math.max(0, Date.now() - startedAt), args: traceArgs,
+    });
+  };
+  let result: { observation: string; toolSuccess: boolean; raw: unknown };
   try {
-    await waitForRunPermission(options);
-    const raw = (await executor(args)) as { observation?: string; toolSuccess?: boolean };
-    await waitForRunPermission(options);
-    return {
+    if (!mod) throw new Error("Unknown scheduled task tool");
+    // Only schema-approved fields enter telemetry; unknown fields and SDK
+    // error payloads (which can contain credentials) are never recorded here.
+    traceArgs = mod.definition.inputSchema.parse(args);
+    const raw = await mod.execute(traceArgs as never);
+    result = {
       observation: raw.observation ?? `Tool ${toolName} completed.`,
-      toolSuccess: raw.toolSuccess !== false,
+      toolSuccess: !("toolSuccess" in raw) || raw.toolSuccess !== false,
       raw,
     };
   } catch (err) {
-    if (options?.abortSignal?.aborted) throw err;
-    const message = err instanceof Error ? err.message : String(err);
-    return {
-      observation: `Tool ${toolName} failed: ${message}`,
+    result = {
+      observation: options?.abortSignal?.aborted
+        ? `Tool ${toolName} cancelled during execution; its effects may be incomplete.`
+        : `Tool ${toolName} failed during execution. Check its arguments and service availability.`,
       toolSuccess: false,
       raw: null,
     };
+    record(result);
+    if (options?.abortSignal?.aborted) throw err;
+    return result;
   }
+  // Record the real effect before a post-execution pause/cancellation check:
+  // cancelling after a successful write must not hide that persisted write.
+  record(result);
+  await waitForRunPermission(options);
+  return result;
 }
 
 export function getScheduledTaskToolActionSummary(

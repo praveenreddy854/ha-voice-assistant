@@ -10,6 +10,14 @@ export interface DashboardFilters {
   model?: string;
 }
 
+export interface TokenUsageCoverage {
+  modelCalls: number;
+  inputTokenCalls: number;
+  outputTokenCalls: number;
+  totalTokenCalls: number;
+  sessionsWithoutCalls: number;
+}
+
 interface DashboardOverview {
   sessions: number;
   finalizedSessions: number;
@@ -25,8 +33,10 @@ interface DashboardOverview {
   p50DurationMs: number | null;
   p95DurationMs: number | null;
   modelCalls: number;
-  inputTokens: number;
-  outputTokens: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  tokenUsageCoverage: TokenUsageCoverage;
 }
 
 export interface DashboardModelRow {
@@ -43,7 +53,8 @@ export interface DashboardModelRow {
   averageStepTimeMs: number | null;
   averageInputTokens: number | null;
   averageOutputTokens: number | null;
-  totalTokens: number;
+  totalTokens: number | null;
+  tokenUsageCoverage: TokenUsageCoverage;
   tokensPerSuccessfulSession: number | null;
   averageStepsPerSession: number;
 }
@@ -162,8 +173,8 @@ function buildOverview(traces: AgentTrace[]): DashboardOverview {
   const durations = numericValues(traces.map((trace) => trace.durationMs));
   const tools = traces.flatMap((trace) => trace.toolResults);
   const modelSteps = traces.flatMap((trace) => trace.llmSteps);
-  const inputTokens = sum(modelSteps.map((step) => step.inputTokens));
-  const outputTokens = sum(modelSteps.map((step) => step.outputTokens));
+  const inputTokens = measuredSum(modelSteps.map((step) => step.inputTokens));
+  const outputTokens = measuredSum(modelSteps.map((step) => step.outputTokens));
 
   return {
     sessions: traces.length,
@@ -190,6 +201,8 @@ function buildOverview(traces: AgentTrace[]): DashboardOverview {
     modelCalls: modelSteps.length,
     inputTokens,
     outputTokens,
+    totalTokens: measuredSum(modelSteps.map((step) => step.totalTokens)),
+    tokenUsageCoverage: tokenCoverage(modelSteps, traces),
   };
 }
 
@@ -221,7 +234,8 @@ function buildModelRows(traces: AgentTrace[]): DashboardModelRow[] {
       const stepTimes = numericValues(group.steps.map((step) => step.stepTimeMs));
       const inputTokens = numericValues(group.steps.map((step) => step.inputTokens));
       const outputTokens = numericValues(group.steps.map((step) => step.outputTokens));
-      const totalTokens = sum(group.steps.map((step) => step.totalTokens));
+      const totalTokens = measuredSum(actualSteps.map((step) => step.totalTokens));
+      const tokenUsageCoverage = tokenCoverage(actualSteps, modelTraces);
 
       return {
         model,
@@ -238,11 +252,32 @@ function buildModelRows(traces: AgentTrace[]): DashboardModelRow[] {
         averageInputTokens: average(inputTokens),
         averageOutputTokens: average(outputTokens),
         totalTokens,
-        tokensPerSuccessfulSession: successes.length ? totalTokens / successes.length : null,
+        tokenUsageCoverage,
+        // A partial sum divided by every successful session understates cost.
+        // Keep the measured sum visible, but only compute this ratio with full coverage.
+        tokensPerSuccessfulSession: successes.length && totalTokens !== null &&
+          tokenUsageCoverage.totalTokenCalls === actualSteps.length &&
+          tokenUsageCoverage.sessionsWithoutCalls === 0
+          ? totalTokens / successes.length : null,
         averageStepsPerSession: round(actualSteps.length / Math.max(modelTraces.length, 1)),
       };
     })
     .sort((left, right) => right.sessions - left.sessions || left.model.localeCompare(right.model));
+}
+
+function measuredSum(values: Array<number | undefined>): number | null {
+  const measured = numericValues(values);
+  return measured.length ? sum(measured) : null;
+}
+
+function tokenCoverage(steps: TraceLLMStep[], traces: AgentTrace[]): TokenUsageCoverage {
+  return {
+    modelCalls: steps.length,
+    inputTokenCalls: numericValues(steps.map((step) => step.inputTokens)).length,
+    outputTokenCalls: numericValues(steps.map((step) => step.outputTokens)).length,
+    totalTokenCalls: numericValues(steps.map((step) => step.totalTokens)).length,
+    sessionsWithoutCalls: traces.filter((trace) => trace.llmSteps.length === 0).length,
+  };
 }
 
 function buildAgentRows(traces: AgentTrace[]): DashboardAgentRow[] {

@@ -70,7 +70,7 @@ export interface AgentLoopConfig {
 export interface StepEvent {
   stepNumber: number;
   text: string;
-  toolCalls: Array<{ toolName: string; args: unknown }>;
+  toolCalls: Array<{ toolName: string; toolCallId: string; args: unknown }>;
   finishReason: string;
   requestModel: string;
   responseModel?: string;
@@ -336,6 +336,7 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
                 text: text || "",
                 toolCalls: (toolCalls || []).map((tc) => ({
                   toolName: tc.toolName,
+                  toolCallId: tc.toolCallId,
                   args: (tc as { input?: unknown }).input,
                 })),
                 finishReason: finishReason || "unknown",

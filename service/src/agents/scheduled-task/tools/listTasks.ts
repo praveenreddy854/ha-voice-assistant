@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { listActiveScheduledTasks } from "../../../cosmos";
+import { getScheduledTasksContainer, listActiveScheduledTasks } from "../../../cosmos";
 import type { ScheduledTask } from "../../../types/scheduledTask";
 
 export const inputSchema = z.object({
@@ -16,7 +16,11 @@ export type ListScheduledTasksInput = z.infer<typeof inputSchema>;
 export async function execute(_args: ListScheduledTasksInput): Promise<{
   tasks: ScheduledTask[];
   observation: string;
+  toolSuccess: boolean;
 }> {
+  if (!(await getScheduledTasksContainer())) {
+    return { tasks: [], observation: "Cannot list tasks: scheduled task storage is unavailable.", toolSuccess: false };
+  }
   const tasks = await listActiveScheduledTasks();
   const sorted = [...tasks].sort(
     (a, b) =>
@@ -26,6 +30,7 @@ export async function execute(_args: ListScheduledTasksInput): Promise<{
   if (sorted.length === 0) {
     return {
       tasks: sorted,
+      toolSuccess: true,
       observation: "No active scheduled tasks.",
     };
   }
@@ -43,6 +48,7 @@ export async function execute(_args: ListScheduledTasksInput): Promise<{
 
   return {
     tasks: sorted,
+    toolSuccess: true,
     observation: `Active scheduled tasks (${sorted.length}):\n${lines.join("\n")}`,
   };
 }

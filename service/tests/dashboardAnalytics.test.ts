@@ -183,3 +183,67 @@ test("excludes traces outside the requested time range", () => {
 
   assert.equal(dashboard.overview.sessions, 1);
 });
+
+const missingUsage = { inputTokens: undefined, outputTokens: undefined, totalTokens: undefined };
+
+for (const steps of [[], [llmStep(missingUsage)]]) {
+  test(`missing usage remains unknown with ${steps.length} recorded calls`, () => {
+    const dashboard = buildDashboardSnapshot([trace({ llmSteps: steps })], { range: "all" }, NOW);
+    const row = dashboard.models[0];
+    assert.equal(dashboard.overview.inputTokens, null);
+    assert.equal(dashboard.overview.outputTokens, null);
+    assert.equal(dashboard.overview.totalTokens, null);
+    assert.equal(row.totalTokens, null);
+    assert.equal(row.tokensPerSuccessfulSession, null);
+    assert.equal(row.averageInputTokens, null);
+    assert.deepEqual(row.tokenUsageCoverage, {
+      modelCalls: steps.length, inputTokenCalls: 0, outputTokenCalls: 0, totalTokenCalls: 0,
+      sessionsWithoutCalls: steps.length ? 0 : 1,
+    });
+  });
+}
+
+test("measured zero is distinct from unknown usage", () => {
+  const dashboard = buildDashboardSnapshot([trace({ llmSteps: [llmStep({
+    inputTokens: 0, outputTokens: 0, totalTokens: 0,
+  })] })], { range: "all" }, NOW);
+  assert.equal(dashboard.overview.totalTokens, 0);
+  assert.equal(dashboard.models[0].totalTokens, 0);
+  assert.equal(dashboard.models[0].tokensPerSuccessfulSession, 0);
+  assert.deepEqual(dashboard.overview.tokenUsageCoverage, {
+    modelCalls: 1, inputTokenCalls: 1, outputTokenCalls: 1, totalTokenCalls: 1, sessionsWithoutCalls: 0,
+  });
+});
+
+test("mixed legacy and measured calls expose partial totals without understating per-success cost", () => {
+  const dashboard = buildDashboardSnapshot([
+    trace(), trace({ sessionId: "missing", llmSteps: [llmStep(missingUsage)] }),
+    trace({ sessionId: "legacy", llmSteps: [] }),
+  ], { range: "all" }, NOW);
+  assert.equal(dashboard.overview.totalTokens, 110);
+  assert.equal(dashboard.overview.inputTokens, 100);
+  assert.deepEqual(dashboard.overview.tokenUsageCoverage, {
+    modelCalls: 2, inputTokenCalls: 1, outputTokenCalls: 1, totalTokenCalls: 1, sessionsWithoutCalls: 1,
+  });
+  const row = model(dashboard.models, "gpt-mini-2026-01-01");
+  assert.equal(row.totalTokens, 110);
+  assert.equal(row.averageInputTokens, 100);
+  assert.equal(row.tokensPerSuccessfulSession, null);
+  assert.equal(row.tokenUsageCoverage.totalTokenCalls, 1);
+  assert.equal(row.tokenUsageCoverage.modelCalls, 2);
+});
+
+test("coverage is tracked independently for partial token fields", () => {
+  const dashboard = buildDashboardSnapshot([trace({ llmSteps: [
+    llmStep({ ...missingUsage, inputTokens: 7 }),
+    llmStep({ ...missingUsage, stepNumber: 2, outputTokens: 0 }),
+    llmStep({ ...missingUsage, stepNumber: 3, totalTokens: 12 }),
+  ] })], { range: "all" }, NOW);
+  assert.equal(dashboard.overview.inputTokens, 7);
+  assert.equal(dashboard.overview.outputTokens, 0);
+  assert.equal(dashboard.overview.totalTokens, 12);
+  assert.deepEqual(dashboard.overview.tokenUsageCoverage, {
+    modelCalls: 3, inputTokenCalls: 1, outputTokenCalls: 1, totalTokenCalls: 1, sessionsWithoutCalls: 0,
+  });
+  assert.equal(dashboard.models[0].tokensPerSuccessfulSession, null);
+});
