@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   deleteScheduledTask,
   deleteRecurrenceFamily,
+  getScheduledTasksContainer,
 } from "../../../cosmos";
 
 export const inputSchema = z.object({
@@ -27,26 +28,33 @@ export type DeleteScheduledTaskInput = z.infer<typeof inputSchema>;
 
 export async function execute(args: DeleteScheduledTaskInput): Promise<{
   observation: string;
+  toolSuccess: boolean;
 }> {
   const { scope, id, recurrenceFamilyId } = inputSchema.parse(args);
+  if (!(await getScheduledTasksContainer())) {
+    return { observation: "Cannot delete tasks: scheduled task storage is unavailable.", toolSuccess: false };
+  }
 
   if (scope === "occurrence") {
     if (!id) {
       return {
+        toolSuccess: false,
         observation:
           "Cannot delete: scope='occurrence' requires id. Use list_scheduled_tasks to find it.",
       };
     }
     const ok = await deleteScheduledTask(id, recurrenceFamilyId);
     return {
+      toolSuccess: ok,
       observation: ok
         ? `Deleted occurrence id=${id} from family ${recurrenceFamilyId}.`
         : `Failed to delete occurrence id=${id}. The task may already be gone.`,
     };
   }
 
-  const deleted = await deleteRecurrenceFamily(recurrenceFamilyId);
+  const deleted = await deleteRecurrenceFamily(recurrenceFamilyId, { throwOnFailure: true });
   return {
+    toolSuccess: true,
     observation: `Deleted ${deleted} occurrence(s) from family ${recurrenceFamilyId}. Recurrence stopped.`,
   };
 }

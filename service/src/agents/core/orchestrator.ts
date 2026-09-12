@@ -121,7 +121,7 @@ function getOrCreateLoop(def: AgentDefinition): AgentLoop {
             text: event.text || "",
             toolCalls: event.toolCalls.map((toolCall) => ({
               toolName: toolCall.toolName,
-              toolCallId: "",
+              toolCallId: toolCall.toolCallId,
               args:
                 typeof toolCall.args === "object" &&
                 toolCall.args !== null &&

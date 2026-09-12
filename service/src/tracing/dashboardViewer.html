@@ -195,7 +195,7 @@
 
         <article class="panel">
           <div class="panel-header">
-            <div><h2>Model performance</h2><p>Model attribution, response time, usage, and outcome proxies</p></div>
+            <div><h2>Model performance</h2><p>Usage totals and averages include measured calls only. Tokens/success requires complete total-token coverage.</p></div>
           </div>
           <div class="table-wrap" id="modelsTable"></div>
         </article>
@@ -278,7 +278,7 @@
         ['P50 duration', formatDuration(data.p50DurationMs), 'End-to-end session time'],
         ['P95 duration', formatDuration(data.p95DurationMs), 'Includes external waits'],
         ['Tool success', formatPercent(data.toolSuccessRate), 'Across all tool executions'],
-        ['Model calls', formatNumber(data.modelCalls), `${compactNumber(data.inputTokens + data.outputTokens)} tokens captured`],
+        ['Model calls', formatNumber(data.modelCalls), `${formatTokens(data.totalTokens)} measured tokens<span class="provider">${tokenCoverage(data.tokenUsageCoverage)}</span>`],
       ];
       document.getElementById('metricGrid').innerHTML = metrics.map(([label, value, detail]) => `
         <article class="metric">
@@ -320,9 +320,11 @@
         ['Clean run', row => formatPercent(row.cleanRunRate)],
         ['P50 model', row => formatDuration(row.p50ResponseTimeMs)],
         ['P95 model', row => formatDuration(row.p95ResponseTimeMs)],
-        ['Avg input', row => formatNumber(row.averageInputTokens)],
-        ['Avg output', row => formatNumber(row.averageOutputTokens)],
-        ['Tokens/success', row => formatNumber(row.tokensPerSuccessfulSession)],
+        ['Avg input', row => formatTokens(row.averageInputTokens)],
+        ['Avg output', row => formatTokens(row.averageOutputTokens)],
+        ['Measured tokens', row => formatTokens(row.totalTokens)],
+        ['Token coverage', row => tokenCoverage(row.tokenUsageCoverage)],
+        ['Tokens/success', row => formatTokens(row.tokensPerSuccessfulSession)],
       ], 'Model metadata will appear for new sessions; historical spans are grouped as unknown (legacy).');
     }
 
@@ -374,7 +376,15 @@
 
     function formatPercent(value) { return value == null ? '—' : `${(value * 100).toFixed(1)}%`; }
     function formatNumber(value) { return value == null ? '—' : Math.round(value).toLocaleString(); }
-    function compactNumber(value) { return value ? Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value) : '0'; }
+    function formatTokens(value) { return value == null ? 'Unknown' : formatNumber(value); }
+    function tokenCoverage(coverage) {
+      if (!coverage) return 'Unknown';
+      const { modelCalls, inputTokenCalls, outputTokenCalls, totalTokenCalls, sessionsWithoutCalls } = coverage;
+      const measured = inputTokenCalls + outputTokenCalls + totalTokenCalls;
+      const status = measured === 0 ? 'Unknown' :
+        measured === modelCalls * 3 && sessionsWithoutCalls === 0 ? 'Complete' : 'Partial';
+      return `${status}<span class="provider">Input ${inputTokenCalls}/${modelCalls} · Output ${outputTokenCalls}/${modelCalls} · Total ${totalTokenCalls}/${modelCalls} calls${sessionsWithoutCalls ? ` · ${sessionsWithoutCalls} session${sessionsWithoutCalls === 1 ? '' : 's'} without recorded calls` : ''}</span>`;
+    }
     function formatDuration(ms) {
       if (ms == null) return '—';
       if (ms < 1000) return `${Math.round(ms)}ms`;

@@ -192,7 +192,8 @@ export const deleteScheduledTask = async (
 };
 
 export const deleteRecurrenceFamily = async (
-  recurrenceFamilyId: string
+  recurrenceFamilyId: string,
+  options: { throwOnFailure?: boolean } = {}
 ): Promise<number> => {
   const container = await getScheduledTasksContainer();
   if (!container) return 0;
@@ -208,6 +209,8 @@ export const deleteRecurrenceFamily = async (
       await container.item(t.id, recurrenceFamilyId).delete();
       deleted++;
     } catch (err) {
+      // Agent tools must not claim the recurrence stopped after a partial delete.
+      if (options.throwOnFailure) throw err;
       console.error(`Failed to delete family member ${t.id}`, err);
     }
   }
