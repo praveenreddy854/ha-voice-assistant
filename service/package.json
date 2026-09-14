@@ -12,7 +12,11 @@
     "traces": "node trace-viewer.js",
     "traces:prompts": "node trace-viewer.js prompts",
     "traces:errors": "node trace-viewer.js errors",
-    "test": "tsx --test tests/*.test.ts"
+    "test": "tsx --test tests/*.test.ts",
+    "eval": "tsx src/evals/worker.ts",
+    "eval:simulated": "tsx src/evals/worker.ts simulated",
+    "eval:recorded": "tsx src/evals/worker.ts recorded",
+    "eval:calibrate": "tsx src/evals/worker.ts calibrate"
   },
   "keywords": [],
   "author": "",
