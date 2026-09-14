@@ -34,6 +34,8 @@
       gap: 16px;
     }
     .header h1 { font-size: 18px; font-weight: 600; }
+    .header a { color: var(--accent); text-decoration: none; }
+    .header a:hover { text-decoration: underline; }
     .header .refresh-btn {
       background: var(--surface2);
       border: 1px solid var(--border);
@@ -383,6 +385,7 @@
 </head>
 <body>
   <div class="header">
+    <a href="/">Home</a>
     <h1>Telemetry Viewer</h1>
     <button class="refresh-btn" onclick="loadTraces()">Refresh</button>
     <label class="auto-refresh">

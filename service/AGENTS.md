@@ -367,7 +367,7 @@ Located in `src/prompts/`:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/` | GET | Health check |
+| `/` | GET | Operations home with links to evals, telemetry, and performance dashboards |
 | `/api/realtime-chat` | WS | Realtime Voice Agent audio/tool proxy |
 | `/api/agent/run` | POST | Run registered Specialist agents |
 | `/api/teaching/*` | Various | Teaching mode endpoints |

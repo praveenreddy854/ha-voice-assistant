@@ -46,6 +46,7 @@ import { startGestureMonitor } from "./gestureMonitor";
 import { traceRouter } from "./tracing/traceApi";
 import { dashboardRouter } from "./tracing/dashboardApi";
 import { evalRouter, evalSupervisor } from "./evals/api";
+import { homePage } from "./homePage";
 import { setupRealtimeChatProxy } from "./realtimeChat";
 import { addAnnouncementClient } from "./announcementBus";
 import { startScheduledTaskFirer } from "./scheduledTaskFirer";
@@ -143,9 +144,8 @@ if (isRtspMode()) {
   startGestureMonitor();
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-app.get("/", (req, res, next) => {
-  res.send("Hello, Node.js + TypeScript!");
+app.get("/", (_req, res) => {
+  res.type("html").send(homePage);
 });
 
 app.get("/api/announcements/stream", (_req, res) => {

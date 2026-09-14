@@ -111,7 +111,7 @@ full attribute payload to support AI-driven reminders.
    npm run dev
    ```
 
-   The backend will run on `http://localhost:3005`
+   The backend will run on `http://localhost:3005`. Open this address for links to the evals dashboard, telemetry trace explorer, and performance dashboards.
 
 2. **Start the frontend application**
    ```bash
@@ -194,7 +194,7 @@ is a no-op when Cosmos DB is not configured.
 
 ### Backend Service Endpoints
 
-- `GET /` - Health check
+- `GET /` - Operations home with links to evals, telemetry, and performance dashboards
 - `WS /api/realtime-chat` - Realtime Voice Agent audio/tool proxy
 - `POST /api/postHACommand` - Execute Home Assistant commands
 
