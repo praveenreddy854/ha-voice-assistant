@@ -1,0 +1,269 @@
+# Offline assistant evals
+
+Phase 1 implementation is available in `service/src/evals/`. This document records the design and remaining refinements; domain terminology lives in [CONTEXT.md](../CONTEXT.md#assistant-evaluation). See [testing instructions](./offline-eval-testing.md) for the dashboard, judge checks, and on-demand runs.
+
+## Agreed modes and cadence
+
+Both modes are in scope and must remain distinguishable in execution, reports, and aggregate results.
+
+| Mode | Assessed behavior | When it runs |
+| --- | --- | --- |
+| Simulated eval | A new assistant run against a controlled simulated environment; TVAgent in phase 1 | Daily in the background to detect regressions |
+| Recorded-run eval | A completed real assistant run, graded from retained evidence; TVAgent in phase 1 | On demand only |
+
+"Real evals" is the user's term for recorded-run evals. These read the original run's telemetry and Cosmos data; they do not replay its device actions. Keep simulated and recorded-run scores separate.
+
+Spending limits are deferred by user choice. The runner, dashboard at `/dashboards/evals`, and backend-host scheduler are implemented. `OFFLINE_EVAL_ENABLED=false` disables daily scheduling; it is enabled by default. The running development backend has started scheduled batches through its file watcher.
+
+## Agreed daily schedule
+
+- Start the simulated suite daily at 3:00 a.m. in `America/New_York`.
+- Run the eval workload on the same machine as the backend.
+- Use `America/New_York` for dashboard day boundaries and the previous-seven-complete-days comparison window.
+- Use the named timezone so the schedule follows local daylight-saving changes.
+
+The backend supervisor launches a separate worker process for eval execution. It checks the named local schedule, persists jobs and batches, and prevents a duplicate scheduled batch for the same local day.
+
+## Agreed missed-run handling
+
+- If the machine misses the 3:00 a.m. run and becomes available later that day, run that day's suite once.
+- Mark older missed days as skipped instead of executing a backlog of suites.
+- Preserve the intended schedule date and actual execution timestamps; do not backdate results into days when no eval ran.
+- Skipped days provide no scenario result for the historical baseline.
+- Prevent a same-day catch-up from duplicating a batch already started for that scheduled day.
+
+## Agreed daily workload
+
+- Run every simulated scenario once in each daily batch.
+- Add at most one confirmation attempt for a scenario with a new failure or qualifying slowdown under the agreed alert rules.
+- Distinguish scheduled attempts from confirmation attempts in saved results and dashboard views.
+- Preserve the original scheduled outcome even when a confirmation attempt succeeds.
+- Phase 1 has twelve scenarios, bounding a daily batch to twelve scheduled attempts plus at most twelve confirmation attempts. Per-run execution and cancellation limits remain an implementation concern; a monetary cap is not required for the initial version.
+
+## Agreed cost policy
+
+- Do not block implementation or initial eval runs on setting a spending cap or measuring a pilot batch's cost.
+- The user will adjust cost controls later after observing actual usage. No eval-specific monetary cap is required for now.
+- Retain available model usage by run and batch, distinguishing assessed-agent calls from offline grouping/grading calls and scheduled attempts from confirmation attempts, to support that later adjustment. Missing usage or pricing information must remain unavailable rather than be reported as zero cost.
+- This decision leaves the agreed scenario and confirmation-attempt limits in place; it does not authorize unlimited retries or expansion of the daily suite.
+
+## Agreed model and prompt selection
+
+- Daily simulated evals assess the backend's currently configured model and prompts. Phase 1 does not run an automatic matrix of alternative models or prompts.
+- Alternative model or prompt configurations are evaluated on demand through simulated evals. Recorded-run evals continue to assess the configuration used by the original completed run; they cannot test a replacement model's behavior.
+- Resolve and record the effective assessed configuration at batch start, including relevant prompt and skill versions, and keep it fixed for the batch and any confirmation attempts. Do not silently mix configurations if the backend changes during a batch.
+- Retain configuration identifiers with every result. Historical regression comparisons may cross assessed model/prompt versions intentionally; display that change while holding scenario, simulator, and grading conditions comparable. Simulated-to-real fidelity comparisons still align assessed configurations where known.
+- Label on-demand alternative-configuration results separately from scheduled results. They do not enter the daily scheduled baseline merely because they ran on the same date.
+- Select and version the offline grading model independently from the assistant model under evaluation. Prioritize grading quality over cost, and keep the judge configuration fixed across comparisons of assistant configurations.
+
+## Agreed notifications
+
+- Notify the user when daily simulated evals identify a new regression or an eval run fails to complete.
+- Keep successful checks and unchanged issues quiet.
+- Preserve every run and its results in the dashboard, including runs that do not produce a notification.
+- Distinguish a failure to execute the eval from a failure in the assistant behavior being evaluated.
+
+## Agreed confirmation of new failures
+
+- When a scenario that passed consistently last week fails in the daily simulated suite, rerun the affected scenario once from the same starting state before sending a regression notification.
+- Keep the scenario definition, model/prompt configuration, and simulated inputs the same for that confirmation attempt, using a fresh run.
+- Preserve both attempts. If the failure repeats, notify the user; if the results differ, show an intermittent failure in the dashboard.
+- A successful confirmation attempt does not erase the original failed result or turn the original run into a pass.
+- This is a bounded notification check, not permission to rerun until the scenario passes. Failure to execute the eval remains distinguishable from an assistant failure.
+
+## Agreed slowdown alerts
+
+- A task that still succeeds can trigger a regression notification if its assistant execution time exceeds twice last week's median for the same simulated scenario and the slowdown repeats in one confirmation run.
+- Preserve both timing measurements and apply the same starting-state and configuration controls used for failure confirmation.
+- Exclude offline grouping, grading, and report-generation time from assistant execution time.
+- Show smaller timing changes in the dashboard without generating slowdown alerts.
+- Compare equivalent simulated executions for this alert; keep the distinction between simulated and real-run timing visible in the dashboard.
+
+## Agreed historical comparison window
+
+- Compare against the previous seven complete days, excluding the current batch's day.
+- Require at least three comparable scheduled results for historical regression comparisons.
+- Use scheduled attempts only for the baseline; retain confirmation attempts separately in the dashboard.
+- Before enough history exists, show "Collecting baseline" alongside the current eval results.
+- Missing historical coverage does not erase or change the current pass/fail or unknown outcome.
+
+The method-selection percentages in `docs/orchestrator-learning.md` are advisory preferences for the agent, not additional eval alert thresholds.
+
+## Agreed execution boundary
+
+- Grading happens after the assessed assistant run finishes, outside the live assistant response path. The live assistant does not wait for an eval verdict.
+- Simulated evals make new Azure model calls while simulating device responses and keeping storage isolated from the live assistant.
+- Recorded-run evals consume retained data from completed real runs, using the agreed combination of LLM grading and deterministic evidence checks.
+- Eval execution must not control real home devices.
+
+## Agreed phases and extensibility
+
+- Phase 1 evaluates TVAgent only, in both simulated and recorded-run modes, with the twelve-scenario simulated suite below.
+- Other agents are phase 2. The framework must support adding them without rebuilding scheduling, result storage, comparisons, or the dashboard.
+- The first suite should help answer: "Can I change TVAgent's model or prompts without making task execution or completion reporting worse?"
+- Simulated evals support controlled regression checks. Recorded-run evals assess actual historical behavior and cannot establish how a different model would behave after choosing different actions.
+- Assess both execution decisions and whether completion claims are supported by the observations available to the agent.
+- An accepted app-launch command with the requested app still unconfirmed is a representative failure case for unsupported success reporting.
+
+### Framework extension boundaries
+
+Implement the extensibility requirement through a shared eval core and registered agent adapters:
+
+| Shared eval core | Agent adapter |
+| --- | --- |
+| Batch lifecycle, scheduling, limits, cancellation, and confirmation attempts | Agent execution entry point and scenario definitions |
+| Common run records, evidence references, and result persistence | Simulated state, tool responses, external inputs, and isolated dependencies |
+| Historical comparisons, notifications, and dashboard views | Retained-run evidence import and interpretation |
+| Task and step result structure, evidence coverage, and grading lifecycle | Domain objectives, expected outcomes, validation reuse, and grouping criteria |
+
+- Keep agent-specific behavior behind typed adapter interfaces; the core must not import TV tools or require TV state, playback fields, or screenshots.
+- Identify every scenario, run, and task-step group by agent and the relevant comparison context. Record eval mode on each run and step occurrence; a matching group can contain occurrences from both modes while keeping their results separate. Preserve scenario, model/prompt, adapter, and grading versions so comparisons can explain configuration differences. Historical metadata that is unavailable remains unknown.
+- Keep common task and step outcomes, timing, and evidence coverage available to all adapters. Allow typed domain-specific context and optional evidence such as images. An agent that does not use screens must not need placeholder screenshot data.
+- Keep baseline and fidelity comparisons within the relevant agent and compatible scenario/context. Expose agent filtering in the shared dashboard without pooling unrelated agent outcomes into a regression verdict.
+- For simulation, each adapter must substitute all effectful dependencies, including initial context reads, tool execution, external input, memory, and completion persistence. Missing simulated capabilities fail explicitly rather than falling through to live services. Recorded-run evaluation reads retained evidence without invoking live agent actions.
+- The first implementation supplies only the TV adapter. Adding another agent in phase 2 should consist of registering its adapter, scenarios, and domain checks, while reusing the core lifecycle and reporting.
+
+The existing `AgentDefinition` contract and registry in `service/src/agents/core/` already separate agent definitions from shared orchestration; TVAgent and ScheduledTaskAgent both use that contract. Reuse the applicable production agent behavior through isolated dependencies so evals exercise the agent being assessed. The production registry alone is not an eval isolation boundary: TV initialization reads current device state, and completion can persist flow memory. Other entry points can be supported through their eval adapter without requiring every future agent to use the same production loop.
+
+## Agreed dashboard direction
+
+- Provide a dashboard that compares simulated eval results against last week's data.
+- Include a separate comparison with recorded-run eval results to help assess how well the simulation reflects real assistant behavior.
+- Preserve the distinction between simulated and recorded-run evals in reports and metrics.
+- Recorded-run evals remain on demand; displaying a comparison does not authorize automatically grading new real runs.
+
+"Last week" means the preceding seven complete days in `America/New_York`, excluding the day of the current simulated batch, with at least three comparable scheduled results required for regression comparisons. Display the exact date range. Proposed timestamp convention: use the assessed assistant run's date for behavior trends and retain the grading date separately.
+
+The user described the simulated-to-real comparison as judging "the accuracy of simulated runs." The resolved term is simulation fidelity, assessed through comparable task-step and whole-task behavior. Raw aggregate pass-rate agreement does not establish fidelity: different task difficulty, initial device state, model/prompt versions, or missing evidence can explain a gap or hide one.
+
+Agreed comparison direction: match task, target device/app, and starting state; show unmatched runs separately, with sample counts and missing-evidence coverage visible. Align model/prompt versions where known. Grading-version compatibility, the exact matching rules, and an accuracy formula or regression threshold remain to be specified.
+
+The existing service dashboard at `/dashboards` and its `/api/dashboards` endpoint provide a place to add eval views. Its current analytics explicitly label success measures as telemetry proxies (`quality.status: "proxy_only"`); those existing reported-success metrics must remain distinguishable from eval verdicts.
+
+## Agreed task and step comparisons
+
+- Compare both the overall task and its individual task steps across simulated and recorded-run evals, as well as across time.
+- The user's example is "Play latest Telugu songs on Apple TV", with intermediate steps including turning on the TV and launching YouTube.
+- Whole-task matching must retain the requested intent and meaningful qualifiers, including "latest", "Telugu songs", and the target Apple TV.
+- Keep individual step outcomes visible alongside the overall task outcome; reaching YouTube does not establish that the requested songs are playing.
+
+Match task steps by their intermediate objective, allowing different execution methods. A direct YouTube launch and reaching YouTube through remote navigation both match "YouTube ready". Preserve and compare the differences in methods, tool calls, observations, retries, and timing within that matched step. A different valid tool sequence alone does not fail a step or prevent matching; the agreed device/app and starting-state matching criteria still apply.
+
+The dashboard aligns rows by task-step objective, then exposes the exact tool calls, arguments, observations, retries, and available timing within each row. Compare step starting states separately so an already-satisfied objective is visible. Grouping tools into objectives must preserve links to the source evidence and identify uncertain boundaries.
+
+The current code does not persist these domain-level step boundaries. In `service/src/agents/core/orchestrator.ts`, `session.steps` is populated for external-input tools; automatically executed tools are recorded through telemetry callbacks and TV tool-result spans. `tvAgentDefinition.onComplete` copies `session.steps` into Cosmos flow memory. Therefore the Cosmos `steps` array alone is not a complete execution trace, and step comparisons should use telemetry where available.
+
+Existing behavior already allows skipping an app launch when the app is open, and the task-history baseline distinguishes already-satisfied starting states from measured executions. Carry that distinction into eval comparisons rather than treating an absent launch call as failure or evidence of a faster launch method.
+
+## Existing verification evidence and agreed reuse
+
+The real TVAgent already collects verification evidence; missing task-step labels do not mean missing verification:
+
+- `launch_app` reads Home Assistant state after its command, compares app-related attributes with the requested app, returns the observed fields, and sets `toolSuccess` according to that match.
+- `get_device_state` returns device state and attributes, including available app and media metadata. `media_control` also returns state after its command, but does not itself assert that the requested playback state or content was reached.
+- The `playback-verification` skill instructs the agent to check `playing` and a matching `media_title`, with recovery when playback is paused or selection failed. This is agent guidance, not an independently enforced check on every completion.
+- `validate_screen` uses a vision model to check a camera image against the expected screen and user's request; it is distinct from Home Assistant state validation.
+- TV tool-result telemetry stores these observations with the call arguments and timing where recorded. The completion guard checks for pending command research, rather than universally rechecking every task objective.
+
+Reuse explicit state checks as evidence for matching objectives such as "YouTube ready" and "requested content playing". Extract straightforward facts and known step associations in code, and use LLM interpretation for task meaning, semantic step alignment, action quality, and completion claims. The user clarified that eval quality takes priority over minimizing model calls: LLM grading is a normal part of evaluation, not restricted to an ambiguity fallback. Preserve source references and keep uncertain assignments visibly uncertain. Missing evidence remains unknown.
+
+All grouping and grading occur after the assessed assistant run, using retained evidence. No new live state checks are needed to assess the historical run, and current device state would not establish what happened during that run. Verification that YouTube is active alone does not establish that the requested latest Telugu songs were played.
+
+## Agreed use of LLM grading
+
+Use an LLM wherever semantic interpretation improves evaluation, supported by deterministic checks where the facts are directly testable. Every assessed run receives a semantic review after execution, including recorded runs only when their evaluation is requested. The following division makes that quality-first direction concrete:
+
+| Assessment | Responsibility |
+| --- | --- |
+| Task intent and fulfillment | LLM interprets the request and assesses whether observed behavior satisfies its qualifiers; simulator assertions or retained observations establish the available state facts |
+| Task-step alignment | LLM aligns intermediate objectives across valid execution methods, reusing existing groups and validation evidence; code retains ordered tool events and enforces agent/context constraints |
+| Action and recovery quality | LLM assesses choices against the observations available at the time, including appropriate recovery, redundant actions, and premature abandonment |
+| Completion reporting | LLM checks whether the final response accurately describes the supported outcome, including honest failure and unjustified success claims |
+| Screen and content interpretation | A vision-capable judge interprets relevant retained images when needed; missing images and unverified content attributes remain evidence gaps |
+| Exact state, timing, and arithmetic | Code checks explicit simulator state and retained fields, measures duration and retries, and computes baseline statistics |
+
+For "Play latest Telugu songs on Apple TV", confirmed YouTube playback alone does not establish the language or recency of the selected content. Evaluate those qualifiers against scenario content metadata and visible or retained evidence. A judge cannot infer that songs were the latest merely because the agent searched for "latest". Simulated fixtures must define their reference date and content facts; recorded-run evaluation must retain uncertainty when the historical evidence cannot establish those facts.
+
+### Evidence and verdict contract
+
+- Give the judge the request, relevant context, ordered actions and observations, existing validation results, relevant images where available, and final response. Supply independently defined scenario expectations for simulated runs, without exposing those expectations to the assessed agent.
+- Assess task fulfillment, step outcomes, recovery, and completion reporting separately using explicit rubric criteria and pass/fail/unknown labels where applicable. Mark inapplicable criteria separately. Do not hide an unsupported success claim inside an average quality score.
+- Preserve evidence references and a concise justification for every judgment. Validate referenced event IDs and structured output in code. Retain raw observations alongside interpretations so users can inspect disagreements.
+- The judge cannot override a direct, applicable state contradiction with a plausible narrative. Resolve observations in their temporal and device context; a later verified recovery is different from ignoring an earlier failure. If sources conflict and cannot be reconciled, expose that conflict instead of inventing certainty.
+- Distinguish unavailable historical evidence from evidence that a claim is false. Failure to retain a final state may leave a recorded outcome unknown; a complete simulated trace can establish that an agent claimed success without verification. Preserve the agreed difference between task completion and correct handling of an impossible scenario.
+- Evaluate action quality using information the agent had at that point. Hidden simulator state can establish the actual outcome, but must not give the judge hindsight grounds to demand an action the agent could not have justified.
+- Treat recorded messages, tool outputs, and screen text as evidence rather than judge instructions. The grading process has no live device actions, and grader errors or invalid outputs produce a grading failure rather than an assistant pass or failure.
+- Keep the judge model, rubric, evidence extraction, and simulator versions explicit. Judge changes require revalidation; compare compatible grades or explicitly regrade selected retained runs, preserving previous verdicts. Changing the judge must not silently appear as assistant regression.
+
+### Judge validation and proposed initial review
+
+The judge needs its own reference cases, separate from the twelve scenarios used to test TVAgent. The [six proposed reference cases](./offline-eval-judge-reference-cases.md) provide synthetic evidence packets and candidate labels covering verified success, unsupported success, wrong content, valid alternative methods, honest failure, and missing evidence. They include concise completion messages so correct behavior is not rewarded merely for a longer explanation.
+
+The user accepted the six reference judgments. The **Validate judge** action and `eval:calibrate` command measure agreement with those labels. Keep separate held-out cases for validation when tuning the rubric; the initial six-case check does not establish general judge accuracy. Judge self-confidence is not a measurement of accuracy.
+
+These reference checks assess the grader itself. Simulation fidelity remains a separate comparison of simulated and real task/step behavior. The proposed review workflow follows the guidance to use specific criteria and calibrate automated grading against human judgments in [OpenAI's evaluation best practices](https://developers.openai.com/api/docs/guides/evaluation-best-practices).
+
+## Agreed group reuse and creation
+
+- Reuse existing validation results and assign each occurrence to an existing matching task-step group.
+- Create a new group when no matching objective/context group exists.
+- An occurrence with missing validation evidence remains in its matching group with an unknown outcome. Missing evidence alone does not create a different group or a successful result.
+
+The user's phrase "If the result doesn't exist then create a new group" is resolved as absence of a matching group.
+
+For dashboard comparisons, a group without comparable data from last week has no historical baseline. Show that absence separately from its current eval outcome; do not infer improvement or regression from missing history. The same distinction applies when no comparable recorded-run eval is available. Existing scenario expectations can still be assessed independently of historical comparisons.
+
+## Agreed simulated-task coverage
+
+- Evaluate complete, multi-step TV tasks, including inspection, actions, recovery, and completion.
+- Each scenario defines an initial simulated TV environment. Subsequent observations depend on the actions the agent actually takes.
+- Judge the outcome and supporting evidence while allowing different valid action sequences.
+- A saved historical sequence can inform a scenario but does not prescribe the agent's tool-call order.
+
+### Agreed initial phase-1 suite
+
+Start with twelve scenarios grounded in the request families and failure cases in the task-history baseline:
+
+| Request family | Scenarios | Starting states or behavior |
+| --- | ---: | --- |
+| YouTube readiness | 3 | Already open; TV/device off; failed first launch followed by a recoverable path |
+| Latest Telugu-song playback | 4 | Matching content already playing; visible search results; fresh keyboard search; selected content loads paused |
+| Samsung Smart STB launch | 2 | Confirmed app readiness; accepted command with app remaining unconfirmed |
+| Netflix launch | 1 | Power recovery fails and the device remains unavailable |
+| Pause/resume | 2 | Pause playing content; resume paused content |
+
+The twelve scenarios are agreed for TVAgent in phase 1. New task-step groups discovered in recorded data remain visible in the dashboard; adding a comparison group does not itself define a new simulated scenario or bring another agent into phase 1.
+
+## Agreed visual coverage
+
+- Include actual images for screenshot-based navigation, search, typing, and verification in v1.
+- Use a small set of saved or rendered TV screens tied to the simulated state.
+- Supply those images to the model so the eval exercises screenshot interpretation, including search-result selection and keyboard-position recognition.
+- Screen images and other observations must correspond to the scenario state reached by the agent's actions.
+
+## Agreed outcome interpretation
+
+- Distinguish whether the requested task was completed from whether the agent handled the scenario correctly.
+- An impossible scenario, such as a persistently unreachable TV, can pass when the agent attempts appropriate recovery and honestly reports that it cannot finish.
+- Giving up on a solvable scenario fails that scenario.
+- Claiming success without supporting evidence fails the scenario, even if the simulated device happens to reach the requested state.
+- Report task completion and correct scenario handling separately so honest failure does not inflate task-success results.
+
+For recorded-run evals, retained observations may not establish whether a task was solvable or what the final device state actually was. The evaluator must identify missing evidence rather than infer a complete simulated-world ground truth from the record.
+
+## Existing evidence
+
+The [task-history baseline](./orchestrator-history-baseline.md) identifies representative TV requests and cases where reported success contradicts observed outcomes. It provides candidate scenarios, but its historical success flags are not reliable expected-outcome labels.
+
+Existing service tests include mocked model responses; these test implementation behavior rather than the quality of new model decisions.
+
+The [local data audit](./offline-eval-data-audit.md) supports starting recorded-run evals with telemetry, supplemented by Cosmos. It documents missing images, context, and model metadata, as well as the limits of historical success labels.
+
+## Remaining refinements and current limits
+
+- TV fixtures render simplified screens and model tool effects. They exercise the current prompt, skills, tool contracts, and shared model loop, while replacing live executors and persistence. They do not establish full fidelity to every real TV UI or device integration.
+- The judge deployment is configurable independently through `OFFLINE_EVAL_JUDGE_MODEL`; the initial calibration checks all six reviewed cases. A held-out labeled set is still needed before claiming broader grader accuracy.
+- Spending caps remain deferred. Timing comparisons are simulated execution wall times with virtual device waits, not a measurement of real device latency.
+- Notifications currently use persistent dashboard alerts. External delivery has no selected destination.
+- Recorded runs are selected by completed session IDs. Missing metadata or evidence remains unknown; historic system-only prompt hashes cannot claim equivalence with full simulated prompt/skill/tool manifests.
+- Fidelity comparisons are conservative: incompatible or unknown configurations remain unmatched. No aggregate simulation-accuracy score is inferred from unmatched data.

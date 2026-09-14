@@ -140,6 +140,36 @@ _Avoid_: Entire conversation, persistent user preference, reported success alone
 An account of one attempt at an Execution method, including its observed result and time spent.
 _Avoid_: Execution history summary, verified success alone.
 
+### Assistant evaluation
+
+**Offline assistant eval**:
+An assessment of assistant behavior against expected outcomes, separate from the user's live interaction.
+_Avoid_: Live-home test, network-free test.
+
+**Simulated eval**:
+An Offline assistant eval of a new assistant run against a Simulated assistant environment.
+_Avoid_: Recorded-run eval.
+
+**Recorded-run eval**:
+An Offline assistant eval of a completed real assistant run using its retained observations and final response.
+_Avoid_: Real eval, live-device replay.
+
+**Simulated assistant environment**:
+A controlled representation of an assistant's task context that changes in response to its actions and supplies corresponding observations during a Simulated eval.
+_Avoid_: Live home, recorded tool-call sequence.
+
+**Simulated TV environment**:
+A Simulated assistant environment representing TV, app, and playback state, including corresponding screen images, for TVAgent.
+_Avoid_: Recorded tool-call sequence.
+
+**Simulation fidelity**:
+The extent to which simulated task-step and whole-task behavior reflects outcomes and failure patterns observed in comparable real assistant runs.
+_Avoid_: Eval grader accuracy, aggregate pass-rate agreement alone.
+
+**Task-step group**:
+A collection of comparable Task step occurrences for the same agent, sharing an objective and relevant task context, including device, app, and starting state where applicable.
+_Avoid_: Individual validation result, execution method.
+
 ### Scheduled tasks
 
 **ScheduledTask**:
@@ -166,6 +196,15 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 
 ## Relationships
 
+- **Simulated eval** and **Recorded-run eval** are distinct kinds of **Offline assistant eval**.
+- A **Simulated eval** uses a **Simulated assistant environment** appropriate to the assessed agent's task domain.
+- A **Simulated eval** of a complete **TVAgent** task uses a **Simulated TV environment** whose observations depend on the agent's actions.
+- A **Recorded-run eval** assesses retained evidence from a completed real assistant run without repeating its device actions.
+- **Simulation fidelity** is assessed by comparing **Simulated eval** and **Recorded-run eval** results at both the **Task step** and whole-request levels.
+- Eval comparisons align the same **Task step** objective even when runs use different **Execution method**s; the method and its detailed actions remain part of the comparison.
+- A **Task-step group** contains comparable **Task step** occurrences from multiple runs and may include different **Execution method**s.
+- A **Task step** occurrence joins an existing matching **Task-step group**, or starts a new group when no match exists; missing validation evidence leaves its outcome unknown within that group.
+- An **Offline assistant eval** can pass for correct handling of an impossible scenario without a **Verified task outcome**; passing the eval does not itself mean the requested home objective was achieved.
 - A multi-step agent request contains several **Task step**s, each of which may have multiple applicable **Execution method**s.
 - An **Execution method** may involve one or several device actions to achieve the same **Task step**.
 - Completing an individual **Task step** does not establish a **Verified task outcome** for the whole request.
@@ -224,6 +263,30 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 - Active and history live in **separate Cosmos containers**: `scheduled-tasks` (active upcoming only) and `scheduled-tasks-history` (all past runs).
 
 ## Example dialogue
+
+> **Dev:** "Can an Offline assistant eval use a hosted model?"
+> **Domain expert:** "Yes — offline describes separation from the live interaction, not whether a hosted model is used."
+
+> **Dev:** "Does every Simulated eval need TV state and screen images?"
+> **Domain expert:** "No — each agent uses a Simulated assistant environment appropriate to its tasks; a Simulated TV environment is specific to TVAgent."
+
+> **Dev:** "Must TVAgent repeat the historical action sequence to pass a Simulated eval?"
+> **Domain expert:** "No — the Simulated TV environment responds to the actions it chooses; different valid sequences can achieve the same objective."
+
+> **Dev:** "Does a Recorded-run eval ask TVAgent to repeat the real task?"
+> **Domain expert:** "No — it grades the retained observations and final response from the completed run."
+
+> **Dev:** "For 'Play latest Telugu songs on Apple TV', do we compare only the final playback outcome?"
+> **Domain expert:** "No — compare the whole request and its individual Task steps, including turning on the TV and making YouTube ready."
+
+> **Dev:** "Does a direct YouTube launch match a run that opens YouTube through remote navigation?"
+> **Domain expert:** "Yes — both match the Task step 'YouTube ready'; compare their different Execution methods and the evidence for their results within that step."
+
+> **Dev:** "Does a missing validation result create a new Task-step group?"
+> **Domain expert:** "No — create a group when no matching group exists; missing validation leaves the occurrence's outcome unknown in its matching group."
+
+> **Dev:** "Can an unreachable-TV scenario pass when TVAgent reports that it cannot finish?"
+> **Domain expert:** "Yes, if it handles the failure appropriately and reports it honestly; giving up on a solvable scenario or claiming success without evidence fails the eval."
 
 > **Dev:** "Are directly launching Disney+ and opening it with remote navigation different Task steps?"
 > **Domain expert:** "No — they are different **Execution method**s for the same **Task step**: Disney+ is open and ready on the requested Apple TV."
@@ -320,6 +383,13 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 
 ## Flagged ambiguities
 
+- "Offline eval" includes both **Simulated eval** and **Recorded-run eval**; both are in scope and remain distinct.
+- "Real eval" means **Recorded-run eval**, which grades an existing real run without repeating device actions.
+- "Accuracy of simulated runs" means **Simulation fidelity**, assessed through both **Task step** and whole-request comparisons.
+- "Exact steps" in eval comparisons means matching **Task step** objectives and inspecting detailed actions within each match; different valid **Execution method**s do not prevent a step match or fail an eval solely because their tool-call sequences differ.
+- "If the result doesn't exist, create a new group" means no matching **Task-step group** exists; missing validation evidence leaves the occurrence's outcome unknown in its matching group.
+- "Offline" in **Offline assistant eval** means evaluation outside the user's live interaction; it does not require a network-free model.
+- "Passing an eval" means meeting the scenario's expected handling, which may be honest failure for an impossible task; it does not necessarily mean a **Verified task outcome**.
 - "Step" in execution learning means a **Task step**, an intermediate objective; it does not necessarily correspond to one tool call or remote-button press.
 - "Main agent" means **Realtime Voice Agent** when discussing the post-wake-word voice entry point.
 - "Sub-agent" means **Specialist agent** when discussing delegated TV or ScheduledTask behavior.

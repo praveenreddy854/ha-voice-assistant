@@ -1,0 +1,79 @@
+import { randomUUID } from "node:crypto";
+import type { AgentAdapter, Assessment, Attempt, EvalBatch, EvalRun, Judge, StepGroup } from "./types";
+import { EvalStore } from "./store";
+import { baselineFor, localDay, runVerdict } from "./analytics";
+
+export class EvalRunner {
+  constructor(readonly store: EvalStore, readonly judge: Judge, readonly judgeModel: string, readonly graderVersion: string) {}
+  async assess(batch: EvalBatch, attempt: Attempt, adapterVersion: string, execute: () => Promise<Assessment>, signal: AbortSignal,
+    scenario?: { id: string; version: string }): Promise<EvalRun> {
+    const run: EvalRun = { id: randomUUID(), batchId: batch.id, agentId: batch.agentId, mode: batch.mode, attempt,
+      scenarioId: scenario?.id, scenarioVersion: scenario?.version, adapterVersion, graderVersion: this.graderVersion, judgeModel: this.judgeModel,
+      scheduledDay: batch.scheduledDay, assessedAt: new Date().toISOString(), gradedAt: new Date().toISOString(), status: "execution_error" };
+    try {
+      signal.throwIfAborted();
+      const assessment = await execute();
+      run.assessment = assessment; run.assessedAt = assessment.startedAt; run.durationMs = assessment.durationMs;
+      run.assessedModel = assessment.model; run.promptVersion = assessment.promptVersion; run.status = "grading_error";
+      const judged = await this.judge(assessment, (await this.store.list<StepGroup>("groups")).filter(g => g.agentId === assessment.agentId), signal);
+      run.grade = judged.grade; run.judgeUsage = judged.usage; run.status = "completed";
+    } catch (error) { run.error = error instanceof Error ? error.message : String(error); }
+    run.gradedAt = new Date().toISOString();
+    await this.store.saveRun(run); batch.runIds.push(run.id); await this.store.write("batches", batch);
+    return run;
+  }
+  async simulated(adapter: AgentAdapter, signal: AbortSignal, options: { scheduledDay?: string; scenarioIds?: string[] } = {}): Promise<EvalBatch> {
+    const scheduledDay = options.scheduledDay;
+    if (scheduledDay) {
+      const existing = (await this.store.list<EvalBatch>("batches")).find(b => b.agentId === adapter.id && b.scheduledDay === scheduledDay && b.attempt === "scheduled");
+      if (existing) return existing;
+    }
+    const batch = this.newBatch(adapter.id, "simulated", scheduledDay);
+    await this.store.write("batches", batch);
+    const prior = await this.store.list<EvalRun>("summaries");
+    try {
+      const scenarios = options.scenarioIds ? adapter.scenarios.filter(s => options.scenarioIds!.includes(s.id)) : adapter.scenarios;
+      if (!scenarios.length || (options.scenarioIds && scenarios.length !== new Set(options.scenarioIds).size)) throw new Error("Unknown or empty scenario selection");
+      for (const scenario of scenarios) {
+        signal.throwIfAborted();
+        const run = await this.assess(batch, scheduledDay ? "scheduled" : "on_demand", adapter.version, () => adapter.execute(scenario, signal), signal, scenario);
+        if (scheduledDay) {
+          run.comparison = baselineFor(run, prior);
+          if (run.comparison.signal) {
+            const confirmation = await this.assess(batch, "confirmation", adapter.version, () => adapter.execute(scenario, signal), signal, scenario);
+            const repeated = baselineFor(confirmation, prior).signal === run.comparison.signal;
+            run.comparison.confirmation = runVerdict(confirmation) === "error" ? "incomplete" : repeated ? "confirmed" : "intermittent";
+            if (repeated) await this.store.alert({ id: randomUUID(), key: `${adapter.id}:${scenario.id}:${run.comparison.signal}`, kind: run.comparison.signal,
+              batchId: batch.id, createdAt: new Date().toISOString(), message: `${scenario.request}: confirmed ${run.comparison.signal} against the previous seven complete days.`, runIds: [run.id, confirmation.id] });
+          } else if (runVerdict(run) === "pass") {
+            await this.store.resolveAlert(`${adapter.id}:${scenario.id}:failure`);
+            await this.store.resolveAlert(`${adapter.id}:${scenario.id}:slowdown`);
+          }
+          await this.store.saveRun(run);
+        }
+      }
+    } catch (error) { batch.error = error instanceof Error ? error.message : String(error); }
+    return this.finish(batch);
+  }
+  async recorded(agentId: string, inputs: Array<() => Promise<Assessment>>, signal: AbortSignal): Promise<EvalBatch> {
+    const batch = this.newBatch(agentId, "recorded"); await this.store.write("batches", batch);
+    for (const input of inputs) {
+      await this.assess(batch, "on_demand", "recorded-import-1", input, signal);
+      if (signal.aborted) break;
+    }
+    return this.finish(batch);
+  }
+  private newBatch(agentId: string, mode: EvalBatch["mode"], scheduledDay?: string): EvalBatch {
+    return { id: randomUUID(), agentId, mode, attempt: scheduledDay ? "scheduled" : "on_demand", scheduledDay,
+      startedAt: new Date().toISOString(), status: "running", runIds: [] };
+  }
+  private async finish(batch: EvalBatch): Promise<EvalBatch> {
+    const runs = await Promise.all(batch.runIds.map(id => this.store.read<EvalRun>("summaries", id)));
+    batch.status = batch.error || runs.some(run => !run || run.status !== "completed") ? "incomplete" : "completed";
+    batch.finishedAt = new Date().toISOString(); await this.store.write("batches", batch);
+    if (batch.status === "incomplete") await this.store.alert({ id: randomUUID(), key: `${batch.agentId}:incomplete`, batchId: batch.id, createdAt: batch.finishedAt,
+      kind: "incomplete", message: batch.error || "One or more eval runs could not finish execution or grading.", runIds: batch.runIds });
+    else await this.store.resolveAlert(`${batch.agentId}:incomplete`);
+    return batch;
+  }
+}

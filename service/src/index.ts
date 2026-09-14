@@ -45,6 +45,7 @@ import { isRtspMode, startRtspCapture, stopRtspCapture } from "./agents/common/r
 import { startGestureMonitor } from "./gestureMonitor";
 import { traceRouter } from "./tracing/traceApi";
 import { dashboardRouter } from "./tracing/dashboardApi";
+import { evalRouter, evalSupervisor } from "./evals/api";
 import { setupRealtimeChatProxy } from "./realtimeChat";
 import { addAnnouncementClient } from "./announcementBus";
 import { startScheduledTaskFirer } from "./scheduledTaskFirer";
@@ -115,6 +116,7 @@ app.use(payloadTooLargeHandler);
 // ── Trace viewer routes ──
 app.use(traceRouter);
 app.use(dashboardRouter);
+app.use(evalRouter);
 
 // Serve telemetry viewer HTML
 app.get("/telemetry", (_req, res) => {
@@ -134,6 +136,7 @@ startScheduledTaskFirer();
 startOutDirCleaner();
 startProactiveReminders();
 startMemoryConsolidation();
+evalSupervisor.start();
 
 // Start gesture monitor for fist-to-pause TV control (RTSP mode only)
 if (isRtspMode()) {
@@ -1223,12 +1226,14 @@ setupRealtimeChatProxy(server);
 
 // Graceful shutdown
 process.on("SIGTERM", async () => {
+  evalSupervisor.stop();
   console.log("SIGTERM received, shutting down gracefully...");
   await shutdownTracing();
   process.exit(0);
 });
 
 process.on("SIGINT", async () => {
+  evalSupervisor.stop();
   console.log("SIGINT received, shutting down gracefully...");
   await shutdownTracing();
   process.exit(0);
