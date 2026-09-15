@@ -444,9 +444,11 @@
             <span>${t.screenshotCount} screenshots</span>
             ${t.durationMs ? `<span>${(t.durationMs / 1000).toFixed(1)}s</span>` : ''}
             <span>${timeAgo(t.startedAt)}</span>
+            <span data-eval-session-id="${escHtml(t.sessionId)}" data-agent-type="${escHtml(t.agentType)}"></span>
           </div>
         </div>
       `).join('');
+      document.dispatchEvent(new Event('telemetry:sessions-rendered'));
     }
 
     async function loadTraceDetail(sessionId, options = {}) {
@@ -751,5 +753,6 @@
     loadTraces();
     startAutoRefresh();
   </script>
+  <script src="/dashboards/evals/telemetry.js" defer></script>
 </body>
 </html>

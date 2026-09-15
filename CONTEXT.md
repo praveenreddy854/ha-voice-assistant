@@ -151,8 +151,16 @@ An Offline assistant eval of a new assistant run against a Simulated assistant e
 _Avoid_: Recorded-run eval.
 
 **Recorded-run eval**:
-An Offline assistant eval of a completed real assistant run using its retained observations and final response.
+An Offline assistant eval of a finished real assistant run, including one that ended in error, using its retained observations and final response.
 _Avoid_: Real eval, live-device replay.
+
+**Recorded-run eval status**:
+The progress and completion state of a Recorded-run eval attempt, distinct from its judgment of assistant behavior.
+_Avoid_: Assistant outcome, task verdict.
+
+**Recorded-run re-evaluation**:
+A new Recorded-run eval attempt assessing the same original assistant run while retaining its earlier eval attempts.
+_Avoid_: Device-action replay, replacement result.
 
 **Simulated assistant environment**:
 A controlled representation of an assistant's task context that changes in response to its actions and supplies corresponding observations during a Simulated eval.
@@ -199,7 +207,8 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 - **Simulated eval** and **Recorded-run eval** are distinct kinds of **Offline assistant eval**.
 - A **Simulated eval** uses a **Simulated assistant environment** appropriate to the assessed agent's task domain.
 - A **Simulated eval** of a complete **TVAgent** task uses a **Simulated TV environment** whose observations depend on the agent's actions.
-- A **Recorded-run eval** assesses retained evidence from a completed real assistant run without repeating its device actions.
+- A **Recorded-run eval** assesses retained evidence from a finished real assistant run, including one that ended in error, without repeating its device actions.
+- A finished real assistant run can have multiple **Recorded-run eval** attempts; **Recorded-run re-evaluation** preserves the earlier attempts.
 - **Simulation fidelity** is assessed by comparing **Simulated eval** and **Recorded-run eval** results at both the **Task step** and whole-request levels.
 - Eval comparisons align the same **Task step** objective even when runs use different **Execution method**s; the method and its detailed actions remain part of the comparison.
 - A **Task-step group** contains comparable **Task step** occurrences from multiple runs and may include different **Execution method**s.
@@ -275,6 +284,12 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 
 > **Dev:** "Does a Recorded-run eval ask TVAgent to repeat the real task?"
 > **Domain expert:** "No — it grades the retained observations and final response from the completed run."
+
+> **Dev:** "Can a Recorded-run eval assess a TVAgent run that ended in error?"
+> **Domain expert:** "Yes. Finished does not mean successful; unsuccessful assistant behavior is also evaluated."
+
+> **Dev:** "Does Evaluated mean the assistant passed?"
+> **Domain expert:** "No. The Recorded-run eval status describes whether grading finished; the verdict describes the assessed behavior."
 
 > **Dev:** "For 'Play latest Telugu songs on Apple TV', do we compare only the final playback outcome?"
 > **Domain expert:** "No — compare the whole request and its individual Task steps, including turning on the TV and making YouTube ready."
@@ -385,6 +400,8 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 
 - "Offline eval" includes both **Simulated eval** and **Recorded-run eval**; both are in scope and remain distinct.
 - "Real eval" means **Recorded-run eval**, which grades an existing real run without repeating device actions.
+- "Finished" for a **Recorded-run eval** includes real assistant runs that ended in error; it does not mean the requested task succeeded.
+- "Evaluated" means a **Recorded-run eval** produced a grading result, including fail or unknown verdicts; "Eval error" means evaluation did not finish, not that the assistant failed its task.
 - "Accuracy of simulated runs" means **Simulation fidelity**, assessed through both **Task step** and whole-request comparisons.
 - "Exact steps" in eval comparisons means matching **Task step** objectives and inspecting detailed actions within each match; different valid **Execution method**s do not prevent a step match or fail an eval solely because their tool-call sequences differ.
 - "If the result doesn't exist, create a new group" means no matching **Task-step group** exists; missing validation evidence leaves the occurrence's outcome unknown in its matching group.

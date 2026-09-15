@@ -1,12 +1,22 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import type { EvalAlert, EvalBatch, EvalRun, StepGroup } from "./types";
+import type { EvalAlert, EvalBatch, EvalRun, RecordedEvalAttempt, StepGroup } from "./types";
+import type { EvalJob } from "./worker";
 
 export function digest(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 24);
 }
 export const defaultEvalDirectory = () => path.resolve(process.env.OFFLINE_EVAL_DIR || path.join(__dirname, "../../generated_data/offline-evals"));
+export function processIsRunning(pid?: number): boolean {
+  if (!pid || !Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    if ((error as NodeJS.ErrnoException).code === "EPERM") return true;
+    throw error;
+  }
+}
 export class EvalStore {
   constructor(readonly directory = defaultEvalDirectory()) {}
   private filename(kind: string, id: string) {
@@ -40,24 +50,98 @@ export class EvalStore {
     await this.write("runs", run);
     // Summary reads never load screenshots or complete source traces in the backend.
     const { assessment, ...summary } = run;
-    await this.write("summaries", { ...summary, request: assessment?.request, sourceSessionId: assessment?.sourceSessionId, usage: assessment?.usage });
+    await this.write("summaries", { ...summary, request: assessment?.request, sourceSessionId: run.sourceSessionId || assessment?.sourceSessionId, usage: assessment?.usage });
   }
-  async acquire(): Promise<(() => Promise<void>) | undefined> {
+  async workerIsActive(): Promise<boolean> {
+    try {
+      const pid = Number(await fs.readFile(path.join(this.directory, "worker.lock"), "utf8"));
+      if (!Number.isInteger(pid) || pid <= 0) throw new Error("Invalid offline eval worker lock");
+      return processIsRunning(pid);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
+  async acquire(name: "worker.lock" | "submission.lock" = "worker.lock"): Promise<(() => Promise<void>) | undefined> {
     await fs.mkdir(this.directory, { recursive: true });
-    const lock = path.join(this.directory, "worker.lock");
+    const lock = path.join(this.directory, name);
     try {
       const handle = await fs.open(lock, "wx", 0o600);
       await handle.writeFile(String(process.pid));
       await handle.close();
-      return async () => { await fs.unlink(lock).catch(() => {}); };
+      return async () => {
+        try { await fs.unlink(lock); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const pid = Number(await fs.readFile(lock, "utf8").catch(() => ""));
-      if (!Number.isInteger(pid) || pid <= 0) return undefined;
-      try { process.kill(pid, 0); return undefined; }
-      catch (failure) { if ((failure as NodeJS.ErrnoException).code !== "ESRCH") return undefined; }
-      await fs.unlink(lock).catch(() => {});
-      return this.acquire();
+      let pid: number;
+      try { pid = Number(await fs.readFile(lock, "utf8")); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return this.acquire(name);
+        throw error;
+      }
+      if (!Number.isInteger(pid) || pid <= 0) throw new Error(`Invalid offline eval ${name}`);
+      if (processIsRunning(pid)) return undefined;
+      try { await fs.unlink(lock); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      return this.acquire(name);
+    }
+  }
+  async queueRecordedAttempts(job: EvalJob): Promise<RecordedEvalAttempt[]> {
+    if (job.mode !== "recorded") return [];
+    const attempts: RecordedEvalAttempt[] = [];
+    const batch = job.batchId ? await this.read<EvalBatch>("batches", job.batchId) : undefined;
+    for (const sessionId of new Set(job.sessionIds)) {
+      const id = digest([job.id, sessionId]);
+      const previous = await this.read<RecordedEvalAttempt>("attempts", id);
+      const legacyRunId = !previous ? batch?.runIds[job.sessionIds!.indexOf(sessionId)] : undefined;
+      const legacyRun = legacyRunId ? await this.read<EvalRun>("runs", legacyRunId) : undefined;
+      if (legacyRun) await this.saveRun({ ...legacyRun, sourceSessionId: sessionId });
+      const attempt: RecordedEvalAttempt = previous || {
+        id, jobId: job.id, sourceSessionId: sessionId,
+        status: legacyRun ? legacyRun.status === "completed" ? "evaluated" : "eval_error" : "queued",
+        requestedAt: job.createdAt || batch?.startedAt || new Date().toISOString(),
+        runId: legacyRun?.id, finishedAt: legacyRun?.gradedAt, error: legacyRun?.error,
+      };
+      if (!previous) await this.write("attempts", attempt);
+      attempts.push(attempt);
+    }
+    return attempts;
+  }
+  async finishRecordedAttempts(job: EvalJob, reason: string): Promise<void> {
+    const attempts = await this.queueRecordedAttempts(job);
+    for (const attempt of attempts) {
+      if (attempt.status !== "queued" && attempt.status !== "running") continue;
+      const run = attempt.runId ? await this.read<EvalRun>("runs", attempt.runId) : undefined;
+      if (run) await this.saveRun(run);
+      await this.write<RecordedEvalAttempt>("attempts", {
+        ...attempt, status: run?.status === "completed" ? "evaluated" : "eval_error",
+        finishedAt: run?.gradedAt || new Date().toISOString(),
+        error: run?.status === "completed" ? undefined : run?.error || `${reason}${attempt.startedAt ? "" : " (evaluation never started)"}`,
+      });
+    }
+  }
+  async failJob(job: EvalJob, reason: string): Promise<void> {
+    const saved = await this.read<EvalJob>("jobs", job.id);
+    if (saved?.status === "completed") return;
+    const failed: EvalJob = { ...job, ...saved, status: "failed", error: reason, finishedAt: new Date().toISOString() };
+    await this.finishRecordedAttempts(failed, reason);
+    for (const batch of await this.list<EvalBatch>("batches")) {
+      if (batch.status === "running" && (batch.jobId === job.id || batch.id === failed.batchId)) {
+        await this.write<EvalBatch>("batches", { ...batch, status: "incomplete", error: reason, finishedAt: failed.finishedAt });
+      }
+    }
+    await this.write("jobs", failed);
+    await this.alert({ id: randomUUID(), key: "tv:worker-failure", batchId: failed.batchId || failed.id, createdAt: failed.finishedAt!,
+      kind: "incomplete", message: reason, runIds: [] });
+  }
+  async recoverInterruptedJobs(): Promise<void> {
+    if (await this.workerIsActive()) return;
+    for (const job of await this.list<EvalJob>("jobs")) {
+      if ((job.status === "queued" || job.status === "running") && !processIsRunning(job.workerPid || job.ownerPid)) {
+        await this.failJob(job, "Eval worker stopped before finishing; retry explicitly");
+      }
     }
   }
   async alert(alert: EvalAlert): Promise<void> {
