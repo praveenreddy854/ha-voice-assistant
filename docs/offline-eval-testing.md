@@ -44,6 +44,8 @@ Check **Batch coverage**: the batch should move from `running` to `completed` wi
 
 Check **Run history and weekly comparison**: the new rows should say `simulated` and `on_demand`. There are multiple variants of the same request; open **Inspect** to see the scenario and its starting-state context.
 
+Use the **All** (default), **Simulated**, and **Real** tabs above the history table to switch between both modes, simulations only, and recorded-run evaluations only. The tabs and the top-level **Mode** filter stay synchronized, including the summary counts. Switching tabs keeps each run's prior-week comparison and Inspect action intact; automatic and manual refreshes preserve the selected tab. Use Left/Right arrows or Home/End to navigate the tabs with a keyboard.
+
 ## 3. Inspect a few representative results
 
 Click **Inspect** on a row. Read the request and final response, then the task and step judgments. Expand the referenced evidence IDs under **Source evidence** to see the actual tool arguments, observations, and available images.
@@ -102,3 +104,10 @@ node --import tsx --test tests/offlineEvals.test.ts tests/offlineTvAdapter.test.
 ```
 
 `OFFLINE_EVAL_JUDGE_MODEL` selects the Azure judge deployment independently from the assessed TVAgent model. `OFFLINE_EVAL_ENABLED=false` disables the daily scheduler while retaining manual runs. Alerts currently appear persistently in the eval dashboard.
+
+The history-tab browser checks use mocked API responses and do not start the backend or make paid model calls. With dependencies and Playwright Chromium installed, run from the repository root:
+
+```sh
+cd service && npx tsc
+cd ../ha-voice-assistant && npm run test:e2e -- e2e/eval-history.spec.ts
+```
