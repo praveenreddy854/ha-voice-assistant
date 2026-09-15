@@ -32,6 +32,7 @@
   let historyLoading = false, historyMarkup: string | undefined;
   const selector = element<HTMLDialogElement>("session-selector");
   const detail = element<HTMLDialogElement>("detail");
+  const runModes = ["all", "simulated", "recorded"] as const;
   const PAGE_SIZE = 25, MAX_SELECTION = 100;
   const timezone = "America/New_York";
   const lifecycleLabels: Record<Evaluation["status"], string> = {
@@ -69,13 +70,22 @@
     } finally { clearTimeout(timeout); }
   }
   function render() {
-    if (!snapshot) return;
     const mode = element<HTMLSelectElement>("mode").value;
+    for (const value of runModes) {
+      const tab = element<HTMLButtonElement>(`runs-tab-${value}`);
+      tab.setAttribute("aria-selected", String(value === mode));
+      tab.tabIndex = value === mode ? 0 : -1;
+    }
+    element("runs-panel").setAttribute("aria-labelledby", `runs-tab-${mode}`);
+    if (!snapshot) return;
     const runs = snapshot.runs.filter(r => mode === "all" || r.mode === mode);
     element("window").textContent = `Baseline ${snapshot.baseline.from} – ${snapshot.baseline.to} · ${snapshot.timezone} · Daily schedule ${snapshot.scheduleEnabled ? "3 a.m." : "disabled"}`;
     element("cards").innerHTML = [["Evaluated runs", runs.length], ["Tasks fulfilled", runs.filter(r => r.grade?.task.verdict === "pass").length], ["Handling passed", runs.filter(r => r.verdict === "pass").length], ["Unknown / incomplete", runs.filter(r => ["unknown", "error"].includes(r.verdict)).length]].map(([label, count]) => `<div class="card"><div class="muted">${label}</div><div class="number">${count}</div></div>`).join("");
     element("alerts").innerHTML = snapshot.alerts.filter(a => !a.resolvedAt).map(a => `<div class="alert">${esc(a.message)} <small>${esc(date(a.createdAt))}</small></div>`).join("") || "No active regression alerts.";
-    element("runs").innerHTML = runs.map(r => `<tr><td>${esc(date(r.assessedAt))}<br><small>Graded ${esc(date(r.gradedAt))}</small></td><td>${esc(r.request || r.scenarioId || r.id)}<br><small>${esc(r.assessedModel || "Model unknown")}</small></td><td>${badge(r.mode)}<br><small>${esc(r.attempt)}</small></td><td>${badge(r.grade?.task.verdict)}</td><td>${badge(r.grade?.handling.verdict || (r.status !== "completed" ? "error" : "unknown"))}</td><td>${badge(r.grade?.reporting.verdict)}</td><td>${duration(r.durationMs)}</td><td>${r.comparison ? r.comparison.baselineCount >= 3 ? `${r.comparison.baselineCount} samples<br>Median ${duration(r.comparison.medianMs)}<br>${esc(r.comparison.signal || "No alert threshold crossed")} ${esc(r.comparison.confirmation || "")}` : `Collecting baseline (${r.comparison.baselineCount}/3)` : "On demand"}</td><td><button data-run="${esc(r.id)}">Inspect</button></td></tr>`).join("") || '<tr><td colspan="9">No evals yet. Run a simulation or select completed real sessions above.</td></tr>';
+    const emptyRuns = mode === "simulated" ? "No simulated evals yet. Run a simulation above."
+      : mode === "recorded" ? "No real evals yet. Select completed real sessions above."
+      : "No evals yet. Run a simulation or select completed real sessions above.";
+    element("runs").innerHTML = runs.map(r => `<tr><td>${esc(date(r.assessedAt))}<br><small>Graded ${esc(date(r.gradedAt))}</small></td><td>${esc(r.request || r.scenarioId || r.id)}<br><small>${esc(r.assessedModel || "Model unknown")}</small></td><td>${badge(r.mode)}<br><small>${esc(r.attempt)}</small></td><td>${badge(r.grade?.task.verdict)}</td><td>${badge(r.grade?.handling.verdict || (r.status !== "completed" ? "error" : "unknown"))}</td><td>${badge(r.grade?.reporting.verdict)}</td><td>${duration(r.durationMs)}</td><td>${r.comparison ? r.comparison.baselineCount >= 3 ? `${r.comparison.baselineCount} samples<br>Median ${duration(r.comparison.medianMs)}<br>${esc(r.comparison.signal || "No alert threshold crossed")} ${esc(r.comparison.confirmation || "")}` : `Collecting baseline (${r.comparison.baselineCount}/3)` : "On demand"}</td><td><button data-run="${esc(r.id)}">Inspect</button></td></tr>`).join("") || `<tr><td colspan="9">${emptyRuns}</td></tr>`;
     element("fidelity-note").textContent = snapshot.fidelityNote;
     const pairs = snapshot.fidelity.filter(p => p.recordedIds.length);
     element("fidelity").innerHTML = pairs.map(p => `<p>${esc(snapshot!.runs.find(r => r.id === p.simulatedId)?.scenarioId)} · ${p.recordedIds.length} comparable recorded runs <button data-pair="${esc(p.simulatedId)}:${esc(p.recordedIds[0])}">Compare steps</button></p>`).join("") || `No comparison data yet. ${snapshot.fidelity.length} simulated runs currently unmatched.`;
@@ -390,6 +400,23 @@
   element("calibrate").onclick = () => { void launch({ mode: "calibrate" }); };
   element("refresh").onclick = () => { void refresh({ sessions: sessionsInitialized }); };
   element("mode").onchange = render; element("agent").onchange = () => { void refresh(); };
+  runModes.forEach((mode, index) => {
+    const tab = element<HTMLButtonElement>(`runs-tab-${mode}`);
+    tab.onclick = () => { element<HTMLSelectElement>("mode").value = mode; render(); };
+    tab.onkeydown = event => {
+      let next: number;
+      switch (event.key) {
+        case "ArrowRight": next = (index + 1) % runModes.length; break;
+        case "ArrowLeft": next = (index + runModes.length - 1) % runModes.length; break;
+        case "Home": next = 0; break;
+        case "End": next = runModes.length - 1; break;
+        default: return;
+      }
+      event.preventDefault();
+      const target = element<HTMLButtonElement>(`runs-tab-${runModes[next]}`);
+      target.focus(); target.click();
+    };
+  });
   element("close").onclick = () => detail.close();
   detail.addEventListener("close", () => {
     detailVersion++; historySession = undefined; historyMarkup = undefined; historyLoading = false;
