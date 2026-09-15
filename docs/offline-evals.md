@@ -15,6 +15,38 @@ Both modes are in scope and must remain distinguishable in execution, reports, a
 
 Spending limits are deferred by user choice. The runner, dashboard at `/dashboards/evals`, and backend-host scheduler are implemented. `OFFLINE_EVAL_ENABLED=false` disables daily scheduling; it is enabled by default. The running development backend has started scheduled batches through its file watcher.
 
+## Agreed recorded-run selection dialog
+
+Implemented in the backend-served eval dashboard and telemetry viewer. Session discovery reads metadata only; opening evaluation details loads the retained evidence for the chosen attempt.
+
+- Provide a dialog listing sessions with multi-selection for on-demand recorded-run evaluation.
+- Show only finished real TVAgent runs, including runs that ended in error. Exclude unfinished runs and other agents.
+- Discover sessions from both retained telemetry and Cosmos TV-flow records, deduplicating by session ID and labeling the available evidence sources. Cosmos-only sessions remain eligible; missing evidence may yield unknown verdicts.
+- If a source fails, keep sessions from the available source selectable, show a prominent incomplete-list warning naming the unavailable source, and provide retry. Do not present a partial list as complete.
+- Show per-session eval status: **Not evaluated**, **Queued**, **Running**, **Evaluated**, or **Eval error**, with the verdict separate.
+- **Evaluated** includes pass, fail, and unknown verdicts. **Eval error** means evaluation did not finish, not that the assessed assistant failed its task.
+- Allow explicit re-evaluation of already evaluated sessions and retries after eval errors, preserving every previous attempt.
+- Re-evaluation rereads the currently retained sources and preserves the evidence snapshot used by each attempt. Changes in evidence coverage remain visible; a changed verdict must not be attributed solely to a judge change when the evidence also changed.
+- Disable selection of sessions whose eval is Queued or Running to prevent duplicate in-flight work.
+- Use the latest attempt for the session's primary eval status. If a re-evaluation is pending or fails, retain the most recent completed result separately with its timestamp and a **Previous evaluation** label.
+- Open the selection dialog from the eval dashboard. Show the same per-session eval status in the dialog and beside sessions in the telemetry viewer, with access to evaluation details.
+- Preserve the single-job execution limit. While any eval job is active, disable submission with an explicit busy message, preserve the selection, and re-enable submission when the worker becomes free; do not add a persistent queue of additional jobs.
+- Within an accepted batch, show **Queued** for selected sessions awaiting evaluation and **Running** only for the session currently being evaluated.
+- If the worker stops, preserve completed results and mark unfinished attempts **Eval error** with an interruption reason that distinguishes attempts never started. Require explicit retry; backend restart must not silently resume paid grading or leave sessions indefinitely Queued or Running.
+- Provide **Select this page**, preserving explicit selections across pages and displaying the total selected count. Keep the existing maximum of 100 sessions per batch; do not silently select matching sessions on other pages.
+- Provide request-text/session-ID search, a date-range filter, and an eval-status filter. Default to all eligible sessions, newest first, rather than hiding previously evaluated sessions.
+- Preserve selections hidden by changed search or filters. Show the total selected and hidden-selected counts, provide **Review selected** and **Clear selection**, and include all selected sessions in the launch summary.
+- Before submission, show an inline breakdown of new evaluations and re-evaluations, the total selection, and a notice that grading makes paid model calls without repeating device actions. Use one explicit Run button, without a second confirmation dialog.
+
+### Session discovery and attempt persistence
+
+- `GET /api/evals/sessions` combines eligible telemetry and Cosmos metadata with saved evaluation status. Discovery is cached for 15 seconds; `?refresh=true` retries the sources immediately.
+- `GET /api/evals/session-statuses` supplies the telemetry viewer's status badges without querying Cosmos or loading full evidence. An unavailable status store is an error, never a claim that sessions have not been evaluated.
+- `GET /api/evals/sessions/:sessionId/history` returns all retained attempts, including failures before a grading result exists. Existing run-detail links continue to use `/api/evals/runs/:id`.
+- Recorded submissions to `POST /api/evals/jobs` accept an optional UUID `requestId`. The picker reuses it when resolving an uncertain submission, so a lost response or repeated click does not create another paid batch. An intentional later re-evaluation uses a new identifier.
+- Every accepted session has a durable attempt before worker startup, retaining its source-session identity even when evidence loading fails. Completed run summaries from before this feature remain visible in history; older jobs supply session associations where retained.
+- Queued/running work is reconciled after worker interruption without re-running it. A completed result already saved before an interruption is preserved rather than mislabeled as an evaluation failure.
+
 ## Agreed daily schedule
 
 - Start the simulated suite daily at 3:00 a.m. in `America/New_York`.
@@ -265,5 +297,5 @@ The [local data audit](./offline-eval-data-audit.md) supports starting recorded-
 - The judge deployment is configurable independently through `OFFLINE_EVAL_JUDGE_MODEL`; the initial calibration checks all six reviewed cases. A held-out labeled set is still needed before claiming broader grader accuracy.
 - Spending caps remain deferred. Timing comparisons are simulated execution wall times with virtual device waits, not a measurement of real device latency.
 - Notifications currently use persistent dashboard alerts. External delivery has no selected destination.
-- Recorded runs are selected by completed session IDs. Missing metadata or evidence remains unknown; historic system-only prompt hashes cannot claim equivalence with full simulated prompt/skill/tool manifests.
+- Recorded runs are selected through the multi-select session dialog, or by session ID through the CLI/API. Missing metadata or evidence remains unknown; historic system-only prompt hashes cannot claim equivalence with full simulated prompt/skill/tool manifests.
 - Fidelity comparisons are conservative: incompatible or unknown configurations remain unmatched. No aggregate simulation-accuracy score is inferred from unmatched data.

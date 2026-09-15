@@ -58,7 +58,15 @@ The LLM's explanation must point to evidence that actually supports it. A screen
 
 ## 4. Grade an existing real run on demand
 
-Open **http://localhost:3005/telemetry**, choose a completed TVAgent session, and copy its session ID. Return to **Grade completed real runs**, paste one or more IDs, and click **Grade selected runs**.
+Under **Grade completed real runs**, click **Select sessions**. The dialog lists finished TVAgent sessions, including assistant runs that ended in error, from retained telemetry and configured Cosmos records. Duplicate session IDs appear once with their available evidence sources. If a source is unavailable, its warning and retry action remain visible while the available sessions can still be selected.
+
+Search by request or session ID, filter by session start dates in **America/New_York**, or choose an evaluation status. Select individual sessions or **Select this page**. Selections persist across pages and filters; the total and hidden-selection count must remain accurate. **Review selected** exposes the complete selection and **Clear selection** resets it. A batch is limited to 100 sessions.
+
+Review the inline breakdown of new evaluations and re-evaluations, then click **Run selected evaluations**. Paid model grading uses retained evidence only and never replays device actions. Closing the dialog or browser does not cancel accepted work. If another eval job is running, submission stays disabled with the selection preserved until the worker becomes available.
+
+Each session independently moves through **Queued**, **Running**, and then **Evaluated** or **Eval error**. A failing or unknown verdict still counts as Evaluated; Eval error means the evaluation could not finish. Only the actively evaluated session should say Running, not every member of its batch. Queued and Running sessions cannot be selected again.
+
+The telemetry viewer at **http://localhost:3005/telemetry** shows the same evaluation status beside TV sessions, with links to their history. Re-evaluation keeps prior attempts and their evidence. If a later attempt is pending or fails, its status remains primary and the last completed verdict is labeled **Previous evaluation** with its grading timestamp. A worker interruption preserves completed results and marks unfinished attempts as errors requiring explicit retry, including attempts that never started.
 
 The resulting rows should say `recorded` and `on_demand`. Open **Inspect** and compare the judgment with the retained observations and final message. The importer can supplement telemetry with the matching Cosmos flow when configured. It must not replay device actions.
 
@@ -90,7 +98,7 @@ npm run eval -- simulated telugu-fresh-search
 npm run eval:recorded -- COMPLETED_SESSION_ID
 
 # Verify framework behavior without live model/device calls
-node --import tsx --test tests/offlineEvals.test.ts tests/offlineTvAdapter.test.ts
+node --import tsx --test tests/offlineEvals.test.ts tests/offlineTvAdapter.test.ts tests/recordedSessionDiscovery.test.ts tests/recordedEvalLifecycle.test.ts
 ```
 
 `OFFLINE_EVAL_JUDGE_MODEL` selects the Azure judge deployment independently from the assessed TVAgent model. `OFFLINE_EVAL_ENABLED=false` disables the daily scheduler while retaining manual runs. Alerts currently appear persistently in the eval dashboard.

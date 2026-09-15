@@ -1,15 +1,21 @@
 import { randomUUID } from "node:crypto";
-import type { AgentAdapter, Assessment, Attempt, EvalBatch, EvalRun, Judge, StepGroup } from "./types";
+import type { AgentAdapter, Assessment, Attempt, EvalBatch, EvalRun, Judge, RecordedEvalAttempt, StepGroup } from "./types";
+import type { EvalJob } from "./worker";
 import { EvalStore } from "./store";
 import { baselineFor, localDay, runVerdict } from "./analytics";
 
 export class EvalRunner {
   constructor(readonly store: EvalStore, readonly judge: Judge, readonly judgeModel: string, readonly graderVersion: string) {}
   async assess(batch: EvalBatch, attempt: Attempt, adapterVersion: string, execute: () => Promise<Assessment>, signal: AbortSignal,
-    scenario?: { id: string; version: string }): Promise<EvalRun> {
+    scenario?: { id: string; version: string }, recorded?: { sessionId: string; attempt?: RecordedEvalAttempt }): Promise<EvalRun> {
     const run: EvalRun = { id: randomUUID(), batchId: batch.id, agentId: batch.agentId, mode: batch.mode, attempt,
       scenarioId: scenario?.id, scenarioVersion: scenario?.version, adapterVersion, graderVersion: this.graderVersion, judgeModel: this.judgeModel,
-      scheduledDay: batch.scheduledDay, assessedAt: new Date().toISOString(), gradedAt: new Date().toISOString(), status: "execution_error" };
+      scheduledDay: batch.scheduledDay, assessedAt: new Date().toISOString(), gradedAt: new Date().toISOString(), status: "execution_error",
+      sourceSessionId: recorded?.sessionId, recordedAttemptId: recorded?.attempt?.id };
+    const startedAttempt: RecordedEvalAttempt | undefined = recorded?.attempt ? {
+      ...recorded.attempt, status: "running", startedAt: new Date().toISOString(), runId: run.id,
+    } : undefined;
+    if (startedAttempt) await this.store.write("attempts", startedAttempt);
     try {
       signal.throwIfAborted();
       const assessment = await execute();
@@ -20,16 +26,19 @@ export class EvalRunner {
     } catch (error) { run.error = error instanceof Error ? error.message : String(error); }
     run.gradedAt = new Date().toISOString();
     await this.store.saveRun(run); batch.runIds.push(run.id); await this.store.write("batches", batch);
+    if (startedAttempt) await this.store.write<RecordedEvalAttempt>("attempts", {
+      ...startedAttempt, status: run.status === "completed" ? "evaluated" : "eval_error", finishedAt: run.gradedAt, error: run.error,
+    });
     return run;
   }
-  async simulated(adapter: AgentAdapter, signal: AbortSignal, options: { scheduledDay?: string; scenarioIds?: string[] } = {}): Promise<EvalBatch> {
+  async simulated(adapter: AgentAdapter, signal: AbortSignal, options: { scheduledDay?: string; scenarioIds?: string[]; jobId?: string } = {}): Promise<EvalBatch> {
     const scheduledDay = options.scheduledDay;
     if (scheduledDay) {
       const existing = (await this.store.list<EvalBatch>("batches")).find(b => b.agentId === adapter.id && b.scheduledDay === scheduledDay && b.attempt === "scheduled");
       if (existing) return existing;
     }
     const batch = this.newBatch(adapter.id, "simulated", scheduledDay);
-    await this.store.write("batches", batch);
+    await this.saveNewBatch(batch, options.jobId);
     const prior = await this.store.list<EvalRun>("summaries");
     try {
       const scenarios = options.scenarioIds ? adapter.scenarios.filter(s => options.scenarioIds!.includes(s.id)) : adapter.scenarios;
@@ -55,13 +64,31 @@ export class EvalRunner {
     } catch (error) { batch.error = error instanceof Error ? error.message : String(error); }
     return this.finish(batch);
   }
-  async recorded(agentId: string, inputs: Array<() => Promise<Assessment>>, signal: AbortSignal): Promise<EvalBatch> {
-    const batch = this.newBatch(agentId, "recorded"); await this.store.write("batches", batch);
+  async recorded(agentId: string, inputs: Array<(() => Promise<Assessment>) | { sessionId: string; load: () => Promise<Assessment> }>,
+    signal: AbortSignal, options: { jobId?: string } = {}): Promise<EvalBatch> {
+    const batch = this.newBatch(agentId, "recorded"); await this.saveNewBatch(batch, options.jobId);
+    const job = options.jobId ? await this.store.read<EvalJob>("jobs", options.jobId) : undefined;
+    const attempts = job ? await this.store.queueRecordedAttempts(job) : [];
     for (const input of inputs) {
-      await this.assess(batch, "on_demand", "recorded-import-1", input, signal);
+      if (signal.aborted) { batch.error = "Recorded evaluation interrupted"; break; }
+      await this.assess(batch, "on_demand", "recorded-import-1", typeof input === "function" ? input : input.load, signal, undefined,
+        typeof input === "function" ? undefined : { sessionId: input.sessionId, attempt: attempts.find(attempt => attempt.sourceSessionId === input.sessionId) });
       if (signal.aborted) break;
     }
+    if (signal.aborted) {
+      batch.error = "Recorded evaluation interrupted";
+      if (job) await this.store.finishRecordedAttempts(job, batch.error);
+    }
     return this.finish(batch);
+  }
+  private async saveNewBatch(batch: EvalBatch, jobId?: string) {
+    batch.jobId = jobId;
+    await this.store.write("batches", batch);
+    if (jobId) {
+      const job = await this.store.read<EvalJob>("jobs", jobId);
+      if (!job) throw new Error("Eval job is missing");
+      await this.store.write("jobs", { ...job, batchId: batch.id });
+    }
   }
   private newBatch(agentId: string, mode: EvalBatch["mode"], scheduledDay?: string): EvalBatch {
     return { id: randomUUID(), agentId, mode, attempt: scheduledDay ? "scheduled" : "on_demand", scheduledDay,

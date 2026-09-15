@@ -85,10 +85,13 @@ export interface EvalRun {
   assessment?: Assessment;
   grade?: Grade;
   judgeUsage?: Usage;
+  sourceSessionId?: string;
+  recordedAttemptId?: string;
   comparison?: { baselineCount: number; medianMs?: number; signal?: "failure" | "slowdown"; confirmation?: "confirmed" | "intermittent" | "incomplete" };
 }
 export interface EvalBatch {
   id: string;
+  jobId?: string;
   agentId: string;
   mode: EvalMode;
   attempt: "scheduled" | "on_demand";
@@ -111,3 +114,43 @@ export interface EvalAlert {
 }
 export interface StepGroup { id: string; agentId: string; objective: string; target: string; app: string; startingState: string }
 export type Judge = (assessment: Assessment, groups: StepGroup[], signal: AbortSignal) => Promise<{ grade: Grade; usage?: Usage }>;
+
+export interface EvalRunSummary extends Omit<EvalRun, "assessment"> {
+  request?: string;
+  usage?: Usage;
+}
+export interface RecordedEvalAttempt {
+  id: string;
+  jobId: string;
+  sourceSessionId: string;
+  status: "queued" | "running" | "evaluated" | "eval_error";
+  requestedAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  runId?: string;
+  error?: string;
+}
+export interface RecordedSessionEvaluation {
+  status: RecordedEvalAttempt["status"] | "not_evaluated";
+  attemptCount: number;
+  latestAttempt?: RecordedEvalAttempt;
+  latestCompleted?: EvalRunSummary;
+}
+export interface RecordedSession {
+  sessionId: string;
+  userPrompt: string;
+  startedAt: string;
+  completedAt?: string;
+  status: "completed" | "error" | "failed";
+  sources: Array<"telemetry" | "cosmos">;
+  evaluation: RecordedSessionEvaluation;
+}
+export interface RecordedSessionsResponse {
+  sessions: RecordedSession[];
+  warnings: string[];
+  timezone: string;
+  busy: boolean;
+}
+export interface RecordedSessionHistory {
+  attempts: Array<RecordedEvalAttempt & { run?: EvalRunSummary }>;
+}

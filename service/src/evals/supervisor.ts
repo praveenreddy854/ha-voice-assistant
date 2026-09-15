@@ -1,44 +1,94 @@
 import { fork, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { EvalStore } from "./store";
+import { EvalStore, processIsRunning } from "./store";
 import { isDue, localDay } from "./analytics";
 import type { EvalBatch } from "./types";
 import type { EvalJob } from "./worker";
+
+function spawnWorker(job: EvalJob, directory: string): ChildProcess {
+  const source = __filename.endsWith(".ts");
+  return fork(path.join(__dirname, `worker.${source ? "ts" : "js"}`), ["job", job.id], {
+    execArgv: source ? ["--import", "tsx"] : [], stdio: "ignore",
+    env: { ...process.env, OFFLINE_EVAL_DIR: directory },
+  });
+}
+type JobInput = Pick<EvalJob, "mode" | "sessionIds" | "scenarioIds" | "model" | "scheduledDay" | "requestId">;
 
 export class EvalSupervisor {
   private child?: ChildProcess;
   private launching = false;
   private timer?: NodeJS.Timeout;
-  constructor(readonly store = new EvalStore()) {}
-  async launch(input: Omit<EvalJob, "id" | "status">): Promise<EvalJob> {
-    if (this.child || this.launching) throw new Error("An offline eval is already running");
+  private recovery: Promise<void> = Promise.resolve();
+  constructor(readonly store = new EvalStore(), private readonly spawn = spawnWorker) {}
+  async busy(): Promise<boolean> {
+    await this.recovery;
+    await this.store.recoverInterruptedJobs();
+    return this.child !== undefined || this.launching || await this.persistedBusy();
+  }
+  private async persistedBusy(): Promise<boolean> {
+    if (await this.store.workerIsActive()) return true;
+    return (await this.store.list<EvalJob>("jobs")).some(job =>
+      (job.status === "queued" || job.status === "running") && processIsRunning(job.workerPid || job.ownerPid));
+  }
+  private async previousSubmission(input: JobInput): Promise<EvalJob | undefined> {
+    if (!input.requestId) return undefined;
+    const previous = await this.store.read<EvalJob>("jobs", input.requestId);
+    if (previous && (previous.mode !== input.mode || JSON.stringify(previous.sessionIds) !== JSON.stringify(input.sessionIds))) {
+      throw new Error("This submission ID was already used for a different selection");
+    }
+    return previous;
+  }
+  async launch(input: JobInput): Promise<EvalJob> {
+    await this.recovery;
+    if (input.mode === "recorded" && (!input.sessionIds?.length || input.sessionIds.length > 100
+      || new Set(input.sessionIds).size !== input.sessionIds.length
+      || input.sessionIds.some(id => !/^[a-zA-Z0-9_-]+$/.test(id)))) throw new Error("Select 1 to 100 unique valid session IDs");
+    const previous = await this.previousSubmission(input);
+    if (previous) return previous;
+    if (this.launching) throw new Error("An offline eval submission is already in progress");
     this.launching = true;
+    let release: (() => Promise<void>) | undefined;
+    let job: EvalJob | undefined;
     try {
-      const job: EvalJob = { ...input, id: randomUUID(), status: "queued" };
+      release = await this.store.acquire("submission.lock");
+      if (!release) throw new Error("An offline eval submission is already in progress");
+      const previous = await this.previousSubmission(input);
+      if (previous) return previous;
+      await this.store.recoverInterruptedJobs();
+      if (this.child || await this.persistedBusy()) throw new Error("An offline eval is already running");
+      job = { ...input, id: input.requestId || randomUUID(), status: "queued", createdAt: new Date().toISOString(), ownerPid: process.pid };
       await this.store.write("jobs", job);
-      const source = __filename.endsWith(".ts");
-      const child = fork(path.join(__dirname, `worker.${source ? "ts" : "js"}`), ["job", job.id], {
-        execArgv: source ? ["--import", "tsx"] : [], stdio: "ignore",
-        env: { ...process.env, OFFLINE_EVAL_DIR: this.store.directory },
-      });
+      await this.store.queueRecordedAttempts(job);
+      const child = this.spawn(job, this.store.directory);
       this.child = child;
-      child.once("error", error => { void this.failedJob(job, error.message); });
+      const launchedJob = job;
+      const failed = (message: string) => {
+        if (this.child === child) this.child = undefined;
+        this.recovery = this.store.failJob(launchedJob, message);
+        void this.recovery.catch(error => console.error("[Offline eval worker recovery]", error));
+      };
+      child.once("error", error => failed(error.message));
       child.once("exit", code => {
-        this.child = undefined;
-        if (code !== 0) void this.failedJob(job, "Offline eval worker exited before successful completion");
+        if (this.child === child) this.child = undefined;
+        this.recovery = this.recovery.then(async () => {
+          const saved = await this.store.read<EvalJob>("jobs", launchedJob.id);
+          if (saved?.status !== "completed" && saved?.status !== "failed") {
+            await this.store.failJob(launchedJob, `Offline eval worker exited before saving completion (exit ${code ?? "signal"})`);
+          }
+        });
+        void this.recovery.catch(error => console.error("[Offline eval worker recovery]", error));
       });
       return job;
-    } finally { this.launching = false; }
-  }
-  private async failedJob(job: EvalJob, message: string) {
-    const saved = await this.store.read<EvalJob>("jobs", job.id);
-    if (saved?.status === "failed" || saved?.status === "completed") return;
-    await this.store.write("jobs", { ...saved, ...job, status: "failed", error: message } as EvalJob);
-    await this.store.alert({ id: randomUUID(), key: "tv:worker-failure", batchId: job.id, createdAt: new Date().toISOString(), kind: "incomplete", message, runIds: [] });
+    } catch (error) {
+      if (job) await this.store.failJob(job, error instanceof Error ? error.message : String(error));
+      throw error;
+    } finally {
+      try { await release?.(); } finally { this.launching = false; }
+    }
   }
   async tick(now = new Date()): Promise<void> {
-    if (this.child || this.launching || !isDue(now)) return;
+    if (await this.busy() || !isDue(now)) return;
     const day = localDay(now);
     if ((await this.store.list<EvalBatch>("batches")).some(b => b.attempt === "scheduled" && b.scheduledDay === day)) return;
     // Failed startup attempts are retained too; never loop on a broken configuration.
@@ -46,6 +96,7 @@ export class EvalSupervisor {
     await this.launch({ mode: "simulated", scheduledDay: day });
   }
   start(): void {
+    void this.store.recoverInterruptedJobs().catch(error => console.error("[Offline eval recovery]", error));
     if (this.timer || process.env.OFFLINE_EVAL_ENABLED === "false") return;
     const check = () => { void this.tick().catch(error => console.error("[Offline eval scheduler]", error)); };
     this.timer = setInterval(check, 30_000); this.timer.unref(); check();

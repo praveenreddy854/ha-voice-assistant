@@ -120,7 +120,7 @@ app.use(evalRouter);
 
 // Serve telemetry viewer HTML
 app.get("/telemetry", (_req, res) => {
-  res.sendFile(path.join(__dirname, "./tracing/traceViewer.html"));
+  res.sendFile("traceViewer.html", { root: path.join(__dirname, "tracing") });
 });
 
 app.get("/traces", (_req, res) => {
