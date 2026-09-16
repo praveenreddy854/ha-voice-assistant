@@ -11,7 +11,7 @@ import { EvalStore } from "../src/evals/store";
 import { EvalRunner } from "../src/evals/runner";
 import { recordedHistories, sessionEvaluations } from "../src/evals/history";
 import { assessmentFromRecord, RECORDED_IMPORT_VERSION } from "../src/evals/recorded";
-import { calibrateJudge, referenceAssessments, scoringReferenceAssessments } from "../src/evals/references";
+import { calibrateJudge, calibrationReferenceAssessments } from "../src/evals/references";
 import { createEvalRouter } from "../src/evals/api";
 import { EvalSupervisor } from "../src/evals/supervisor";
 import type { Assessment, EvalRun, Grade, MistakeSeverity, RecordedSessionEvaluation, RecordedSessionHistory, RecordedSessionsResponse, TaskProgressLevel, TaskScoringAssessment, Verdict } from "../src/evals/types";
@@ -146,6 +146,21 @@ test("simulated grading retains its categorical prompt and never gets numeric sc
   assert.throws(() => computeTaskScore(scoring(), grade(), { ...assessment(), mode: "simulated" }), /only to recorded/);
 });
 
+test("non-TV recorded grading remains categorical without requiring scoring inputs", async () => {
+  const categorical = grade(); delete categorical.scoringAssessment;
+  const prompts: string[] = [];
+  const judge = makeJudge(async system => { prompts.push(system); return { output: categorical }; });
+  for (const agentId of ["scheduled_task", "realtime"]) {
+    const input = { ...assessment(), agentId };
+    const result = await judge(input, [], new AbortController().signal);
+    assert.equal(result.grade.task.verdict, "pass");
+    assert.equal(result.grade.score, undefined);
+    assert.equal(result.grade.scoringAssessment, undefined);
+    assert.throws(() => computeTaskScore(scoring(), grade(), input), /only to recorded TVAgent/);
+  }
+  assert.deepEqual(prompts, [JUDGE_PROMPT, JUDGE_PROMPT]);
+});
+
 test("the shared grader configuration allows compatible cross-mode comparisons without pooling old grades", () => {
   const common = { batchId: "batch", agentId: "tv", attempt: "on_demand" as const, adapterVersion: "adapter",
     graderVersion: GRADER_VERSION, judgeModel: "judge", assessedModel: "model", promptVersion: "known-prompt",
@@ -189,19 +204,20 @@ test("recorded evidence retains action identity and chronology without inventing
   assert.equal(JSON.parse(input.evidence.find(e => e.kind === "tool")!.text).toolCallId, "call1");
   assert.equal(input.evidence.find(e => e.kind === "tool")!.timestamp, undefined);
   assert.ok(input.evidence.some(e => e.source === "telemetry:real:event:0" && e.timestamp === "2026-09-15T12:00:11Z"));
+  assert.equal(input.evidence.filter(e => e.source === "telemetry:real:event:0").length, 1);
   assert.match(input.evidence.at(-1)!.text, /not a merged chronological timeline/);
-  assert.equal(RECORDED_IMPORT_VERSION, "recorded-import-2");
+  assert.equal(RECORDED_IMPORT_VERSION, "recorded-import-3");
 });
 
 test("judge validation checks numeric and semantic reference outputs, including zero and unscored", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "score-reference-test-"));
   try {
-    const references: ReturnType<typeof scoringReferenceAssessments> = [...referenceAssessments(), ...scoringReferenceAssessments()];
+    const references = calibrationReferenceAssessments("tv");
     assert.equal(references.length, 15);
     let corruptScore = false, invalidOutput = false;
     const judge = makeJudge(async (_system, input) => {
       const reference = references.find(item => item.assessment.evidence[0].id === input.evidence[0].id)!;
-      if (invalidOutput && reference.id === "S1") return { output: { invalid: true } };
+      if (invalidOutput && reference.id === "TVS1") return { output: { invalid: true } };
       const level = reference.expectedProgress || (reference.expected[0] === "pass" ? "complete" : reference.expected[0] === "fail" ? "none" : "unknown");
       const result = grade(level, reference.expectedSeverities || [], reference.expected[2]);
       result.handling.verdict = reference.expected[1] === "not_checked" ? "pass" : reference.expected[1];
@@ -210,7 +226,7 @@ test("judge validation checks numeric and semantic reference outputs, including 
       if (level === "unknown") result.scoringAssessment!.evidence.progress.sufficient = false;
       if (result.reporting.verdict === "unknown") result.scoringAssessment!.evidence.reporting.sufficient = false;
       for (const component of reference.expectedBlockingComponents || []) result.scoringAssessment!.evidence[component].sufficient = false;
-      if (corruptScore && reference.id === "S2") {
+      if (corruptScore && reference.id === "TVS2") {
         result.scoringAssessment!.progress.level = "prerequisites";
       }
       return { output: result };
@@ -223,11 +239,11 @@ test("judge validation checks numeric and semantic reference outputs, including 
     corruptScore = true;
     const failed = await calibrateJudge(store, judge, "fixture-judge", GRADER_VERSION, signal);
     assert.equal(failed.passed, false);
-    assert.equal(failed.results.find(item => item.id === "S2")?.passed, false);
+    assert.equal(failed.results.find(item => item.id === "TVS2")?.passed, false);
     invalidOutput = true;
     const invalid = await calibrateJudge(store, judge, "fixture-judge", GRADER_VERSION, signal);
-    assert.equal(invalid.results.find(item => item.id === "S1")?.expectedScore, 100);
-    assert.equal(invalid.results.find(item => item.id === "S1")?.passed, false);
+    assert.equal(invalid.results.find(item => item.id === "TVS1")?.expectedScore, 100);
+    assert.equal(invalid.results.find(item => item.id === "TVS1")?.passed, false);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -235,7 +251,7 @@ test("scores survive every recorded API surface and schedule status is read-only
   const directory = await mkdtemp(path.join(os.tmpdir(), "score-api-test-"));
   const store = new EvalStore(directory), app = express();
   const sources = ["scored", "unscored", "legacy", "zero"].map(sessionId => ({
-    sessionId, userPrompt: "Open YouTube", startedAt: "2026-09-15T12:00:00Z",
+    sessionId, agentId: "tv", userPrompt: "Open YouTube", startedAt: "2026-09-15T12:00:00Z",
     completedAt: "2026-09-15T12:01:00Z", status: "completed" as const, sources: ["telemetry" as const],
   }));
   const input = grade(); input.scoringAssessment!.evidence.execution.sufficient = false;

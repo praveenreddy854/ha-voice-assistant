@@ -28,8 +28,11 @@ export const scoringAssessmentSchema = z.object({
 }).strict();
 
 const components: ScoringComponent[] = ["progress", "execution", "reporting"];
+export function supportsTaskScoring(assessment: Pick<Assessment, "mode" | "agentId">): boolean {
+  return assessment.mode === "recorded" && assessment.agentId === "tv";
+}
 export function computeTaskScore(raw: unknown, grade: Pick<Grade, "task" | "reporting">, assessment: Assessment): TaskEvalScore {
-  if (assessment.mode !== "recorded") throw new Error("Task scoring applies only to recorded-run evals");
+  if (!supportsTaskScoring(assessment)) throw new Error("Task scoring applies only to recorded TVAgent runs");
   const scoring = scoringAssessmentSchema.parse(raw);
   const evidence = new Map(assessment.evidence.map(item => [item.id, item]));
   for (const item of [scoring.progress, ...scoring.mistakes, ...Object.values(scoring.evidence)]) {

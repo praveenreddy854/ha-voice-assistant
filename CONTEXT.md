@@ -231,8 +231,11 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 - **Simulated eval** and **Recorded-run eval** are distinct kinds of **Offline assistant eval**.
 - A **Simulated eval** uses a **Simulated assistant environment** appropriate to the assessed agent's task domain.
 - A **Simulated eval** of a complete **TVAgent** task uses a **Simulated TV environment** whose observations depend on the agent's actions.
+- A **Simulated eval** of **ScheduledTaskAgent** uses isolated task storage, entity state and memory with a fixed clock and timezone; it does not fire real effects.
+- A **Simulated eval** of the **Realtime Voice Agent** assesses text/tool decisions on the configured Realtime model with simulated delegation and memory. It does not assess microphone input, wake-word detection, transcription or speech quality.
 - A **Recorded-run eval** assesses retained evidence from a finished real assistant run, including one that ended in error, without repeating its device actions.
 - A **Recorded-run eval** can be scheduled or requested on demand without becoming a **Simulated eval**.
+- Eval histories, scheduled baselines, alerts and judge reference cases are scoped to the assessed agent. A Realtime delegation acknowledgement is not a **Verified task outcome** for the delegated device action.
 - A finished real assistant run can have multiple **Recorded-run eval** attempts; **Recorded-run re-evaluation** preserves the earlier attempts.
 - **Simulation fidelity** is assessed by comparing **Simulated eval** and **Recorded-run eval** results at both the **Task step** and whole-request levels.
 - Eval comparisons align the same **Task step** objective even when runs use different **Execution method**s; the method and its detailed actions remain part of the comparison.

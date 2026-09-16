@@ -1,16 +1,21 @@
 import type { AgentTrace } from "../tracing/agentTraceStore";
 import type { TvFlowMemoryDocument } from "../agents/tv/flowMemory";
+import type { CosmosClient } from "@azure/cosmos";
 import type { Assessment, Evidence } from "./types";
 import { digest } from "./store";
+import { getEvalAgent } from "./registry";
 
-export const RECORDED_IMPORT_VERSION = "recorded-import-2";
+export { RECORDED_IMPORT_VERSION } from "./types";
 
-export function assessmentFromRecord(trace?: AgentTrace, flow?: TvFlowMemoryDocument): Assessment {
+export function assessmentFromRecord(trace?: AgentTrace, flow?: TvFlowMemoryDocument, expectedAgentId?: string): Assessment {
   if (!trace && !flow) throw new Error("Completed run not found in telemetry or Cosmos");
   if (trace && !["completed", "error"].includes(trace.status)) throw new Error("Recorded evals require a completed assistant run");
   if (trace && !trace.completedAt) throw new Error("Trace has no terminal session evidence");
   if (flow && !["completed", "error", "failed"].includes(flow.status)) throw new Error("Cosmos flow is not terminal");
-  if ((trace?.agentType || flow?.agent) !== "tv") throw new Error("Phase 1 evaluates TVAgent only");
+  const agent = getEvalAgent(trace?.agentType ?? flow!.agent);
+  if (expectedAgentId && agent.id !== expectedAgentId) throw new Error(`Selected session belongs to ${agent.id}, not ${expectedAgentId}`);
+  if (flow && flow.agent !== "tv") throw new Error("Cosmos TV-flow evidence belongs to an unsupported agent");
+  if (trace && flow && (trace.agentType !== flow.agent || trace.sessionId !== flow.sessionId)) throw new Error("Retained sources disagree about the session or agent identity");
   const evidence: Evidence[] = [];
   const add = (item: Omit<Evidence, "id">) => evidence.push({ id: `e${evidence.length + 1}`, ...item });
   if (trace) {
@@ -35,32 +40,36 @@ export function assessmentFromRecord(trace?: AgentTrace, flow?: TvFlowMemoryDocu
   add({ kind: "context", text: "Historical record may be incomplete. Legacy success flags and executionScore are proxies, not verified outcomes. Cosmos steps may omit automatically executed tools. Images, observations, or context absent here are unknown; do not infer that the original agent lacked them. Evidence is grouped by source/type, not a merged chronological timeline. Reconstruct available order from LLM step numbers, tool call IDs, and timestamps; missing order remains an evidence gap. Repeated snapshots, events, and Cosmos copies are not additional actions or mistakes." });
   const models = new Set(trace?.llmSteps.map(s => s.requestModel).filter(Boolean));
   const system = trace?.llmSteps.find(s => s.systemMessages?.length)?.systemMessages;
-  return { agentId: "tv", mode: "recorded", request: trace?.userPrompt || flow!.userPrompt, finalResponse,
+  return { agentId: agent.id, mode: "recorded", request: trace?.userPrompt || flow?.userPrompt || "", finalResponse,
     startedAt: trace?.startedAt || flow!.createdAt, durationMs: trace?.durationMs, model: models.size === 1 ? [...models][0] : undefined,
     // Historical system-only hashes cannot claim equivalence with complete prompt+skill+tool manifests.
     promptVersion: system ? `retained-system-${digest(system)}` : undefined,
-    evidence, coverage: "partial", sourceSessionId: trace?.sessionId || flow!.sessionId };
+    evidence, coverage: "partial", sourceSessionId: trace?.sessionId || flow!.sessionId, expectations: agent.recordedExpectations };
 }
-export async function loadRecordedAssessment(sessionId: string): Promise<Assessment> {
+export async function loadRecordedAssessment(sessionId: string, expectedAgentId = "tv"): Promise<Assessment> {
+  const agent = getEvalAgent(expectedAgentId);
+  if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) throw new Error("Invalid recorded session identifier");
   const { getTrace } = await import("../tracing/agentTraceStore");
   const trace = getTrace(sessionId);
+  if (trace && trace.agentType !== agent.id) throw new Error(`Selected session belongs to ${trace.agentType}, not ${agent.id}`);
+  if (agent.id !== "tv") return assessmentFromRecord(trace, undefined, agent.id);
   let flow: TvFlowMemoryDocument | undefined;
   const { AZURE_COSMOS_ENDPOINT, AZURE_COSMOS_KEY, AZURE_COSMOS_DATABASE, AZURE_COSMOS_TV_FLOW_CONTAINER } = await import("../config");
   if (AZURE_COSMOS_ENDPOINT && AZURE_COSMOS_KEY && AZURE_COSMOS_DATABASE && AZURE_COSMOS_TV_FLOW_CONTAINER) {
+    let client: CosmosClient | undefined;
     try {
       const { CosmosClient } = await import("@azure/cosmos");
-      const client = new CosmosClient({ endpoint: AZURE_COSMOS_ENDPOINT, key: AZURE_COSMOS_KEY, connectionPolicy: { enableEndpointDiscovery: false } });
+      client = new CosmosClient({ endpoint: AZURE_COSMOS_ENDPOINT, key: AZURE_COSMOS_KEY, connectionPolicy: { enableEndpointDiscovery: false } });
       const { resources } = await client.database(AZURE_COSMOS_DATABASE).container(AZURE_COSMOS_TV_FLOW_CONTAINER).items.query<TvFlowMemoryDocument>({
         query: "SELECT TOP 1 * FROM c WHERE c.sessionId = @session ORDER BY c.createdAt DESC", parameters: [{ name: "@session", value: sessionId }],
       }).fetchAll();
       flow = resources[0];
-      client.dispose();
     } catch (error) {
       if (!trace) throw error;
-      const assessment = assessmentFromRecord(trace);
+      const assessment = assessmentFromRecord(trace, undefined, agent.id);
       assessment.evidence.push({ id: `e${assessment.evidence.length + 1}`, kind: "context", text: `Cosmos supplement unavailable: ${error instanceof Error ? error.message : "read failed"}` });
       return assessment;
-    }
+    } finally { client?.dispose(); }
   }
-  return assessmentFromRecord(trace, flow);
+  return assessmentFromRecord(trace, flow, agent.id);
 }

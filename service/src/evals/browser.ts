@@ -13,9 +13,10 @@
     expectedSeverities?: string[]; actualSeverities?: string[];
     expectedBlockingComponents?: string[]; actualBlockingComponents?: string[] };
   type Snapshot = { runs: Run[]; batches: import("./types").EvalBatch[]; alerts: import("./types").EvalAlert[]; busy: boolean;
+    agents: { id: string; name: string; description: string; scenarioCount: number; referenceCount: number }[];
     baseline: { from: string; to: string }; timezone: string; scheduleEnabled: boolean; schedules?: Schedules; fidelityNote: string;
     fidelity: { simulatedId: string; recordedIds: string[]; status: string }[];
-    calibrations: { id: string; judgeModel: string; createdAt: string; passed: boolean; results: CalibrationResult[] }[] };
+    calibrations: { id: string; agentId?: string; judgeModel: string; createdAt: string; passed: boolean; limitation?: string; results: CalibrationResult[] }[] };
   let snapshot: Snapshot | undefined;
   let busy: boolean | undefined;
   let submitting = false;
@@ -28,11 +29,13 @@
   let availableIds = new Set<string>();
   let statuses: Record<string, Evaluation> = {};
   const sessionCache = new Map<string, Session>();
-  const selected = new Set<string>();
+  let selected = new Set<string>();
+  const selectionsByAgent = new Map<string, Set<string>>([["tv", selected]]);
+  const currentAgentId = () => element<HTMLSelectElement>("agent").value;
   const rows = new Map<string, HTMLTableRowElement>();
   let page = 1, reviewSelected = false, deferredRows = false;
   let displayed: Session[] = [];
-  let pendingSubmission: { requestId: string; sessionIds: string[] } | undefined;
+  let pendingSubmission: { agentId: string; requestId: string; sessionIds: string[] } | undefined;
   let detailVersion = 0, historySession: string | undefined, returnToSelection = false;
   let historyLoading = false, historyMarkup: string | undefined;
   const selector = element<HTMLDialogElement>("session-selector");
@@ -55,6 +58,7 @@
   };
   const duration = (value?: number) => value == null ? "Unknown" : `${(value / 1000).toFixed(1)}s`;
   function scoreHtml(run: RunSummary) {
+    if (run.agentId !== "tv") return '<span class="task-score muted">Task eval score: N/A for this agent</span>';
     if (run.mode !== "recorded") return '<span class="task-score muted">Task eval score: N/A — simulated evaluation</span>';
     if (run.status !== "completed") return '<span class="task-score muted">No completed task eval score — evaluation did not finish</span>';
     const score = run.grade?.score;
@@ -73,21 +77,21 @@
       empty: "No eligible sessions", failed: "Scheduling failed",
       incomplete_discovery: "No eligible sessions in available sources — discovery incomplete",
     };
-    element("schedules").innerHTML = `<div id="recorded-schedule" class="schedule-card"><h3>Recorded runs</h3><p>Daily at 1 a.m. · ${zone}<br><strong>${recorded ? recorded.enabled ? "Enabled" : "Disabled" : "Schedule status unavailable"}</strong></p>${recorded?.enabledAt ? `<p>Initial eligibility cutoff: ${esc(nyDate(recorded.enabledAt))}<br><small>Only runs started at or after this persisted cutoff are eligible for automatic selection. Older runs remain available manually.</small></p>` : ""}${latest ? `<p>Latest daily outcome: <strong>${esc(outcomeLabels[latest.status] || latest.status.replace(/_/g, " "))}</strong><br>${esc(latest.day)} · ${esc(latest.selectedCount)} sessions selected</p>${latest.warnings.length ? `<div class="session-warning" role="status"><strong>Incomplete recorded-run discovery / scheduling warnings</strong><ul>${latest.warnings.map(warning => `<li>${esc(warning)}</li>`).join("")}</ul></div>` : ""}${latest.error ? `<p class="error" role="alert">${esc(latest.error)}</p>` : ""}` : "<p class=muted>No recorded daily outcome is available.</p>"}</div><div id="simulated-schedule" class="schedule-card"><h3>Simulated suite</h3><p>Daily at 3 a.m. · ${zone}<br><strong>${simulated ? simulated.enabled ? "Enabled" : "Disabled" : typeof snapshot.scheduleEnabled === "boolean" ? snapshot.scheduleEnabled ? "Enabled (legacy schedule status)" : "Disabled (legacy schedule status)" : "Schedule status unavailable"}</strong></p><p class="muted">Manual launches remain available independently of either schedule when the shared worker is free.</p></div>`;
+    element("schedules").innerHTML = `<div id="recorded-schedule" class="schedule-card"><h3>Recorded runs · TV only</h3><p>Daily at 1 a.m. · ${zone}<br><strong>${recorded ? recorded.enabled ? "Enabled" : "Disabled" : "Schedule status unavailable"}</strong></p><p class="muted">Automatic recorded grading covers TVAgent only. Other agents remain available for manual recorded evaluation.</p>${recorded?.enabledAt ? `<p>Initial eligibility cutoff: ${esc(nyDate(recorded.enabledAt))}<br><small>Only TV runs started at or after this persisted cutoff are eligible for automatic selection. Older runs remain available manually.</small></p>` : ""}${latest ? `<p>Latest daily outcome: <strong>${esc(outcomeLabels[latest.status] || latest.status.replace(/_/g, " "))}</strong><br>${esc(latest.day)} · ${esc(latest.selectedCount)} sessions selected</p>${latest.warnings.length ? `<div class="session-warning" role="status"><strong>Incomplete recorded-run discovery / scheduling warnings</strong><ul>${latest.warnings.map(warning => `<li>${esc(warning)}</li>`).join("")}</ul></div>` : ""}${latest.error ? `<p class="error" role="alert">${esc(latest.error)}</p>` : ""}` : "<p class=muted>No recorded daily outcome is available.</p>"}</div><div id="simulated-schedule" class="schedule-card"><h3>Simulated suites · All registered agents</h3><p>Daily at 3 a.m. · ${zone}<br><strong>${simulated ? simulated.enabled ? "Enabled" : "Disabled" : typeof snapshot.scheduleEnabled === "boolean" ? snapshot.scheduleEnabled ? "Enabled (legacy schedule status)" : "Disabled (legacy schedule status)" : "Schedule status unavailable"}</strong></p><p>${snapshot.agents.map(agent => esc(agent.name)).join(", ")} run sequentially under the shared worker.</p><p class="muted">Manual launches remain available independently of either schedule when the shared worker is free.</p></div>`;
   }
-  function calibrationHtml(result: CalibrationResult) {
+  function calibrationHtml(result: CalibrationResult, agentId: string) {
     const verdicts = (values: string[]) => values.map(value => value === "not_checked" ? "Not checked" : value).join(" / ");
     const score = (value: number | null | undefined, absent: string) => value === undefined ? absent
       : value === null ? "Unscored — insufficient evidence" : `${esc(value)}/100`;
     const progress = (value: string | undefined, absent: string) => value === undefined ? absent : esc(value.replace(/_/g, " "));
     const members = (value: string[] | undefined, absent: string) => value === undefined ? absent : esc(value.join(", ") || "None");
-    const scoreComparison = result.expectedScore !== undefined || result.actualScore !== undefined
+    const scoreComparison = agentId !== "tv" ? "<br>Task eval score: N/A for this agent" : result.expectedScore !== undefined || result.actualScore !== undefined
       ? `<br>Task eval score: expected ${score(result.expectedScore, "Not checked")}; actual ${score(result.actualScore, "Unavailable")}` : "";
-    const progressComparison = result.expectedProgress !== undefined || result.actualProgress !== undefined
+    const progressComparison = agentId === "tv" && (result.expectedProgress !== undefined || result.actualProgress !== undefined)
       ? `<br>Progress: expected ${progress(result.expectedProgress, "Not checked")}; actual ${progress(result.actualProgress, "Unavailable")}` : "";
-    const mistakes = result.expectedSeverities !== undefined
+    const mistakes = agentId === "tv" && result.expectedSeverities !== undefined
       ? `<br>Mistake severities: expected ${members(result.expectedSeverities, "Not checked")}; actual ${members(result.actualSeverities, "Unavailable")}` : "";
-    const gaps = result.expectedBlockingComponents !== undefined
+    const gaps = agentId === "tv" && result.expectedBlockingComponents !== undefined
       ? `<br>Blocking components: expected ${members(result.expectedBlockingComponents, "Not checked")}; actual ${members(result.actualBlockingComponents, "Unavailable")}` : "";
     const unchecked = result.expected.includes("not_checked")
       ? "<br><small>Not checked means this reference does not assert that categorical judgment.</small>" : "";
@@ -122,20 +126,29 @@
     }
     element("runs-panel").setAttribute("aria-labelledby", `runs-tab-${mode}`);
     if (!snapshot) return;
-    const runs = snapshot.runs.filter(r => mode === "all" || r.mode === mode);
+    const agentId = currentAgentId(), agent = snapshot.agents.find(candidate => candidate.id === agentId);
+    if (agent) {
+      element("suite-description").textContent = `Run ${agent.scenarioCount} ${agent.name} scenarios with the current configuration or an alternative deployment. ${agent.description} On-demand results stay outside the daily baseline.`;
+      element("judge-description").textContent = `Check ${agent.referenceCount} ${agentId === "tv" ? "reviewed" : "starter"} reference cases for ${agent.name}. ${agentId === "tv" ? "Inspect score, progress, mistake-severity, and evidence-gap agreement alongside categorical labels where available." : "These check categorical judgments; numeric task eval scoring is not applicable for this agent."} This is an initial agreement check, not a measured general accuracy claim.`;
+      element("recorded-description").textContent = `Select finished ${agent.name} sessions, including assistant errors. ${agentId === "tv" ? "TV runs can supplement retained telemetry with Cosmos evidence and support numeric task eval scores." : "This agent uses retained telemetry for manual, categorical evaluation; numeric task eval scoring and the 1 a.m. recorded schedule are TV-only."} Re-evaluations preserve previous attempts.`;
+      element("session-selector-title").textContent = `Select recorded ${agent.name} sessions`;
+    }
+    const agentRuns = snapshot.runs.filter(r => r.agentId === agentId);
+    const runs = agentRuns.filter(r => mode === "all" || r.mode === mode);
     element("window").textContent = `Baseline ${snapshot.baseline.from} – ${snapshot.baseline.to} · ${snapshot.timezone}`;
     renderSchedules();
     element("cards").innerHTML = [["Evaluated runs", runs.length], ["Tasks fulfilled", runs.filter(r => r.grade?.task.verdict === "pass").length], ["Handling passed", runs.filter(r => r.verdict === "pass").length], ["Unknown / incomplete", runs.filter(r => ["unknown", "error"].includes(r.verdict)).length]].map(([label, count]) => `<div class="card"><div class="muted">${label}</div><div class="number">${count}</div></div>`).join("");
-    element("alerts").innerHTML = snapshot.alerts.filter(a => !a.resolvedAt).map(a => `<div class="alert">${esc(a.message)} <small>${esc(date(a.createdAt))}</small></div>`).join("") || "No active regression alerts.";
+    element("alerts").innerHTML = snapshot.alerts.filter(a => !a.resolvedAt && (a.agentId || a.key.split(":")[0]) === agentId).map(a => `<div class="alert">${esc(a.message)} <small>${esc(date(a.createdAt))}</small></div>`).join("") || "No active regression alerts.";
     const emptyRuns = mode === "simulated" ? "No simulated evals yet. Run a simulation above."
       : mode === "recorded" ? "No real evals yet. Select completed real sessions above."
       : "No evals yet. Run a simulation or select completed real sessions above.";
     element("runs").innerHTML = runs.map(r => `<tr><td>${esc(date(r.assessedAt))}<br><small>Graded ${esc(date(r.gradedAt))}</small></td><td>${esc(r.request || r.scenarioId || r.id)}<br><small>${esc(r.assessedModel || "Model unknown")}</small></td><td>${badge(r.mode)}<br><small>${esc(r.attempt)}</small></td><td>${scoreHtml(r)}</td><td>${badge(r.grade?.task.verdict)}</td><td>${badge(r.grade?.handling.verdict || (r.status !== "completed" ? "error" : "unknown"))}</td><td>${badge(r.grade?.reporting.verdict)}</td><td>${duration(r.durationMs)}</td><td>${r.comparison ? r.comparison.baselineCount >= 3 ? `${r.comparison.baselineCount} samples<br>Median ${duration(r.comparison.medianMs)}<br>${esc(r.comparison.signal || "No alert threshold crossed")} ${esc(r.comparison.confirmation || "")}` : `Collecting baseline (${r.comparison.baselineCount}/3)` : r.attempt === "scheduled" ? `Scheduled${r.scheduledDay ? `<br>${esc(r.scheduledDay)}` : ""}${r.mode === "recorded" ? "<br><small>Not part of the simulated baseline</small>" : ""}` : r.attempt === "confirmation" ? "Confirmation" : "On demand"}</td><td><button data-run="${esc(r.id)}">Inspect</button></td></tr>`).join("") || `<tr><td colspan="10">${emptyRuns}</td></tr>`;
     element("fidelity-note").textContent = snapshot.fidelityNote;
-    const pairs = snapshot.fidelity.filter(p => p.recordedIds.length);
-    element("fidelity").innerHTML = pairs.map(p => `<p>${esc(snapshot!.runs.find(r => r.id === p.simulatedId)?.scenarioId)} · ${p.recordedIds.length} comparable recorded runs <button data-pair="${esc(p.simulatedId)}:${esc(p.recordedIds[0])}">Compare steps</button></p>`).join("") || `No comparison data yet. ${snapshot.fidelity.length} simulated runs currently unmatched.`;
-    element("batches").innerHTML = snapshot.batches.map(b => `<p>${esc(b.scheduledDay || date(b.startedAt))} · ${esc(b.mode)} · ${b.attempt === "scheduled" ? "Scheduled" : "On demand"} · ${badge(b.status)} · ${b.runIds.length} attempts ${esc(b.error || "")}</p>`).join("") || "No batches recorded.";
-    element("calibrations").innerHTML = snapshot.calibrations.map(c => `<details><summary>${esc(c.judgeModel)} · ${badge(c.passed ? "pass" : "fail")} · ${esc(date(c.createdAt))}</summary>${c.results.map(calibrationHtml).join("")}</details>`).join("") || "<p class=muted>The judge has not been validated against the reference cases yet.</p>";
+    const fidelity = snapshot.fidelity.filter(p => agentRuns.some(run => run.id === p.simulatedId));
+    const pairs = fidelity.filter(p => p.recordedIds.length);
+    element("fidelity").innerHTML = pairs.map(p => `<p>${esc(agentRuns.find(r => r.id === p.simulatedId)?.scenarioId)} · ${p.recordedIds.length} comparable recorded runs <button data-pair="${esc(p.simulatedId)}:${esc(p.recordedIds[0])}">Compare steps</button></p>`).join("") || `No comparison data yet. ${fidelity.length} simulated runs currently unmatched.`;
+    element("batches").innerHTML = snapshot.batches.filter(b => b.agentId === agentId).map(b => `<p>${esc(b.scheduledDay || date(b.startedAt))} · ${esc(b.mode)} · ${b.attempt === "scheduled" ? "Scheduled" : "On demand"} · ${badge(b.status)} · ${b.runIds.length} attempts ${esc(b.error || "")}</p>`).join("") || "No batches recorded.";
+    element("calibrations").innerHTML = snapshot.calibrations.filter(c => (c.agentId || "tv") === agentId).map(c => `<details><summary>${esc(c.judgeModel)} · ${badge(c.passed ? "pass" : "fail")} · ${esc(date(c.createdAt))}</summary>${c.results.map(result => calibrationHtml(result, agentId)).join("")}${c.limitation ? `<p class="muted">${esc(c.limitation)}</p>` : ""}</details>`).join("") || "<p class=muted>The judge has not been validated against the reference cases yet.</p>";
   }
   function refresh(options: { sessions?: boolean; sources?: boolean } = {}): Promise<void> {
     reloadSessions ||= Boolean(options.sessions);
@@ -162,7 +175,7 @@
         if (sessionsInitialized) {
           if (loadSessions) {
             try {
-              const result = await request<import("./types").RecordedSessionsResponse>(`/api/evals/sessions${forceSources ? "?refresh=true" : ""}`);
+              const result = await request<import("./types").RecordedSessionsResponse>(`/api/evals/sessions?agentId=${encodeURIComponent(currentAgentId())}${forceSources ? "&refresh=true" : ""}`);
               if (version === mutationVersion) {
                 sessions = result.sessions.slice().sort((a, b) => (Date.parse(b.startedAt) - Date.parse(a.startedAt)) || b.sessionId.localeCompare(a.sessionId));
                 availableIds = new Set(sessions.map(session => session.sessionId));
@@ -214,7 +227,7 @@
   }
   function active(id: string) { return ["queued", "running"].includes(lifecycle(id) || ""); }
   function available(id: string) { return availableIds.has(id); }
-  function eligible(id: string) { return metadataKnown && statusesKnown && available(id) && !active(id); }
+  function eligible(id: string) { return metadataKnown && statusesKnown && available(id) && sessionCache.get(id)?.agentId === currentAgentId() && !active(id); }
   function setHtml(target: HTMLElement, html: string) { if (target.innerHTML !== html) target.innerHTML = html; }
   function judgments(run: RunSummary) {
     return `${scoreHtml(run)}<br>Task ${badge(run.grade?.task.verdict)} · Handling ${badge(run.grade?.handling.verdict)} · Reporting ${badge(run.grade?.reporting.verdict)}`;
@@ -229,7 +242,7 @@
     const search = element<HTMLInputElement>("session-search").value.trim().toLocaleLowerCase();
     const from = element<HTMLInputElement>("session-from").value, to = element<HTMLInputElement>("session-to").value;
     const filter = element<HTMLSelectElement>("session-filter").value, day = nyDay(session.startedAt);
-    return (!search || `${session.userPrompt} ${session.sessionId}`.toLocaleLowerCase().includes(search))
+    return session.agentId === currentAgentId() && (!search || `${session.userPrompt} ${session.sessionId}`.toLocaleLowerCase().includes(search))
       && (!from || Boolean(day && day >= from)) && (!to || Boolean(day && day <= to))
       && (filter === "all" || lifecycle(session.sessionId) === filter);
   }
@@ -266,7 +279,7 @@
         }
         if (body.children[index] !== row) body.insertBefore(row, body.children[index] || null);
       });
-      if (!displayed.length) body.innerHTML = `<tr data-empty><td colspan="6">${!metadataKnown ? metadataError ? "Session list could not be loaded. Refresh to retry." : "Loading finished TV sessions..." : reviewSelected ? "No sessions selected." : "No sessions match these filters."}</td></tr>`;
+      if (!displayed.length) body.innerHTML = `<tr data-empty><td colspan="6">${!metadataKnown ? metadataError ? "Session list could not be loaded. Refresh to retry." : "Loading finished sessions..." : reviewSelected ? "No sessions selected." : "No sessions match these filters."}</td></tr>`;
       deferredRows = false;
     } else deferredRows = true;
     for (const session of displayed) {
@@ -292,6 +305,7 @@
     selectionSummary(); updateControls();
   }
   function updateControls() {
+    element<HTMLSelectElement>("agent").disabled = submitting || Boolean(pendingSubmission);
     element<HTMLButtonElement>("simulate").disabled = submitting || busy !== false || Boolean(pendingSubmission);
     element<HTMLButtonElement>("calibrate").disabled = submitting || busy !== false || Boolean(pendingSubmission);
     element("global-busy").textContent = busy === true ? "An offline eval worker is busy. New submissions are disabled until it finishes." : busy === undefined ? "Checking worker availability. New submissions are disabled until its state is known." : "";
@@ -325,7 +339,7 @@
       if (!metadataKnown || !statusesKnown || busy === undefined) throw new Error("Current state is unavailable. Refresh before submitting.");
       if (!pendingSubmission) {
         if (busy || !selected.size || [...selected].some(id => !eligible(id))) throw new Error("The worker or selected sessions are no longer available. Your selection is preserved.");
-        pendingSubmission = { sessionIds: [...selected].sort(), requestId: crypto.randomUUID() };
+        pendingSubmission = { agentId: currentAgentId(), sessionIds: [...selected].sort(), requestId: crypto.randomUUID() };
       }
       mutationVersion++;
       element("session-message").textContent = "Submitting selected sessions...";
@@ -364,6 +378,7 @@
     return ids.length ? `<small>Evidence: ${ids.map(id => `<a href="#evidence-${esc(encodeURIComponent(id))}" data-evidence="${esc(id)}">${esc(id)}</a>`).join(", ")}</small>` : "<small>No evidence cited.</small>";
   }
   function scoreDetails(run: Run) {
+    if (run.agentId !== "tv") return `<h3>Task eval score calculation</h3><p>${scoreHtml(run)}</p>`;
     const score = run.grade?.score, assessment = run.grade?.scoringAssessment;
     const intro = '<h3>Task eval score calculation</h3><p class="muted">Outcome-first task fulfillment, not a probability or confidence estimate. Handling, reporting, elapsed time, and model cost remain separate.</p>';
     if (run.mode !== "recorded" || run.status !== "completed" || !score) return `${intro}<p>${scoreHtml(run)}</p>`;
@@ -400,7 +415,7 @@
       const run = await request<Run>(`/api/evals/runs/${encodeURIComponent(id)}`);
       if (version !== detailVersion || !detail.open) return;
       const sourceSessionId = sessionId || run.sourceSessionId || run.assessment?.sourceSessionId;
-      element("detail-body").innerHTML = `${historyLink(sourceSessionId)}<h3>${esc(run.assessment?.request || run.id)}</h3><p>${esc(run.assessment?.finalResponse || "")}</p>${run.error ? `<p class="error" role="alert">${esc(run.error)}</p>` : ""}<p>${judgments(run)}</p><section aria-label="Task eval score breakdown">${scoreDetails(run)}</section><pre>${esc(JSON.stringify({ status: run.status, assessedAt: run.assessedAt, gradedAt: run.gradedAt, sourceSessionId, coverage: run.assessment?.coverage, model: run.assessedModel, promptVersion: run.promptVersion, judge: run.judgeModel, graderVersion: run.graderVersion, usage: run.assessment?.usage, judgeUsage: run.judgeUsage }, null, 2))}</pre><h3>Task and step judgments</h3><pre>${esc(JSON.stringify(run.grade, null, 2))}</pre><h3>Source evidence</h3>${evidenceHtml(run)}`;
+      element("detail-body").innerHTML = `${historyLink(sourceSessionId)}<h3>${esc(run.assessment?.request || run.id)}</h3><p>${esc(run.assessment?.finalResponse || "")}</p>${run.error ? `<p class="error" role="alert">${esc(run.error)}</p>` : ""}<p>${judgments(run)}</p><section aria-label="Task eval score breakdown">${scoreDetails(run)}</section><pre>${esc(JSON.stringify({ agentId: run.agentId, status: run.status, assessedAt: run.assessedAt, gradedAt: run.gradedAt, sourceSessionId, coverage: run.assessment?.coverage, model: run.assessedModel, promptVersion: run.promptVersion, judge: run.judgeModel, graderVersion: run.graderVersion, usage: run.assessment?.usage, judgeUsage: run.judgeUsage }, null, 2))}</pre><h3>Task and step judgments</h3><pre>${esc(JSON.stringify(run.grade, null, 2))}</pre><h3>Source evidence</h3>${evidenceHtml(run)}`;
     } catch (error) {
       if (version === detailVersion && detail.open) element("detail-body").innerHTML = `${historyLink(sessionId)}<p class="error" role="alert">Could not load this evaluation: ${esc(String(error))}</p><button data-run="${esc(id)}"${sessionId ? ` data-history-session="${esc(sessionId)}"` : ""}>Retry inspection</button>`;
     }
@@ -422,7 +437,11 @@
       if (version !== detailVersion || !detail.open || historySession !== id) return;
       const attempts = result.attempts.map((attempt, index) => {
         const runId = attempt.runId || attempt.run?.id;
-        return `<section><h3>${index > 0 && attempt.status === "evaluated" ? "Previous evaluation · " : ""}${esc(lifecycleLabels[attempt.status])}</h3><p>Requested ${esc(nyDate(attempt.requestedAt))}${attempt.startedAt ? `<br>Started ${esc(nyDate(attempt.startedAt))}` : ""}${attempt.finishedAt ? `<br>Finished ${esc(nyDate(attempt.finishedAt))}` : ""}</p><small>Attempt ${esc(attempt.id)} · Job ${esc(attempt.jobId)}</small>${attempt.error ? `<p class="error" role="alert">${esc(attempt.error)}</p>` : ""}${attempt.run ? `<p>${judgments(attempt.run)}<br><small>Graded ${esc(nyDate(attempt.run.gradedAt))} · Judge ${esc(attempt.run.judgeModel)} · Grader ${esc(attempt.run.graderVersion)}</small></p>${attempt.run.error && attempt.run.error !== attempt.error ? `<p class="error">${esc(attempt.run.error)}</p>` : ""}` : `<p class="muted">${attempt.status === "queued" || attempt.status === "running" ? "Verdicts and task eval score are not available yet." : "No completed task eval score. No saved run summary is available for this attempt. This is not a passing evaluation."}</p>`}${runId ? `<button data-run="${esc(runId)}" data-history-session="${esc(id)}">Inspect</button>` : "<p class=muted>No run was saved for this attempt.</p>"}</section>`;
+        const pending = attempt.status === "queued" || attempt.status === "running";
+        const noRun = (attempt.agentId || currentAgentId()) === "tv"
+          ? pending ? "Verdicts and task eval score are not available yet." : "No completed task eval score. No saved run summary is available for this attempt. This is not a passing evaluation."
+          : `Task eval score: N/A for this agent. ${pending ? "Verdicts are not available yet." : "No saved run summary is available for this attempt. This is not a passing evaluation."}`;
+        return `<section><h3>${index > 0 && attempt.status === "evaluated" ? "Previous evaluation · " : ""}${esc(lifecycleLabels[attempt.status])}</h3><p>Requested ${esc(nyDate(attempt.requestedAt))}${attempt.startedAt ? `<br>Started ${esc(nyDate(attempt.startedAt))}` : ""}${attempt.finishedAt ? `<br>Finished ${esc(nyDate(attempt.finishedAt))}` : ""}</p><small>Attempt ${esc(attempt.id)} · Job ${esc(attempt.jobId)}</small>${attempt.error ? `<p class="error" role="alert">${esc(attempt.error)}</p>` : ""}${attempt.run ? `<p>${judgments(attempt.run)}<br><small>Graded ${esc(nyDate(attempt.run.gradedAt))} · Judge ${esc(attempt.run.judgeModel)} · Grader ${esc(attempt.run.graderVersion)}</small></p>${attempt.run.error && attempt.run.error !== attempt.error ? `<p class="error">${esc(attempt.run.error)}</p>` : ""}` : `<p class="muted">${noRun}</p>`}${runId ? `<button data-run="${esc(runId)}" data-history-session="${esc(id)}">Inspect</button>` : "<p class=muted>No run was saved for this attempt.</p>"}</section>`;
       }).join("");
       historyMarkup = `<p class="session-id">Session ${esc(id)}</p><p class="muted">Newest attempts first. Re-evaluations preserve earlier results and each run's evidence snapshot. All timestamps use America/New_York.</p><div id="history-refresh-error" role="alert"></div>${attempts || '<p>No evaluation attempts have been recorded for this session.</p>'}<button data-session-history="${esc(id)}">Refresh history</button>`;
       if (!polling || !element("detail-body").contains(document.activeElement)) setHtml(element("detail-body"), historyMarkup);
@@ -458,15 +477,25 @@
       }).join("")}</div>`;
     }).join("");
   }
-  element("simulate").onclick = () => { void launch({ mode: "simulated", ...(element<HTMLInputElement>("model").value.trim() ? { model: element<HTMLInputElement>("model").value.trim() } : {}) }); };
+  element("simulate").onclick = () => { void launch({ mode: "simulated", agentId: currentAgentId(), ...(element<HTMLInputElement>("model").value.trim() ? { model: element<HTMLInputElement>("model").value.trim() } : {}) }); };
   element("recorded").onclick = () => {
     sessionsInitialized = true;
     selector.showModal(); renderSessions();
     void refresh({ sessions: true });
   };
-  element("calibrate").onclick = () => { void launch({ mode: "calibrate" }); };
+  element("calibrate").onclick = () => { void launch({ mode: "calibrate", agentId: currentAgentId() }); };
   element("refresh").onclick = () => { void refresh({ sessions: sessionsInitialized }); };
-  element("mode").onchange = render; element("agent").onchange = () => { void refresh(); };
+  element("mode").onchange = render;
+  element("agent").onchange = () => {
+    mutationVersion++;
+    selected = selectionsByAgent.get(currentAgentId()) || new Set<string>();
+    selectionsByAgent.set(currentAgentId(), selected);
+    page = 1; reviewSelected = false; sessions = []; availableIds.clear(); metadataKnown = false; metadataError = "";
+    element("session-warning").hidden = true; element("session-source-retry").hidden = true;
+    element("session-message").textContent = "";
+    render(); renderSessions();
+    void refresh({ sessions: sessionsInitialized });
+  };
   runModes.forEach((mode, index) => {
     const tab = element<HTMLButtonElement>(`runs-tab-${mode}`);
     tab.onclick = () => { element<HTMLSelectElement>("mode").value = mode; render(); };
@@ -550,6 +579,12 @@
       : button.dataset.run ? inspect(button.dataset.run, button.dataset.historySession) : pair(button.dataset.pair!.split(":")));
   });
   const params = new URLSearchParams(location.search);
+  const requestedAgent = params.get("agentId");
+  if (requestedAgent && [...element<HTMLSelectElement>("agent").options].some(option => option.value === requestedAgent)) {
+    element<HTMLSelectElement>("agent").value = requestedAgent;
+    selected = selectionsByAgent.get(requestedAgent) || new Set<string>();
+    selectionsByAgent.set(requestedAgent, selected);
+  }
   if (params.has("sessionId")) {
     sessionsInitialized = true;
     void openHistory(params.get("sessionId") || "");

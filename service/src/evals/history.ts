@@ -24,7 +24,7 @@ export async function recordedHistories(store: EvalStore): Promise<Map<string, R
       const run = batch?.runIds[index] ? runs.get(batch.runIds[index]) : undefined;
       if (run) linkedRuns.add(run.id);
       add({
-        id: `legacy-${job.id}-${index}`, jobId: job.id, sourceSessionId: sessionId,
+        id: `legacy-${job.id}-${index}`, jobId: job.id, agentId: run?.agentId || job.agentId || "tv", sourceSessionId: sessionId,
         status: run ? run.status === "completed" ? "evaluated" : "eval_error"
           : job.status === "queued" || job.status === "running" ? "queued" : "eval_error",
         requestedAt: job.createdAt || batch?.startedAt || run?.gradedAt || "",
@@ -35,7 +35,7 @@ export async function recordedHistories(store: EvalStore): Promise<Map<string, R
   }
   for (const run of runs.values()) {
     if (!run.sourceSessionId || linkedRuns.has(run.id)) continue;
-    add({ id: `legacy-${run.id}`, jobId: run.batchId, sourceSessionId: run.sourceSessionId, runId: run.id,
+    add({ id: `legacy-${run.id}`, jobId: run.batchId, agentId: run.agentId, sourceSessionId: run.sourceSessionId, runId: run.id,
       status: run.status === "completed" ? "evaluated" : "eval_error", requestedAt: run.gradedAt, finishedAt: run.gradedAt, error: run.error }, run);
   }
   for (const history of histories.values()) history.attempts.sort((a, b) =>

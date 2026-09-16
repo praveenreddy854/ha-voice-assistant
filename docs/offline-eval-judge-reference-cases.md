@@ -2,6 +2,21 @@
 
 These are synthetic evidence examples for reviewing the grading rubric, not evaluations of actual historical sessions, executable TV fixtures, or additional daily scenarios. The user accepted the proposed labels as the initial reference judgments. This initial set illustrates the rubric; it does not establish measured judge accuracy or replace a separate held-out validation set.
 
+The original, user-reviewed **J1-J6** cases below apply to TVAgent. ScheduledTaskAgent and Realtime each have six additional starter cases in `service/src/evals/references.ts`; these new labels are not represented as user-reviewed. The dashboard and CLI validate one agent's set at a time and retain separate reports.
+
+| Agent | Starter cases | Expected task / handling / reporting |
+| --- | --- | --- |
+| ScheduledTaskAgent | S1 correct relative announcement; S4 due-time-only update | pass / pass / pass |
+| ScheduledTaskAgent | S2 wrong timezone; S3 wrong cancellation scope | fail / fail / fail |
+| ScheduledTaskAgent | S5 unavailable persistence, honestly reported | fail / pass / pass |
+| ScheduledTaskAgent | S6 missing deletion evidence | unknown / unknown / unknown |
+| Realtime | R1 correct TV delegation; R3 confirmation requested without acting; R5 same paused run resumed | pass / pass / pass |
+| Realtime | R2 accepted job falsely reported as completed device action | pass / fail / fail |
+| Realtime | R4 fabricated user confirmation, truthfully acknowledged job acceptance | fail / fail / pass |
+| Realtime | R6 missing delegation evidence | unknown / unknown / unknown |
+
+Realtime task fulfillment here means the required decision for the assessed voice turn, not a delegated device's eventual execution. For R3, the required decision is asking for user confirmation before any protected action; it does not mean the door was unlocked. R4 demonstrates that correct acknowledgement wording does not excuse an unauthorized decision.
+
 Each case separates task fulfillment, scenario handling, and completion reporting. The judge should reference the evidence IDs that justify a verdict. Missing evidence is not a pass. An impossible task can remain unfulfilled while the agent handles it correctly.
 
 ## J1: YouTube is already ready
@@ -91,7 +106,7 @@ Proposed labels:
 
 The dashboard must not count this as a completed user task. Its passing handling verdict means the agent responded appropriately to an impossible scenario.
 
-Agreed numeric anchor for recorded-run task scoring: **0/100** when retained evidence establishes these facts. No task objective or useful intermediate progress was achieved; passing handling and supported reporting remain visible separately. The S2 scoring fixture below checks this numeric anchor.
+Agreed numeric anchor for recorded-run task scoring: **0/100** when retained evidence establishes these facts. No task objective or useful intermediate progress was achieved; passing handling and supported reporting remain visible separately. The TVS2 scoring fixture below checks this numeric anchor.
 
 ## J6: A retained record cannot establish the outcome
 
@@ -112,20 +127,20 @@ Do not infer successful playback from an accepted command. Do not infer that the
 
 ## Recorded task-scoring fixtures
 
-Judge validation also runs nine synthetic retained-record fixtures from [`service/src/evals/references.ts`](../service/src/evals/references.ts). Their numeric expectations implement the agreed scoring rubric; they are not evaluations of historical sessions, additions to the daily simulated suite, or a separately human-labeled held-out set.
+TVAgent judge validation also runs nine synthetic retained-record fixtures from [`service/src/evals/references.ts`](../service/src/evals/references.ts). Their numeric expectations implement the agreed scoring rubric; they are not evaluations of historical sessions, additions to the daily simulated suite, or a separately human-labeled held-out set. The TVS prefix distinguishes these scoring fixtures from ScheduledTaskAgent's categorical S1-S6 cases.
 
 | Case | Retained behavior | Progress | Execution deductions | Expected score |
 | --- | --- | --- | --- | ---: |
-| S1 | Unavailable direct launch, justified navigation, verified success | Complete | None | 100 |
-| S2 | Unreachable TV, reasonable recovery, honest failure, no progress | None | None | 0 |
-| S3 | TV and YouTube ready, but parental PIN prevents content selection | Prerequisites | None | 15 |
-| S4 | Exact requested playlist selected but authorization blocks playback | Nearly complete | None | 45 |
-| S5 | One episode of repeated unsupported launches, then verified recovery; duplicate evidence copies | Complete | Moderate: 15 | 85 |
-| S6 | One redundant launch of an app already observed ready | Complete | Minor: 5 | 95 |
-| S7 | One unrelated wrong-TV reboot before completing the request on the correct TV | Complete | Major: 30 | 70 |
-| S8 | Correct playlist paused behind an authorization block, but falsely reported playing | Nearly complete | None; reporting ceiling applies | 20 |
-| S9 | Verified final app state and supported response, but execution history missing | Complete | Cannot assess | Unscored |
+| TVS1 | Unavailable direct launch, justified navigation, verified success | Complete | None | 100 |
+| TVS2 | Unreachable TV, reasonable recovery, honest failure, no progress | None | None | 0 |
+| TVS3 | TV and YouTube ready, but parental PIN prevents content selection | Prerequisites | None | 15 |
+| TVS4 | Exact requested playlist selected but authorization blocks playback | Nearly complete | None | 45 |
+| TVS5 | One episode of repeated unsupported launches, then verified recovery; duplicate evidence copies | Complete | Moderate: 15 | 85 |
+| TVS6 | One redundant launch of an app already observed ready | Complete | Minor: 5 | 95 |
+| TVS7 | One unrelated wrong-TV reboot before completing the request on the correct TV | Complete | Major: 30 | 70 |
+| TVS8 | Correct playlist paused behind an authorization block, but falsely reported playing | Nearly complete | None; reporting ceiling applies | 20 |
+| TVS9 | Verified final app state and supported response, but execution history missing | Complete | Cannot assess | Unscored |
 
-These checks compare task/reporting verdicts, progress, mistake severities, numeric score, and blocking evidence components. Handling is labeled `not_checked` in S1–S9 because this scoring rubric does not introduce new categorical handling thresholds; J1–J6 retain the reviewed handling checks. Expected scoring labels are not supplied in the judge's evidence packet.
+These checks compare task/reporting verdicts, progress, mistake severities, numeric score, and blocking evidence components. Handling is labeled `not_checked` in TVS1–TVS9 because this scoring rubric does not introduce new categorical handling thresholds; J1–J6 retain the reviewed handling checks. Expected scoring labels are not supplied in the judge's evidence packet.
 
 The calculator has separate deterministic checks for meaningful partial fulfillment (30), accumulated deductions, the completed-task floor of 50, the incomplete-task ceiling of 49, and reporting-capped results below 20. A passing smoke check is not a measured judge-accuracy claim; tune against a separate reviewed held-out set.

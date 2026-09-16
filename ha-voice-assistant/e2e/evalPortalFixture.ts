@@ -4,10 +4,15 @@ import { expect, type Page } from "@playwright/test";
 import { evalPage } from "../../service/src/evals/page";
 import type { EvalScheduleStatus } from "../../service/src/evals/scheduling";
 import type {
-  EvalBatch, EvalRun, Grade, RecordedSession, RecordedSessionEvaluation, RecordedSessionHistory, TaskEvalScore,
+  EvalAgentId, EvalAlert, EvalBatch, EvalRun, Grade, RecordedSession, RecordedSessionEvaluation, RecordedSessionHistory, TaskEvalScore,
 } from "../../service/src/evals/types";
 
 export type PortalRun = EvalRun & { request: string; verdict: string };
+export const agents = [
+  { id: "tv", name: "TVAgent", description: "TV and playback state.", scenarioCount: 12, referenceCount: 6 },
+  { id: "scheduled_task", name: "ScheduledTaskAgent", description: "Dates and isolated task storage.", scenarioCount: 12, referenceCount: 6 },
+  { id: "realtime", name: "Realtime Voice Agent", description: "Text/tool decisions, not audio quality.", scenarioCount: 12, referenceCount: 6 },
+];
 export const evidenceId = "observed-state";
 export const unsafeReason = '<img src=x onerror="window.evidenceExecuted=true"> & "retained observation"';
 export const rubricVersion = "recorded-task-v1";
@@ -38,9 +43,10 @@ export const makeRun = (id: string, overrides: Partial<PortalRun> = {}): PortalR
   adapterVersion: "adapter", graderVersion: "grader", judgeModel: "judge",
   assessedAt: "2026-09-15T02:00:00Z", gradedAt: "2026-09-15T05:00:00Z",
   status: "completed", verdict: "pass", durationMs: 1500,
-  grade: grade(scored(100)),
+  grade: overrides.agentId && overrides.agentId !== "tv"
+    ? grade(undefined, { scoringAssessment: undefined }) : grade(scored(100)),
   assessment: {
-    agentId: "tv", mode: "recorded", request: id, finalResponse: "Requested music is playing.",
+    agentId: overrides.agentId || "tv", mode: overrides.mode || "recorded", request: id, finalResponse: "Requested music is playing.",
     startedAt: "2026-09-15T02:00:00Z", coverage: "partial",
     evidence: [{ id: evidenceId, kind: "tool", toolName: "get_device_state", text: unsafeReason }],
   },
@@ -51,15 +57,16 @@ export const evaluation = (
 ): RecordedSessionEvaluation => ({
   status, attemptCount: status === "evaluated" ? 1 : 2, latestCompleted: run,
   latestAttempt: status === "not_evaluated" ? undefined : {
-    id: `${run.id}-latest`, jobId: "latest-job", sourceSessionId: `${run.id}-session`, status,
+    id: `${run.id}-latest`, jobId: "latest-job", agentId: run.agentId, sourceSessionId: `${run.id}-session`, status,
     requestedAt: "2026-09-15T06:00:00Z",
     ...(status === "evaluated" ? { runId: run.id, finishedAt: run.gradedAt }
       : status === "eval_error" ? { error: "Re-evaluation interrupted before grading", finishedAt: "2026-09-15T06:01:00Z" } : {}),
   },
 });
-export const makeSession = (sessionId: string, state: RecordedSessionEvaluation): RecordedSession => ({
-  sessionId, userPrompt: `Play requested music for ${sessionId}`, startedAt: "2026-09-15T02:00:00Z",
-  completedAt: "2026-09-15T02:01:00Z", status: "completed", sources: ["telemetry", "cosmos"], evaluation: state,
+export const makeSession = (sessionId: string, state: RecordedSessionEvaluation, agentId: EvalAgentId = "tv"): RecordedSession => ({
+  sessionId, agentId, userPrompt: `Recorded request for ${sessionId}`, startedAt: "2026-09-15T02:00:00Z",
+  completedAt: "2026-09-15T02:01:00Z", status: "completed",
+  sources: agentId === "tv" ? ["telemetry", "cosmos"] : ["telemetry"], evaluation: state,
 });
 export const enabledSchedules = (): EvalScheduleStatus => ({
   timezone: "America/New_York", simulated: { enabled: true, hour: 3 },
@@ -67,6 +74,7 @@ export const enabledSchedules = (): EvalScheduleStatus => ({
 });
 
 interface FixtureState {
+  agents: typeof agents;
   runs: PortalRun[];
   schedules?: EvalScheduleStatus;
   scheduleEnabled: boolean;
@@ -75,7 +83,9 @@ interface FixtureState {
   statuses: Record<string, RecordedSessionEvaluation>;
   histories: Record<string, RecordedSessionHistory>;
   batches: EvalBatch[];
-  calibrations: { id: string; judgeModel: string; createdAt: string; passed: boolean; results: {
+  alerts: EvalAlert[];
+  fidelity: { simulatedId: string; recordedIds: string[]; status: string }[];
+  calibrations: { id: string; agentId?: string; judgeModel: string; createdAt: string; passed: boolean; limitation?: string; results: {
     id: string; passed: boolean; expected: string[]; actual?: string[]; error?: string;
     expectedScore?: number | null; actualScore?: number | null; expectedProgress?: string; actualProgress?: string;
     expectedSeverities?: string[]; actualSeverities?: string[];
@@ -86,7 +96,8 @@ interface FixtureState {
 
 export async function openPortal(page: Page, initial: Partial<FixtureState> = {}) {
   const state: FixtureState = {
-    runs: [], busy: false, scheduleEnabled: true, sessions: [], statuses: {}, histories: {}, batches: [], calibrations: [], ...initial,
+    agents, runs: [], busy: false, scheduleEnabled: true, sessions: [], statuses: {}, histories: {},
+    batches: [], alerts: [], fidelity: [], calibrations: [], ...initial,
   };
   const errors: string[] = [], unexpectedRequests: string[] = [];
   const submissions: Record<string, unknown>[] = [];
@@ -95,23 +106,31 @@ export async function openPortal(page: Page, initial: Partial<FixtureState> = {}
   // Every request is intercepted; these tests never start devices, workers, or model services.
   await page.route("**/*", async route => {
     const url = new URL(route.request().url());
+    const agentId = url.searchParams.get("agentId");
     if (url.pathname === "/dashboards/evals") {
       await route.fulfill({ contentType: "text/html", body: evalPage });
     } else if (url.pathname === "/dashboards/evals/browser.js") {
       await route.fulfill({ contentType: "application/javascript", body: browserScript });
     } else if (url.pathname === "/api/evals") {
       await route.fulfill({ json: {
-        runs: state.runs, busy: state.busy, schedules: state.schedules, scheduleEnabled: state.scheduleEnabled,
-        alerts: [], batches: state.batches, calibrations: state.calibrations, fidelity: [],
+        agents: state.agents, runs: state.runs.filter(run => !agentId || run.agentId === agentId),
+        busy: state.busy, schedules: state.schedules, scheduleEnabled: state.scheduleEnabled,
+        alerts: state.alerts.filter(alert => !agentId || (alert.agentId || alert.key.split(":")[0]) === agentId),
+        batches: state.batches.filter(batch => !agentId || batch.agentId === agentId),
+        calibrations: state.calibrations.filter(calibration => !agentId || (calibration.agentId || "tv") === agentId),
+        fidelity: state.fidelity.filter(pair => !agentId || state.runs.some(run => run.id === pair.simulatedId && run.agentId === agentId)),
         baseline: { from: "2026-09-07", to: "2026-09-13" },
         timezone: "America/New_York", fidelityNote: "Fixture comparison data",
       } });
     } else if (url.pathname === "/api/evals/sessions") {
-      await route.fulfill({ json: { sessions: state.sessions, busy: state.busy, warnings: [], timezone: "America/New_York" } });
+      await route.fulfill({ json: {
+        sessions: state.sessions.filter(session => !agentId || session.agentId === agentId),
+        busy: state.busy, warnings: [], timezone: "America/New_York",
+      } });
     } else if (url.pathname === "/api/evals/session-statuses") {
       await route.fulfill(state.statusesError
         ? { status: 503, json: { error: state.statusesError } }
-        : { json: { statuses: state.statuses, busy: state.busy } });
+        : { json: { statuses: state.statuses, agents: state.agents.map(agent => agent.id), busy: state.busy } });
     } else if (/^\/api\/evals\/sessions\/[^/]+\/history$/.test(url.pathname)) {
       const id = decodeURIComponent(url.pathname.split("/")[4]);
       await route.fulfill({ json: state.histories[id] || { attempts: [] } });
@@ -128,6 +147,6 @@ export async function openPortal(page: Page, initial: Partial<FixtureState> = {}
     }
   });
   await page.goto("/dashboards/evals");
-  await expect(page.locator("#cards .number").first()).toHaveText(String(state.runs.length));
+  await expect(page.locator("#cards .number").first()).toHaveText(String(state.runs.filter(run => run.agentId === "tv").length));
   return { state, errors, unexpectedRequests, submissions };
 }

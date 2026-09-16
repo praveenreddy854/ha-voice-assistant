@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import {
-  evidenceId, evaluation, grade, makeRun, makeSession, openPortal, rubricVersion, scored, unsafeReason,
+  agents, evidenceId, evaluation, grade, makeRun, makeSession, openPortal, rubricVersion, scored, unsafeReason,
 } from "./evalPortalFixture";
 
 function scoringRuns() {
@@ -138,6 +138,66 @@ test("unscored gaps and historical absence remain distinct in inspection on a na
   expect(fixture.errors).toEqual([]);
 });
 
+for (const agentId of ["scheduled_task", "realtime"] as const) {
+  test(`${agentId} keeps categorical history and reports numeric scoring as not applicable`, async ({ page }) => {
+    const completed = makeRun(`${agentId}-completed`, { agentId });
+    const state = evaluation(completed, "queued");
+    const sessionId = `${agentId}-session`;
+    const fixture = await openPortal(page, {
+      runs: [
+        makeRun("tv-scored"), completed,
+        makeRun(`${agentId}-simulation`, { agentId, mode: "simulated" }),
+        makeRun(`${agentId}-error`, { agentId, status: "grading_error" }),
+      ],
+      sessions: [makeSession("tv-session", evaluation(makeRun("tv-scored"))), makeSession(sessionId, state, agentId)],
+      statuses: { [sessionId]: state },
+      histories: { [sessionId]: { attempts: [
+        { ...state.latestAttempt!, sourceSessionId: sessionId },
+        {
+          id: `${agentId}-previous`, jobId: "previous-job", agentId, sourceSessionId: sessionId,
+          status: "evaluated", requestedAt: "2026-09-15T04:00:00Z", finishedAt: completed.gradedAt,
+          runId: completed.id, run: completed,
+        },
+      ] } },
+    });
+    await page.locator("#agent").selectOption(agentId);
+    const rows = page.locator("#runs tr");
+    await expect(rows).toHaveCount(3);
+    await expect(page.locator("#runs")).not.toContainText("tv-scored");
+    for (const row of await rows.all()) {
+      await expect(row.locator("td").nth(3)).toHaveText("Task eval score: N/A for this agent");
+    }
+    await expect(rows.first().locator("td").nth(4)).toHaveText("pass");
+    await expect(page.locator("#runs")).not.toContainText("Scoring unavailable");
+    await expect(page.locator("#runs")).not.toContainText("Unscored");
+    await rows.first().getByRole("button", { name: "Inspect" }).click();
+    const breakdown = page.getByRole("region", { name: "Task eval score breakdown" });
+    await expect(breakdown).toContainText("N/A for this agent");
+    await expect(breakdown.locator(".score-calculation")).toHaveCount(0);
+    await expect(page.locator("#detail-body")).toContainText(`"agentId": "${agentId}"`);
+    await page.locator("#close").click();
+
+    await page.locator("#recorded").click();
+    await expect(page.locator("#session-rows tr")).toHaveCount(1);
+    await expect(page.locator("#session-rows")).toContainText("Previous evaluation");
+    await expect(page.locator("#session-rows")).toContainText("Task eval score: N/A for this agent");
+    await page.getByRole("button", { name: `Evaluation history for ${sessionId}`, exact: true }).click();
+    const attempts = page.locator("#detail-body section");
+    await expect(attempts.first()).toContainText("N/A for this agent. Verdicts are not available yet.");
+    await expect(attempts.nth(1)).toContainText("Previous evaluation · Evaluated");
+    await expect(attempts.nth(1)).toContainText("N/A for this agent");
+    await expect(attempts.nth(1)).toContainText("Task pass");
+    await expect(page.locator("#detail-body")).not.toContainText("Scoring unavailable");
+
+    await page.goto(`/dashboards/evals?agentId=${agentId}&sessionId=${sessionId}`);
+    await expect(page.locator("#agent")).toHaveValue(agentId);
+    await expect(page.getByRole("dialog", { name: "Session evaluation history" })).toBeVisible();
+    await expect(attempts.nth(1)).toContainText("Previous evaluation · Evaluated");
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.unexpectedRequests).toEqual([]);
+  });
+}
+
 test("selection and history attach previous scores to completed attempts, never to a re-evaluation", async ({ page }) => {
   const runs = scoringRuns();
   const statusList = [
@@ -191,7 +251,7 @@ test("selection and history attach previous scores to completed attempts, never 
   await page.getByRole("button", { name: "Back to session attempt history" }).click();
   await expect(attempts.nth(1)).toContainText("Task eval score: 0/100");
   await page.locator("#close").click();
-  await expect(page.getByRole("dialog", { name: "Select recorded TV sessions" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Select recorded TVAgent sessions" })).toBeVisible();
 
   fixture.state.statusesError = "Attempt history store unavailable";
   await page.getByRole("button", { name: "Refresh sessions", exact: true }).click();
@@ -209,6 +269,8 @@ test("telemetry keeps score summaries and previous labels while unavailable stat
     success: evaluation(runs[0]), zero: evaluation(runs[1]), missing: evaluation(runs[5]),
     legacy: evaluation(runs[6]), queued: evaluation(runs[1], "queued"),
     running: evaluation(runs[0], "running"), failed: evaluation(runs[0], "eval_error"),
+    scheduled: evaluation(makeRun("scheduled-result", { agentId: "scheduled_task" })),
+    voice: evaluation(makeRun("voice-result", { agentId: "realtime" }), "queued"),
   };
   let unavailable = false;
   const errors: string[] = [];
@@ -217,11 +279,11 @@ test("telemetry keeps score summaries and previous labels while unavailable stat
   await page.route("**/*", async route => {
     const url = new URL(route.request().url());
     if (url.pathname === "/telemetry") {
-      await route.fulfill({ contentType: "text/html", body: `<!doctype html><html lang="en"><head><meta charset="utf-8"></head><body>${Object.keys(statuses).map(id => `<div data-eval-session-id="${id}" data-agent-type="tv"></div>`).join("")}<div data-eval-session-id="other" data-agent-type="other"></div><script src="/eval-status.js"></script></body></html>` });
+      await route.fulfill({ contentType: "text/html", body: `<!doctype html><html lang="en"><head><meta charset="utf-8"></head><body>${Object.entries(statuses).map(([id, status]) => `<div data-eval-session-id="${id}" data-agent-type="${status.latestCompleted!.agentId}"></div>`).join("")}<div data-eval-session-id="other" data-agent-type="other"></div><script src="/eval-status.js"></script></body></html>` });
     } else if (url.pathname === "/eval-status.js") {
       await route.fulfill({ contentType: "application/javascript", body: browserScript });
     } else if (url.pathname === "/api/evals/session-statuses") {
-      await route.fulfill(unavailable ? { status: 503, body: "Status store unavailable" } : { json: { statuses, busy: false } });
+      await route.fulfill(unavailable ? { status: 503, body: "Status store unavailable" } : { json: { statuses, agents: agents.map(agent => agent.id), busy: false } });
     } else await route.fulfill({ status: 404, body: "Unexpected fixture request" });
   });
   await page.goto("/telemetry");
@@ -232,6 +294,10 @@ test("telemetry keeps score summaries and previous labels while unavailable stat
   await expect(row("missing")).toContainText(unsafeReason);
   await expect(row("missing").locator("img")).toHaveCount(0);
   await expect(row("legacy")).toContainText("Scoring unavailable for this evaluation");
+  await expect(row("scheduled")).toContainText("Evaluation: task eval score: N/A for this agent; task pass");
+  await expect(row("voice")).toContainText("Previous evaluation: task eval score: N/A for this agent; task pass");
+  await expect(row("voice")).not.toContainText("Scoring unavailable");
+  await expect(row("voice").getByRole("link")).toHaveAttribute("href", "/dashboards/evals?agentId=realtime&sessionId=voice");
   for (const id of ["queued", "running", "failed"]) await expect(row(id)).toContainText("Previous evaluation:");
   await expect(row("failed").getByRole("link")).toHaveAttribute("title", /Re-evaluation interrupted before grading/);
   await expect(row("other")).toBeHidden();
@@ -289,5 +355,42 @@ test("calibration distinguishes score and progress mismatches from matching cate
   await expect(result("grading-failure")).toContainText(unsafeReason);
   await expect(result("grading-failure").locator("img")).toHaveCount(0);
   await expect(result("legacy-categorical")).not.toContainText("Task eval score");
+  expect(fixture.errors).toEqual([]);
+});
+
+test("agent-specific calibration retains categorical limitations without inheriting TV scoring", async ({ page }) => {
+  const catalog = agents.map((agent, index) => ({ ...agent, scenarioCount: 12 + index, referenceCount: 6 + index }));
+  const fixture = await openPortal(page, {
+    agents: catalog,
+    calibrations: [
+      {
+        id: "legacy-tv-calibration", judgeModel: "tv-judge", createdAt: "2026-09-15T07:00:00Z", passed: true,
+        results: [{ id: "tv-score-reference", passed: true, expected: ["pass", "pass", "pass"], actual: ["pass", "pass", "pass"], expectedScore: 100, actualScore: 100 }],
+      },
+      ...catalog.filter(agent => agent.id !== "tv").map(agent => ({
+        id: `${agent.id}-calibration`, agentId: agent.id, judgeModel: `${agent.id}-judge`,
+        createdAt: "2026-09-15T07:00:00Z", passed: true, limitation: `Starter reference limitation: ${unsafeReason}`,
+        results: [{ id: `${agent.id}-reference`, passed: true, expected: ["fail", "pass", "pass"], actual: ["fail", "pass", "pass"] }],
+      })),
+    ],
+  });
+  await expect(page.locator("#calibrations")).toContainText("tv-judge");
+  await page.locator("#calibrations summary").click();
+  await expect(page.locator("#calibrations")).toContainText("Task eval score: expected 100/100; actual 100/100");
+  for (const agent of catalog.filter(agent => agent.id !== "tv")) {
+    await page.locator("#agent").selectOption(agent.id);
+    await expect(page.locator("#calibrations summary")).toContainText(`${agent.id}-judge`);
+    await expect(page.locator("#calibrations summary")).toHaveCount(1);
+    await page.locator("#calibrations summary").click();
+    await expect(page.locator("#calibrations")).toContainText("expected fail / pass / pass; actual fail / pass / pass");
+    await expect(page.locator("#calibrations")).toContainText("Task eval score: N/A for this agent");
+    await expect(page.locator("#calibrations")).toContainText(`Starter reference limitation: ${unsafeReason}`);
+    await expect(page.locator("#calibrations")).not.toContainText("100/100");
+    await expect(page.locator("#calibrations img")).toHaveCount(0);
+    await expect(page.locator("#suite-description")).toContainText(`${agent.scenarioCount} ${agent.name} scenarios`);
+    await expect(page.locator("#judge-description")).toContainText(`${agent.referenceCount} starter reference cases`);
+    await expect(page.locator("#judge-description")).toContainText("numeric task eval scoring is not applicable");
+  }
+  expect(await page.evaluate("window.evidenceExecuted")).toBeUndefined();
   expect(fixture.errors).toEqual([]);
 });

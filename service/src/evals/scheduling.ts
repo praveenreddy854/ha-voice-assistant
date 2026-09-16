@@ -53,6 +53,7 @@ export function recordedSelection(
   if (!Number.isFinite(cutoff) || !Number.isFinite(current)) throw new Error("Invalid recorded scheduling timestamp");
   const warnings = [...discovery.warnings];
   const eligible = discovery.sessions.filter(session => {
+    if (session.agentId !== "tv") return false;
     const started = Date.parse(session.startedAt);
     if (!Number.isFinite(started)) {
       warnings.push(`Skipping session ${JSON.stringify(session.sessionId)}: invalid or missing start time; automatic eligibility is unknown.`);
@@ -60,14 +61,15 @@ export function recordedSelection(
     }
     return started >= cutoff && started <= current &&
       ["completed", "error", "failed"].includes(session.status) &&
-      /^[a-zA-Z0-9_-]+$/.test(session.sessionId) && !histories.get(session.sessionId)?.attempts.length;
+      /^[a-zA-Z0-9_-]+$/.test(session.sessionId) &&
+      !histories.get(session.sessionId)?.attempts.some(attempt => (attempt.agentId || attempt.run?.agentId || "tv") === "tv");
   }).sort((left, right) =>
     Date.parse(left.startedAt) - Date.parse(right.startedAt) || left.sessionId.localeCompare(right.sessionId));
   return { sessionIds: [...new Set(eligible.map(session => session.sessionId))].slice(0, 100), warnings };
 }
 
-export function simulatedSkippedDays(batches: EvalBatch[], scheduledDay: string): string[] {
-  const days = batches.filter(batch => batch.mode === "simulated" && batch.attempt === "scheduled" &&
+export function simulatedSkippedDays(batches: EvalBatch[], scheduledDay: string, agentId = "tv"): string[] {
+  const days = batches.filter(batch => (batch.agentId || "tv") === agentId && batch.mode === "simulated" && batch.attempt === "scheduled" &&
     batch.scheduledDay && batch.scheduledDay < scheduledDay).map(batch => batch.scheduledDay!).sort();
   const skipped: string[] = [];
   for (let day = days.length ? shiftDay(days[days.length - 1], 1) : scheduledDay; day < scheduledDay; day = shiftDay(day, 1)) {
@@ -89,7 +91,7 @@ export function outcomeForJob(outcome: RecordedDailyOutcome, job?: EvalJob, admi
 }
 
 export async function updateRecordedDailyOutcome(store: EvalStore, job: EvalJob): Promise<void> {
-  if (job.mode !== "recorded" || !job.scheduledDay) return;
+  if (job.mode !== "recorded" || (job.agentId || "tv") !== "tv" || !job.scheduledDay) return;
   const outcome = await store.read<RecordedDailyOutcome>("schedule-days", scheduledIdentity("recorded", job.scheduledDay));
   if (outcome?.jobId === job.id) await store.write("schedule-days", outcomeForJob(outcome, job));
 }

@@ -9,8 +9,9 @@ import {
   outcomeForJob, recordedSelection, scheduleConfiguration, scheduledIdentity,
   type EvalScheduleConfiguration, type EvalScheduleStatus, type RecordedDailyOutcome, type RecordedScheduleEnablement,
 } from "./scheduling";
-import type { EvalBatch } from "./types";
+import { EVAL_AGENT_IDS, type EvalBatch } from "./types";
 import type { EvalJob } from "./worker";
+import { getEvalAgent } from "./registry";
 
 function spawnWorker(job: EvalJob, directory: string): ChildProcess {
   const source = __filename.endsWith(".ts");
@@ -19,7 +20,7 @@ function spawnWorker(job: EvalJob, directory: string): ChildProcess {
     env: { ...process.env, OFFLINE_EVAL_DIR: directory },
   });
 }
-type JobInput = Pick<EvalJob, "mode" | "sessionIds" | "scenarioIds" | "model" | "scheduledDay" | "requestId">;
+type JobInput = Pick<EvalJob, "mode" | "agentId" | "sessionIds" | "scenarioIds" | "model" | "scheduledDay" | "requestId">;
 export interface EvalSupervisorDependencies {
   now?: () => Date;
   discover?: () => Promise<SessionDiscovery>;
@@ -80,23 +81,32 @@ export class EvalSupervisor {
   private async previousSubmission(input: JobInput): Promise<EvalJob | undefined> {
     if (!input.requestId) return undefined;
     const previous = await this.store.read<EvalJob>("jobs", input.requestId);
-    if (previous && (previous.mode !== input.mode || JSON.stringify(previous.sessionIds) !== JSON.stringify(input.sessionIds))) {
+    if (previous && (previous.mode !== input.mode || (previous.agentId || "tv") !== (input.agentId || "tv")
+      || JSON.stringify(previous.sessionIds) !== JSON.stringify(input.sessionIds))) {
       throw new Error("This submission ID was already used for a different selection");
     }
     return previous;
   }
   async launch(input: JobInput): Promise<EvalJob> {
+    await this.recovery;
+    const agent = getEvalAgent(input.agentId);
+    input = { ...input, agentId: agent.id };
     if (input.mode === "recorded" && (!input.sessionIds?.length || input.sessionIds.length > 100
       || new Set(input.sessionIds).size !== input.sessionIds.length
       || input.sessionIds.some(id => !/^[a-zA-Z0-9_-]+$/.test(id)))) throw new Error("Select 1 to 100 unique valid session IDs");
+    if (input.mode === "simulated" && input.scenarioIds) {
+      const scenarios = await agent.scenarios();
+      if (!input.scenarioIds.length || new Set(input.scenarioIds).size !== input.scenarioIds.length
+        || input.scenarioIds.some(id => !scenarios.some(scenario => scenario.id === id))) throw new Error("Unknown or empty scenario selection for this agent");
+    }
     const job = await this.submit(input);
     if (!job) throw new Error("Offline eval submission was not accepted");
     return job;
   }
-  private async alreadyScheduled(mode: "simulated" | "recorded", day: string): Promise<boolean> {
+  private async alreadyScheduled(mode: "simulated" | "recorded", day: string, agentId: string): Promise<boolean> {
     const [batches, jobs] = await Promise.all([this.store.list<EvalBatch>("batches"), this.store.list<EvalJob>("jobs")]);
-    return batches.some(batch => batch.mode === mode && batch.attempt === "scheduled" && batch.scheduledDay === day) ||
-      jobs.some(job => job.mode === mode && job.scheduledDay === day);
+    return batches.some(batch => (batch.agentId || "tv") === agentId && batch.mode === mode && batch.attempt === "scheduled" && batch.scheduledDay === day) ||
+      jobs.some(job => (job.agentId || "tv") === agentId && job.mode === mode && job.scheduledDay === day);
   }
   private scheduleIsCurrent(mode: "simulated" | "recorded", day: string): boolean {
     const now = this.now();
@@ -141,7 +151,7 @@ export class EvalSupervisor {
         };
       }
       await this.recovery;
-      if (schedule && input.mode !== "calibrate" && await this.alreadyScheduled(input.mode, input.scheduledDay!)) return;
+      if (schedule && input.mode !== "calibrate" && await this.alreadyScheduled(input.mode, input.scheduledDay!, input.agentId!)) return;
       await this.store.recoverInterruptedJobs();
       if (this.child || await this.persistedBusy()) {
         if (schedule) return;
@@ -167,7 +177,7 @@ export class EvalSupervisor {
       }
       if (schedule && (input.mode === "calibrate" || !this.scheduleIsCurrent(input.mode, input.scheduledDay!))) return;
       job = {
-        ...input, id: input.requestId || (schedule ? `scheduled-${input.mode}-${input.scheduledDay}` : randomUUID()),
+        ...input, id: input.requestId || (schedule ? `scheduled-${input.agentId}-${input.mode}-${input.scheduledDay}` : randomUUID()),
         attempt: input.scheduledDay ? "scheduled" : "on_demand",
         status: "queued", createdAt: this.now().toISOString(), ownerPid: process.pid,
       };
@@ -220,9 +230,13 @@ export class EvalSupervisor {
       await this.initializeRecordedSchedule(now);
       const configuration = this.configuration(), day = localDay(now);
       if (configuration.recorded && isDue(now, 1)) {
-        await this.submit({ mode: "recorded", scheduledDay: day }, { now, enabledAt: this.enabledAt });
+        await this.submit({ mode: "recorded", agentId: "tv", scheduledDay: day }, { now, enabledAt: this.enabledAt });
       }
-      if (configuration.simulated && isDue(now)) await this.submit({ mode: "simulated", scheduledDay: day }, { now });
+      if (configuration.simulated && isDue(now)) {
+        for (const agentId of EVAL_AGENT_IDS) {
+          if (await this.submit({ mode: "simulated", agentId, scheduledDay: day }, { now })) break;
+        }
+      }
     } finally {
       this.polling = false;
     }

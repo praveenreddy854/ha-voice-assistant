@@ -59,6 +59,21 @@ TV Agent (src/agents/tv/)          — implements AgentDefinition
 
 The agent loop (`src/agents/core/agentLoop.ts`) is session-based with external tool execution. Tools are defined without `execute` functions — the caller handles execution and returns results. A built-in `complete_task` tool signals loop completion.
 
+### Offline evaluations (`src/evals/`)
+
+`registry.ts` registers TV (`tv`), ScheduledTask (`scheduled_task`) and Realtime (`realtime`) evaluations. Each supplies a pure scenario catalog, isolated simulated adapter and retained-run loader. The shared worker, scheduler, storage, judge and dashboard select an agent explicitly; legacy commands default to TV.
+
+TV and ScheduledTask simulations reuse the production model loop and schemas with all live executors stripped. ScheduledTask uses a fixed fixture clock and isolated storage. Realtime simulations use the actual configured Realtime deployment with text input/output and simulated tool results, not a replacement chat model. They do not assess audio quality or start real jobs.
+
+```bash
+npm run eval:simulated -- --agent scheduled_task
+npm run eval:simulated -- --agent realtime
+npm run eval:recorded -- --agent scheduled_task COMPLETED_SESSION_ID
+npm run eval:calibrate -- --agent realtime
+```
+
+The dashboard at `/dashboards/evals` scopes runs, selections, baselines and alerts by agent. Daily simulated suites run sequentially from 3 a.m. America/New_York under one worker. TV recorded runs also have a default-on 1 a.m. schedule and evidence-grounded 0-100 task scoring; ScheduledTask and Realtime recorded evals remain on demand and categorical. Recorded evaluation only reads terminal production traces (plus optional TV Cosmos evidence) and never replays actions. See `docs/offline-evals.md` and `docs/offline-eval-testing.md`.
+
 ### Key Directories
 
 - `src/agents/core/` — Generic agent infrastructure: loop, orchestrator, registry, types

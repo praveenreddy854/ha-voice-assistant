@@ -1,13 +1,15 @@
 (() => {
   type Evaluation = import("./types").RecordedSessionEvaluation;
-  type Response = { statuses: Record<string, Evaluation>; busy: boolean };
+  type Response = { statuses: Record<string, Evaluation>; agents: string[]; busy: boolean };
   const labels: Record<Evaluation["status"], string> = {
     not_evaluated: "Not evaluated", queued: "Queued", running: "Running", evaluated: "Evaluated", eval_error: "Eval error",
   };
   let statuses: Record<string, Evaluation> = {};
+  let supportedAgents: string[] | undefined;
   let known = false, loading = false, error = "";
   const date = (value: string) => new Date(value).toLocaleString("en-US", { timeZone: "America/New_York", timeZoneName: "short" });
   function scoreText(run: import("./types").EvalRunSummary) {
+    if (run.agentId !== "tv") return "task eval score: N/A for this agent";
     if (run.mode !== "recorded") return "task eval score: N/A — simulated evaluation";
     if (run.status !== "completed") return "no completed task eval score — evaluation did not finish";
     const score = run.grade?.score;
@@ -17,7 +19,8 @@
   }
   function render() {
     document.querySelectorAll<HTMLElement>("[data-eval-session-id]").forEach(placeholder => {
-      if (placeholder.dataset.agentType !== "tv") { placeholder.hidden = true; return; }
+      if (supportedAgents && !supportedAgents.includes(placeholder.dataset.agentType || "")) { placeholder.hidden = true; return; }
+      placeholder.hidden = false;
       const id = placeholder.dataset.evalSessionId!;
       const evaluation = statuses[id], attempt = evaluation?.latestAttempt;
       const status = attempt?.status || evaluation?.status || "not_evaluated";
@@ -33,7 +36,7 @@
       let link = placeholder.querySelector<HTMLAnchorElement>("a");
       if (!link) {
         link = document.createElement("a");
-        link.href = `/dashboards/evals?sessionId=${encodeURIComponent(id)}`;
+        link.href = `/dashboards/evals?agentId=${encodeURIComponent(placeholder.dataset.agentType || "")}&sessionId=${encodeURIComponent(id)}`;
         link.style.color = "var(--accent)";
         link.style.display = "block";
         link.addEventListener("click", event => event.stopPropagation());
@@ -68,8 +71,8 @@
       const response = await fetch("/api/evals/session-statuses", { cache: "no-store", signal: controller.signal });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const result: Response = await response.json();
-      if (!result.statuses || typeof result.statuses !== "object") throw new Error("Invalid evaluation status response");
-      statuses = result.statuses; known = true; error = "";
+      if (!result.statuses || typeof result.statuses !== "object" || !Array.isArray(result.agents)) throw new Error("Invalid evaluation status response");
+      statuses = result.statuses; supportedAgents = result.agents; known = true; error = "";
     } catch (failure) {
       known = false;
       error = `Evaluation status could not be loaded: ${String(failure)}. This does not mean the session has never been evaluated.`;

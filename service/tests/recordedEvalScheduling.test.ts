@@ -15,13 +15,13 @@ import {
   recordedSelection, scheduleConfiguration, scheduledIdentity, simulatedSkippedDays, updateRecordedDailyOutcome,
   type RecordedDailyOutcome,
 } from "../src/evals/scheduling";
-import type { Assessment, EvalBatch, EvalRun, Grade, RecordedEvalAttempt } from "../src/evals/types";
+import { EVAL_AGENT_IDS, type Assessment, type EvalBatch, type EvalRun, type Grade, type RecordedEvalAttempt } from "../src/evals/types";
 import type { EvalJob } from "../src/evals/worker";
 
 const START = "2026-09-15T04:30:00.000Z"; // 00:30 in New York
 const DUE = "2026-09-15T05:00:00.000Z";
 const session = (sessionId: string, startedAt = "2026-09-15T04:45:00Z"): SessionDiscovery["sessions"][number] => ({
-  sessionId, startedAt, completedAt: startedAt, status: "completed", userPrompt: "Open YouTube", sources: ["telemetry"],
+  sessionId, agentId: "tv", startedAt, completedAt: startedAt, status: "completed", userPrompt: "Open YouTube", sources: ["telemetry"],
 });
 const judgment = { verdict: "pass" as const, reason: "Observed", evidenceIds: ["e1"] };
 const grade: Grade = {
@@ -162,7 +162,8 @@ test("eligibility uses existing terminal TV discovery, validates start times, an
     trace("future", { startedAt: "2026-09-15T05:00:00.001Z" }),
     trace("invalid", { startedAt: "invalid" }), trace("missing", { startedAt: "" }),
     trace("running", { status: "running" }), trace("unfinished", { completedAt: undefined }),
-    trace("other-agent", { agentType: "scheduled_task" }), trace("errored", { status: "error" }),
+    trace("other-agent", { agentType: "scheduled_task" }), trace("voice-agent", { agentType: "realtime" }),
+    trace("other-invalid", { agentType: "realtime", startedAt: "invalid" }), trace("errored", { status: "error" }),
     trace("current", { startedAt: DUE }),
   ], [{ sessionId: "cosmos-failed", agent: "tv", status: "failed", userPrompt: "Open YouTube", createdAt: START }]);
   const selected = recordedSelection(discovery, new Map(), START, new Date(DUE));
@@ -171,6 +172,44 @@ test("eligibility uses existing terminal TV discovery, validates start times, an
   assert.ok(selected.warnings.every(warning => warning.includes("automatic eligibility is unknown")));
   assert.throws(() => recordedSelection(discovery, new Map(), "invalid", new Date(DUE)), /timestamp/);
 });
+
+test("the 1am scheduler explicitly selects only TV from all-agent discovery", () => withStore(async store => {
+  const fixture = harness(store);
+  fixture.state.discovery.sessions = [
+    ...Array.from({ length: 105 }, (_, index) => ({
+      ...session(`other-${index}`, START), agentId: index % 2 ? "scheduled_task" : "realtime",
+    })),
+    session("tv-after-other-agents"),
+  ];
+  await fixture.tick(START);
+  await fixture.tick(DUE);
+  const job = fixture.state.spawns[0].job;
+  assert.equal(job.mode, "recorded");
+  assert.equal(job.agentId, "tv");
+  assert.deepEqual(job.sessionIds, ["tv-after-other-agents"]);
+  assert.equal((await fixture.supervisor.scheduleStatus()).recorded.latest?.selectedCount, 1);
+  await fixture.complete();
+  await fixture.tick("2026-09-16T05:00:00Z");
+  assert.equal(fixture.state.spawns.length, 1);
+  assert.equal((await fixture.supervisor.scheduleStatus()).recorded.latest?.status, "empty");
+}));
+
+test("manual recorded admission supports every registered agent and scopes prior attempts to that agent", () => withStore(async store => {
+  const fixture = harness(store);
+  await fixture.tick(START);
+  for (const agentId of EVAL_AGENT_IDS) {
+    const sessionId = agentId === "tv" ? "manual-tv" : "new";
+    const job = await fixture.supervisor.launch({ mode: "recorded", agentId, sessionIds: [sessionId] });
+    assert.equal(job.agentId, agentId);
+    assert.equal(job.attempt, "on_demand");
+    await fixture.complete();
+  }
+  await fixture.tick(DUE);
+  assert.deepEqual(fixture.state.spawns[3].job.sessionIds, ["new"]);
+  assert.equal(fixture.state.spawns[3].job.agentId, "tv");
+  await fixture.complete();
+  await assert.rejects(fixture.supervisor.launch({ mode: "recorded", agentId: "unknown", sessionIds: ["new"] }), /not registered/);
+}));
 
 test("invalid eligibility timestamps produce an incomplete warning rather than verified empty coverage", () => withStore(async store => {
   const fixture = harness(store);
@@ -408,12 +447,46 @@ test("recorded and simulated schedules coexist during late catch-up without cros
   await fixture.tick("2026-09-15T16:00:00Z");
   assert.equal(fixture.state.spawns[0].job.mode, "recorded");
   await fixture.complete();
-  await fixture.tick("2026-09-15T16:01:00Z");
-  assert.equal(fixture.state.spawns[1].job.mode, "simulated");
-  assert.equal(fixture.state.spawns[1].job.scheduledDay, "2026-09-15");
-  await fixture.complete();
+  for (const [index, agentId] of EVAL_AGENT_IDS.entries()) {
+    await fixture.tick("2026-09-15T16:01:00Z");
+    assert.equal(fixture.state.spawns.length, index + 2);
+    const job = fixture.state.spawns[index + 1].job;
+    assert.equal(job.mode, "simulated");
+    assert.equal(job.agentId, agentId);
+    assert.equal(job.scheduledDay, "2026-09-15");
+    await fixture.tick("2026-09-15T16:02:00Z");
+    assert.equal(fixture.state.spawns.length, index + 2);
+    await fixture.complete(index === 1 ? "failed" : "completed");
+  }
   await fixture.tick("2026-09-15T17:00:00Z");
-  assert.equal(fixture.state.spawns.length, 2);
+  const restarted = harness(store);
+  await restarted.tick("2026-09-15T18:00:00Z");
+  assert.equal(restarted.state.spawns.length, 0);
+  assert.equal(fixture.state.spawns.length, 4);
+  assert.equal(new Set(fixture.state.spawns.map(({ job }) => job.id)).size, 4);
+  assert.equal((await store.list("jobs")).length, 4);
+  assert.equal((await fixture.supervisor.scheduleStatus()).recorded.latest?.status, "completed");
+}));
+
+test("legacy agent-less simulated jobs suppress only TV, never another agent or mode", () => withStore(async store => {
+  const fixture = harness(store);
+  await fixture.tick(START);
+  await store.write<EvalJob>("jobs", {
+    id: "scheduled-simulated-2026-09-15", mode: "simulated", scheduledDay: "2026-09-15", status: "failed",
+  });
+  await fixture.tick("2026-09-15T07:00:00Z");
+  assert.equal(fixture.state.spawns[0].job.mode, "recorded");
+  await fixture.complete();
+  for (const [index, agentId] of ["scheduled_task", "realtime"].entries()) {
+    await fixture.tick("2026-09-15T07:01:00Z");
+    assert.equal(fixture.state.spawns.length, index + 2);
+    assert.equal(fixture.state.spawns[index + 1].job.agentId, agentId);
+    assert.equal(fixture.state.spawns[index + 1].job.mode, "simulated");
+    await fixture.complete();
+  }
+  await fixture.tick("2026-09-15T08:00:00Z");
+  assert.equal(fixture.state.spawns.length, 3);
+  assert.equal((await store.list("jobs")).length, 4);
 }));
 
 test("a simulated daily batch does not suppress a recorded catch-up for the same date", () => withStore(async store => {
@@ -534,6 +607,62 @@ test("recorded scheduled provenance reaches the batch, each saved run and summar
   }
   await fixture.complete("failed");
   assert.equal((await fixture.supervisor.scheduleStatus()).recorded.latest?.status, "failed");
+}));
+
+test("recorded adapter overrides retain scheduled provenance and reject cross-agent assessments before judging", () => withStore(async store => {
+  let calls = 0;
+  const runner = new EvalRunner(store, async () => { calls++; return { grade }; }, "fake-judge", "fake-grader");
+  const batch = await runner.recorded("realtime", [
+    { sessionId: "valid", load: async () => ({ ...assessment("valid"), agentId: "realtime" }) },
+    { sessionId: "wrong-agent", load: async () => assessment("wrong-agent") },
+  ], new AbortController().signal, { adapterVersion: "retained-realtime-fixture", scheduledDay: "2026-09-15" });
+  assert.equal(calls, 1);
+  assert.equal(batch.attempt, "scheduled");
+  assert.equal(batch.status, "incomplete");
+  const runs = await store.list<EvalRun>("runs");
+  assert.ok(runs.every(run => run.agentId === "realtime" && run.adapterVersion === "retained-realtime-fixture" &&
+    run.scheduledDay === "2026-09-15" && run.attempt === "scheduled"));
+  const rejected = runs.find(run => run.sourceSessionId === "wrong-agent")!;
+  assert.equal(rejected.status, "execution_error");
+  assert.equal(rejected.assessment, undefined);
+  assert.match(rejected.error!, /agent or mode/);
+}));
+
+test("simulated runner deduplicates agent, mode and day independently, with per-agent skipped history", () => withStore(async store => {
+  const day = "2026-09-15", executions: string[] = [];
+  const runner = new EvalRunner(store, async () => ({ grade }), "fake-judge", "fake-grader");
+  for (const agentId of EVAL_AGENT_IDS) {
+    await store.write<EvalBatch>("batches", {
+      id: `${agentId}-recorded`, agentId, mode: "recorded", attempt: "scheduled", scheduledDay: day,
+      startedAt: DUE, status: "completed", runIds: [],
+    });
+    const adapter = {
+      id: agentId, version: "1", model: "fake", promptVersion: "fake",
+      scenarios: [{ id: "same-scenario", version: "1", request: "Fixture", context: grade.context, expectations: "Fixture", initial: {} }],
+      execute: async (): Promise<Assessment> => {
+        executions.push(agentId);
+        return { ...assessment("sim"), agentId, mode: "simulated" };
+      },
+    };
+    const first = await runner.simulated(adapter, new AbortController().signal, { scheduledDay: day });
+    const repeated = await runner.simulated(adapter, new AbortController().signal, { scheduledDay: day });
+    assert.equal(first.id, repeated.id);
+    assert.equal(first.mode, "simulated");
+    assert.equal(first.status, "completed");
+  }
+  assert.deepEqual(executions, [...EVAL_AGENT_IDS]);
+  assert.equal(new Set((await store.list<EvalRun>("runs")).map(run => run.batchId)).size, 3);
+  const prior = (agentId: string | undefined, scheduledDay: string): EvalBatch => ({
+    id: `${agentId || "legacy"}-${scheduledDay}`, agentId: agentId!, scheduledDay, mode: "simulated",
+    attempt: "scheduled", startedAt: START, status: "completed", runIds: [],
+  });
+  const history = [
+    prior(undefined, "2026-09-10"), prior("scheduled_task", "2026-09-12"), prior("realtime", "2026-09-14"),
+    ...(await store.list<EvalBatch>("batches")),
+  ];
+  assert.deepEqual(simulatedSkippedDays(history, day, "tv"), ["2026-09-11", "2026-09-12", "2026-09-13", "2026-09-14"]);
+  assert.deepEqual(simulatedSkippedDays(history, day, "scheduled_task"), ["2026-09-13", "2026-09-14"]);
+  assert.deepEqual(simulatedSkippedDays(history, day, "realtime"), []);
 }));
 
 test("scheduled recorded batches neither replace simulated execution nor contaminate skipped days and baselines", () => withStore(async store => {

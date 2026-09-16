@@ -1,6 +1,9 @@
 export type Verdict = "pass" | "fail" | "unknown" | "not_applicable";
 export type EvalMode = "simulated" | "recorded";
 export type Attempt = "scheduled" | "confirmation" | "on_demand";
+export const EVAL_AGENT_IDS = ["tv", "scheduled_task", "realtime"] as const;
+export type EvalAgentId = typeof EVAL_AGENT_IDS[number];
+export const RECORDED_IMPORT_VERSION = "recorded-import-3";
 export interface Evidence {
   id: string;
   kind: "initial" | "tool" | "image" | "final" | "context" | "assertion";
@@ -142,6 +145,7 @@ export interface EvalBatch {
 }
 export interface EvalAlert {
   id: string;
+  agentId?: string;
   key: string;
   batchId: string;
   createdAt: string;
@@ -160,6 +164,7 @@ export interface EvalRunSummary extends Omit<EvalRun, "assessment"> {
 export interface RecordedEvalAttempt {
   id: string;
   jobId: string;
+  agentId?: string;
   sourceSessionId: string;
   status: "queued" | "running" | "evaluated" | "eval_error";
   requestedAt: string;
@@ -176,6 +181,7 @@ export interface RecordedSessionEvaluation {
 }
 export interface RecordedSession {
   sessionId: string;
+  agentId: string;
   userPrompt: string;
   startedAt: string;
   completedAt?: string;

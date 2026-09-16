@@ -1,6 +1,6 @@
 # Offline assistant evals
 
-Phase 1 implementation is available in `service/src/evals/`. This document records the design and remaining refinements; domain terminology lives in [CONTEXT.md](../CONTEXT.md#assistant-evaluation). See [testing instructions](./offline-eval-testing.md) for the dashboard, judge checks, and on-demand runs.
+The shared implementation in `service/src/evals/` supports TVAgent, ScheduledTaskAgent and the Realtime Voice Agent. Each has a registered adapter, a bounded simulated suite, recorded-run import and agent-specific judge reference cases. This document records the design and remaining refinements; domain terminology lives in [CONTEXT.md](../CONTEXT.md#assistant-evaluation). See [testing instructions](./offline-eval-testing.md) for the dashboard and on-demand commands.
 
 ## Agreed modes and cadence
 
@@ -8,18 +8,18 @@ Both modes are in scope and must remain distinguishable in execution, reports, a
 
 | Mode | Assessed behavior | When it runs |
 | --- | --- | --- |
-| Simulated eval | A new assistant run against a controlled simulated environment; TVAgent in phase 1 | Daily in the background to detect regressions |
-| Recorded-run eval | A completed real assistant run, graded from retained evidence; TVAgent in phase 1 | Daily at 1:00 a.m. America/New_York and on demand through the portal |
+| Simulated eval | A new run of the selected agent against its controlled simulated environment | Daily from 3:00 a.m. America/New_York, sequentially by agent |
+| Recorded-run eval | A completed real run of the selected agent, graded from retained evidence | On demand for all supported agents; TVAgent also daily at 1:00 a.m. America/New_York |
 
 "Real evals" is the user's term for recorded-run evals. These read the original run's telemetry and Cosmos data; they do not replay its device actions. Keep simulated and recorded-run scores separate.
 
 Simulated evals check orchestration in a controlled environment. Recorded-run evals assess completed real runs end to end, from the original request through intermediate objectives, recovery, and the task outcome supported by retained evidence. End-to-end assessment does not authorize new live-device execution, and incomplete retained evidence must remain distinguishable from task failure.
 
-Spending limits are deferred by user choice. The runner, dashboard at `/dashboards/evals`, and backend-host scheduler are implemented. `OFFLINE_EVAL_ENABLED=false` disables daily scheduling; it is enabled by default. The running development backend has started scheduled batches through its file watcher.
+Spending limits are deferred by user choice. The runner, dashboard at `/dashboards/evals`, and backend-host scheduler are implemented. `OFFLINE_EVAL_ENABLED=false` disables daily scheduling; it is enabled by default when the backend starts.
 
 ### Agreed recorded-run scheduling direction
 
-Recorded-run evals support scheduled execution as well as manual launches from the existing eval portal. This replaces the earlier on-demand-only policy; it does not authorize replaying real device actions.
+TVAgent recorded-run evals support scheduled execution as well as manual launches from the existing eval portal. This replaces the earlier on-demand-only policy for TVAgent; ScheduledTaskAgent and Realtime recorded evaluations remain on demand. It does not authorize replaying real device actions.
 
 Run recorded-run evals daily at 1:00 a.m. in the existing `America/New_York` timezone. Keep the simulated suite's 3:00 a.m. schedule unchanged. Manual selection and explicit re-evaluation remain available independently of scheduled execution.
 
@@ -51,19 +51,19 @@ The implemented scheduler preserves these constraints:
 - Reuse existing discovery and evaluation-history resolution, including legacy completed results and error-only attempts. Refresh status when admitting the job under the shared submission lock so a portal evaluation cannot race automatic selection into a duplicate paid attempt.
 - Freeze the selected session IDs when the nightly job is accepted. Do not append newly arriving runs, replace unsuccessful evaluations, or top up the same night's batch after it finishes. Preserve the existing per-session queued/running/completed/error lifecycle.
 - Persist a daily scheduling outcome when there are no eligible sessions, without making judge calls. Distinguish a verified empty selection from incomplete discovery and discovery/history errors; show warnings and failures instead of presenting them as complete coverage. A terminal daily outcome must not cause repeated polling launches for that date.
-- Scope daily claims and duplicate checks by eval mode and local schedule date. Supervisor admission, runner deduplication, and the worker's simulated skipped-day lookup are mode-aware, so a recorded batch neither suppresses the 3:00 a.m. simulated batch nor changes its historical bookkeeping.
+- Scope daily claims and duplicate checks by agent, eval mode and local schedule date; legacy jobs without an agent ID belong to TV. Supervisor admission, runner deduplication, and the worker's simulated skipped-day lookup preserve this separation, so a recorded batch neither suppresses any 3:00 a.m. simulated suite nor changes its historical bookkeeping.
 - Pass scheduled provenance through the recorded worker and runner into jobs, batches, and per-run results. Recorded scheduling must not be saved as an on-demand batch or enter simulated regression baselines.
 - Keep the existing single-worker admission, interruption recovery, and explicit portal retry behavior. A failed automatic job is visible and terminal for its scheduled date, not permission to repeatedly start paid work that day.
 - Show both schedules and their enabled state in the portal while retaining manual recorded evaluation and re-evaluation controls. Honor explicit scheduler-disable configuration without disabling those manual actions.
-- Cover default enablement, persisted cutoff across restart/re-enable, old-history exclusion, all prior-attempt exclusions, the 100-session oldest-first limit and carryover, no-op days, partial/failed discovery, unreadable attempt history, portal races, same-day catch-up, mode-separated daily identities, and the repeated autumn 1:00 a.m. hour.
+- Cover default enablement, persisted cutoff across restart/re-enable, exclusion of old history and non-TV sessions, all prior-attempt exclusions, the 100-session oldest-first limit and carryover, no-op days, partial/failed discovery, unreadable attempt history, portal races, same-day catch-up, agent/mode-separated daily identities, and the repeated autumn 1:00 a.m. hour.
 
 ## Agreed recorded-run selection dialog
 
 Implemented in the backend-served eval dashboard and telemetry viewer. Session discovery reads metadata only; opening evaluation details loads the retained evidence for the chosen attempt.
 
 - Provide a dialog listing sessions with multi-selection for on-demand recorded-run evaluation.
-- Show only finished real TVAgent runs, including runs that ended in error. Exclude unfinished runs and other agents.
-- Discover sessions from both retained telemetry and Cosmos TV-flow records, deduplicating by session ID and labeling the available evidence sources. Cosmos-only sessions remain eligible; missing evidence may yield unknown verdicts.
+- Show only finished real runs for the selected agent, including runs that ended in error. Exclude unfinished runs and unsupported agents.
+- Discover TV sessions from retained telemetry and Cosmos TV-flow records, deduplicating by session ID and labeling the sources. ScheduledTaskAgent and Realtime sessions use retained telemetry only; they never query TV-flow storage. Cosmos-only TV sessions remain eligible; missing evidence may yield unknown verdicts.
 - If a source fails, keep sessions from the available source selectable, show a prominent incomplete-list warning naming the unavailable source, and provide retry. Do not present a partial list as complete.
 - Show per-session eval status: **Not evaluated**, **Queued**, **Running**, **Evaluated**, or **Eval error**, with the verdict separate.
 - **Evaluated** includes pass, fail, and unknown verdicts. **Eval error** means evaluation did not finish, not that the assessed assistant failed its task.
@@ -78,11 +78,12 @@ Implemented in the backend-served eval dashboard and telemetry viewer. Session d
 - Provide **Select this page**, preserving explicit selections across pages and displaying the total selected count. Keep the existing maximum of 100 sessions per batch; do not silently select matching sessions on other pages.
 - Provide request-text/session-ID search, a date-range filter, and an eval-status filter. Default to all eligible sessions, newest first, rather than hiding previously evaluated sessions.
 - Preserve selections hidden by changed search or filters. Show the total selected and hidden-selected counts, provide **Review selected** and **Clear selection**, and include all selected sessions in the launch summary.
+- Preserve selections separately when switching agents. Each submission contains exactly one agent's sessions, and uncertain submissions retain both the agent and request ID.
 - Before submission, show an inline breakdown of new evaluations and re-evaluations, the total selection, and a notice that grading makes paid model calls without repeating device actions. Use one explicit Run button, without a second confirmation dialog.
 
 ### Session discovery and attempt persistence
 
-- `GET /api/evals/sessions` combines eligible telemetry and Cosmos metadata with saved evaluation status. Discovery is cached for 15 seconds; `?refresh=true` retries the sources immediately.
+- `GET /api/evals/sessions?agentId=tv|scheduled_task|realtime` combines eligible metadata with saved evaluation status. Omit the filter to discover all supported agents. Discovery is cached per agent for 15 seconds; `?refresh=true` retries the applicable sources immediately.
 - `GET /api/evals/session-statuses` supplies the telemetry viewer's status badges without querying Cosmos or loading full evidence. An unavailable status store is an error, never a claim that sessions have not been evaluated.
 - `GET /api/evals/sessions/:sessionId/history` returns all retained attempts, including failures before a grading result exists. Existing run-detail links continue to use `/api/evals/runs/:id`.
 - Recorded submissions to `POST /api/evals/jobs` accept an optional UUID `requestId`. The picker reuses it when resolving an uncertain submission, so a lost response or repeated click does not create another paid batch. An intentional later re-evaluation uses a new identifier.
@@ -91,13 +92,13 @@ Implemented in the backend-served eval dashboard and telemetry viewer. Session d
 
 ## Agreed daily schedule
 
-- Start the recorded-run evaluation batch daily at 1:00 a.m. in `America/New_York`.
-- Start the simulated suite daily at 3:00 a.m. in `America/New_York`.
+- Start the TVAgent recorded-run evaluation batch daily at 1:00 a.m. in `America/New_York`.
+- Start the registered simulated suites daily from 3:00 a.m. in `America/New_York`, sequentially.
 - Run the eval workload on the same machine as the backend.
 - Use `America/New_York` for dashboard day boundaries and the previous-seven-complete-days comparison window.
 - Use the named timezone so the schedule follows local daylight-saving changes.
 
-The backend supervisor launches a separate worker process for eval execution. It checks both schedules, persists jobs and batches, and prevents duplicate scheduled work using mode-separated daily identities.
+The backend supervisor launches a separate worker process for eval execution. It checks both schedules and, from 3:00 a.m., runs each registered agent's simulated suite sequentially, starting the next available agent on a subsequent scheduler tick. It persists jobs and batches and prevents duplicate scheduled attempts for the same agent, mode and local day. A recorded batch or failed TV startup does not suppress the other simulated suites. There is still only one active worker and no persistent queue of additional jobs.
 
 ## Agreed missed-run handling
 
@@ -125,7 +126,7 @@ The following limits apply to simulated batches. Recorded scheduling has its sep
 - Add at most one confirmation attempt for a scenario with a new failure or qualifying slowdown under the agreed alert rules.
 - Distinguish scheduled attempts from confirmation attempts in saved results and dashboard views.
 - Preserve the original scheduled outcome even when a confirmation attempt succeeds.
-- Phase 1 has twelve scenarios, bounding a daily batch to twelve scheduled attempts plus at most twelve confirmation attempts. Per-run execution and cancellation limits remain an implementation concern; a monetary cap is not required for the initial version.
+- Each registered suite has twelve scenarios: thirty-six scheduled attempts across TV, ScheduledTask and Realtime, plus at most thirty-six confirmation attempts. The dashboard reports the selected suite size. No automatic model matrix or unbounded retries are introduced.
 
 ## Agreed cost policy
 
@@ -136,7 +137,7 @@ The following limits apply to simulated batches. Recorded scheduling has its sep
 
 ## Agreed model and prompt selection
 
-- Daily simulated evals assess the backend's currently configured model and prompts. Phase 1 does not run an automatic matrix of alternative models or prompts.
+- Daily simulated evals assess the backend's currently configured model and prompts. TVAgent and ScheduledTaskAgent use `AI_MODEL_ADVANCED`; Realtime uses `AI_MODEL_REALTIME` through the native Azure Realtime API, not a substituted chat-completions model. No automatic matrix of alternative models or prompts is run.
 - Alternative model or prompt configurations are evaluated on demand through simulated evals. Recorded-run evals continue to assess the configuration used by the original completed run; they cannot test a replacement model's behavior.
 - Resolve and record the effective assessed configuration at batch start, including relevant prompt and skill versions, and keep it fixed for the batch and any confirmation attempts. Do not silently mix configurations if the backend changes during a batch.
 - Retain configuration identifiers with every result. Historical regression comparisons may cross assessed model/prompt versions intentionally; display that change while holding scenario, simulator, and grading conditions comparable. Simulated-to-real fidelity comparisons still align assessed configurations where known.
@@ -185,8 +186,8 @@ The method-selection percentages in `docs/orchestrator-learning.md` are advisory
 
 ## Agreed phases and extensibility
 
-- Phase 1 evaluates TVAgent only, in both simulated and recorded-run modes, with the twelve-scenario simulated suite below.
-- Other agents are phase 2. The framework must support adding them without rebuilding scheduling, result storage, comparisons, or the dashboard.
+- The initial TVAgent implementation supplies the twelve-scenario suite below.
+- Phase 2 adds ScheduledTaskAgent and Realtime Voice Agent adapters while reusing scheduling, result storage, comparisons, recorded-attempt lifecycle and the dashboard.
 - The first suite should help answer: "Can I change TVAgent's model or prompts without making task execution or completion reporting worse?"
 - Simulated evals support controlled regression checks. Recorded-run evals assess actual historical behavior and cannot establish how a different model would behave after choosing different actions.
 - Assess both execution decisions and whether completion claims are supported by the observations available to the agent.
@@ -208,7 +209,9 @@ Implement the extensibility requirement through a shared eval core and registere
 - Keep common task and step outcomes, timing, and evidence coverage available to all adapters. Allow typed domain-specific context and optional evidence such as images. An agent that does not use screens must not need placeholder screenshot data.
 - Keep baseline and fidelity comparisons within the relevant agent and compatible scenario/context. Expose agent filtering in the shared dashboard without pooling unrelated agent outcomes into a regression verdict.
 - For simulation, each adapter must substitute all effectful dependencies, including initial context reads, tool execution, external input, memory, and completion persistence. Missing simulated capabilities fail explicitly rather than falling through to live services. Recorded-run evaluation reads retained evidence without invoking live agent actions.
-- The first implementation supplies only the TV adapter. Adding another agent in phase 2 should consist of registering its adapter, scenarios, and domain checks, while reusing the core lifecycle and reporting.
+- `registry.ts` registers the `tv`, `scheduled_task` and `realtime` adapters, pure scenario catalogs and retained-run loaders. The worker selects the registration for every mode; recorded grading and judge calibration do not construct or run the assessed live agent.
+- `loop.ts` shares isolated model-loop execution between TVAgent and ScheduledTaskAgent. Realtime uses its native WebSocket protocol with text-only fixture turns. It does not call the production WebSocket proxy or start real specialist jobs.
+- The dashboard's agent selector scopes simulations, session selection, histories, alerts, batches and reference checks. Legacy records without an agent field retain their original TV attribution.
 
 The existing `AgentDefinition` contract and registry in `service/src/agents/core/` already separate agent definitions from shared orchestration; TVAgent and ScheduledTaskAgent both use that contract. Reuse the applicable production agent behavior through isolated dependencies so evals exercise the agent being assessed. The production registry alone is not an eval isolation boundary: TV initialization reads current device state, and completion can persist flow memory. Other entry points can be supported through their eval adapter without requiring every future agent to use the same production loop.
 
@@ -248,7 +251,7 @@ The recorded-run judge produces categorical judgments and a structured scoring a
 
 The first scoring unit is one completed TVAgent run identified by its existing source session ID. Assess that run's full request and all internal recovery, including runs ending in error. Do not combine multiple TVAgent runs or reconstruct a score for the original voice request across other agents in this version.
 
-Numeric scores apply only to recorded-run evals in this version. Simulated evals retain their existing categorical orchestration checks; do not add a simulated orchestration score or mix simulated results into recorded task-score trends.
+Numeric scores apply only to TVAgent recorded-run evals in this version. ScheduledTaskAgent and Realtime recorded evaluations, and all simulated evaluations, retain categorical judgments without a numeric score. Show scoring as not applicable for those results, not as a legacy missing score or insufficient-evidence outcome. Do not mix simulated results into recorded task-score trends.
 
 Keep individual task-step results and the existing task fulfillment, handling, recovery, and reporting judgments visible separately.
 
@@ -322,6 +325,8 @@ The scoring contract is implemented in the shared grade types, mode-aware judge,
 
 The saved `GRADER_VERSION` identifies the shared configuration of both categorical and recorded-scoring prompts/schemas, allowing comparable new simulated and recorded results to use the existing matching rules. The scoring rubric also has its own version in each numeric result, and calibration records retain the recorded prompt/schema version. This configuration upgrade does not rewrite old results or claim compatibility with their older grader version; historical comparisons may show **Collecting baseline** until enough comparable new results exist. Simulated judgments remain categorical and use the existing categorical prompt.
 
+The combined multi-agent retained-evidence importer uses `recorded-import-3`, shared by the registry and runner. It preserves agent identity, LLM step numbers, tool call IDs and timestamped lifecycle events, without duplicating events or inventing tool-result timestamps. Evidence remains grouped by source/type; missing chronology stays an explicit gap.
+
 ## Existing verification evidence and agreed reuse
 
 The real TVAgent already collects verification evidence; missing task-step labels do not mean missing verification:
@@ -364,9 +369,11 @@ For "Play latest Telugu songs on Apple TV", confirmed YouTube playback alone doe
 
 ### Judge validation and proposed initial review
 
-The judge has its own [reference cases](./offline-eval-judge-reference-cases.md), separate from the twelve scenarios used to test TVAgent. Six categorical examples cover verified success, unsupported success, wrong content, valid alternative methods, honest failure, and missing evidence. Nine additional synthetic recorded-scoring fixtures check progress, mistake severity, calculation, duplicated evidence, and component-specific evidence sufficiency. They include concise completion messages so correct behavior is not rewarded merely for a longer explanation.
+TVAgent judge validation has its own [reference cases](./offline-eval-judge-reference-cases.md), separate from the twelve scenarios used to test TVAgent. Six categorical examples cover verified success, unsupported success, wrong content, valid alternative methods, honest failure, and missing evidence. Nine additional synthetic recorded-scoring fixtures check progress, mistake severity, calculation, duplicated evidence, and component-specific evidence sufficiency. They include concise completion messages so correct behavior is not rewarded merely for a longer explanation.
 
-The user accepted the six categorical reference judgments; the nine scoring fixture expectations derive from the negotiated rubric. The **Validate judge** action and `eval:calibrate` command check all fifteen, retaining expected and actual scores and semantic assessments where applicable. Scoring fixtures do not introduce new categorical handling thresholds, so handling is `not_checked` for those nine cases. Keep separate reviewed held-out cases for validation when tuning the rubric; these smoke checks do not establish general judge accuracy. Judge self-confidence is not a measurement of accuracy.
+The user accepted the six TV categorical reference judgments; the nine TV scoring fixture expectations derive from the negotiated rubric. TV calibration checks all fifteen, retaining expected and actual scores and semantic assessments where applicable. Scoring fixtures do not introduce new categorical handling thresholds, so handling is `not_checked` for those nine cases.
+
+ScheduledTaskAgent and Realtime each have six categorical starter cases covering their own successful outcomes, incorrect actions or claims, and incomplete evidence. **Validate judge** and `eval:calibrate -- --agent <id>` check only the selected agent and persist separate calibration reports. The new starter labels are not represented as user-reviewed. Keep separate reviewed held-out cases for validation when tuning the rubric; these smoke checks do not establish general judge accuracy. Judge self-confidence is not a measurement of accuracy.
 
 These reference checks assess the grader itself. Simulation fidelity remains a separate comparison of simulated and real task/step behavior. The proposed review workflow follows the guidance to use specific criteria and calibrate automated grading against human judgments in [OpenAI's evaluation best practices](https://developers.openai.com/api/docs/guides/evaluation-best-practices).
 
@@ -401,6 +408,16 @@ Start with twelve scenarios grounded in the request families and failure cases i
 
 The twelve scenarios are agreed for TVAgent in phase 1. New task-step groups discovered in recorded data remain visible in the dashboard; adding a comparison group does not itself define a new simulated scenario or bring another agent into phase 1.
 
+### ScheduledTaskAgent suite
+
+The twelve fixtures cover absolute-time announcements, relative time across the spring DST transition, recurring actions with resolved entities, today's task query, an update preserving other fields, occurrence cancellation, family cancellation, ambiguous deletion, a missing entity, past dates, invalid dates and storage-write failure. Clocks and `America/New_York` are fixed per fixture, including confirmation attempts. Assertions check exact requested storage effects and unchanged unrelated records; rejected writes never become successful scheduling.
+
+### Realtime Voice Agent suite
+
+The twelve Realtime fixtures exercise routing to direct Home Assistant, ScheduledTaskAgent and TV capabilities, clarification and protected/bulk-action confirmation, multi-turn confirmation and paused-run control, conversation, fixture-backed web information and scoped memory. Tool outputs represent accepted asynchronous jobs rather than completed device actions. The actual configured Realtime deployment receives text and production tool contracts, with no microphone input, audio output or live effectful executors. Text/tool quality must not be reported as speech or end-to-end audio quality.
+
+Only newly retained, terminal Realtime turn traces are discoverable. Earlier voice turns without lifecycle telemetry are not manufactured from partial conversation memory. Recorded traces retain their source model and partial-evidence status; regrading does not execute a new voice or device turn.
+
 ## Agreed visual coverage
 
 - Include actual images for screenshot-based navigation, search, typing, and verification in v1.
@@ -429,7 +446,8 @@ The [local data audit](./offline-eval-data-audit.md) supports starting recorded-
 ## Remaining refinements and current limits
 
 - TV fixtures render simplified screens and model tool effects. They exercise the current prompt, skills, tool contracts, and shared model loop, while replacing live executors and persistence. They do not establish full fidelity to every real TV UI or device integration.
-- The judge deployment is configurable independently through `OFFLINE_EVAL_JUDGE_MODEL`; calibration checks six reviewed categorical cases and nine rubric-derived recorded-scoring fixtures. A separately reviewed held-out set is still needed before claiming broader grader accuracy.
+- The judge deployment is configurable independently through `OFFLINE_EVAL_JUDGE_MODEL`. TV calibration checks six reviewed categorical cases and nine rubric-derived recorded-scoring fixtures; ScheduledTaskAgent and Realtime each check their six categorical starter cases. Reports are agent-scoped. A separately reviewed held-out set is still needed before claiming broader grader accuracy.
+- ScheduledTask fixtures model task-management behavior, not future firing reliability. Realtime fixtures assess native-model text/tool decisions, not wake-word detection, ASR, microphone timing, audio rendering or a real specialist's eventual execution.
 - Spending caps remain deferred. Timing comparisons are simulated execution wall times with virtual device waits, not a measurement of real device latency.
 - Notifications currently use persistent dashboard alerts. External delivery has no selected destination.
 - Recorded runs are selected through the multi-select session dialog, or by session ID through the CLI/API. Missing metadata or evidence remains unknown; historic system-only prompt hashes cannot claim equivalence with full simulated prompt/skill/tool manifests.

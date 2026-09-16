@@ -16,7 +16,7 @@ function flow(sessionId: string, overrides: Partial<SessionFlowMetadata> = {}): 
 }
 const ids = (result: ReturnType<typeof mergeRecordedSessions>) => result.sessions.map(session => session.sessionId);
 
-test("eligible telemetry requires a finished TV lifecycle, including terminal errors", () => {
+test("eligible telemetry requires a finished supported-agent lifecycle, including terminal errors", () => {
   const result = mergeRecordedSessions([
     trace("completed"), trace("error", { status: "error" }),
     trace("running", { status: "running" }),
@@ -85,7 +85,7 @@ test("union uses exact session identity and telemetry metadata, with accurate av
   ]);
   const shared = result.sessions.find(session => session.sessionId === "shared");
   assert.deepEqual(shared, {
-    sessionId: "shared", userPrompt: "Open YouTube", startedAt, completedAt,
+    sessionId: "shared", agentId: "tv", userPrompt: "Open YouTube", startedAt, completedAt,
     status: "completed", sources: ["telemetry", "cosmos"],
   });
   assert.deepEqual(result.sessions.find(session => session.sessionId === "Trace_Only")?.sources, ["telemetry"]);
@@ -110,7 +110,7 @@ test("metadata output is newest first across sources and does not access retaine
   const result = mergeRecordedSessions([record, trace("middle")], [stored]);
   assert.deepEqual(ids(result), ["new", "middle", "old"]);
   assert.deepEqual(Object.keys(result.sessions[0]).sort(),
-    ["completedAt", "sessionId", "sources", "startedAt", "status", "userPrompt"]);
+    ["agentId", "completedAt", "sessionId", "sources", "startedAt", "status", "userPrompt"]);
   assert.equal(result.sessions[0].completedAt, stored.createdAt);
   assert.equal("evaluation" in result.sessions[0], false);
 });
@@ -177,6 +177,37 @@ test("an available empty source remains a successful partial discovery", async t
   });
   assert.deepEqual(result.sessions, []);
   assert.equal(result.warnings.length, 1);
+});
+
+test("other supported agents are discovered without mixing conflicting TV-flow identities", () => {
+  const result = mergeRecordedSessions([
+    trace("scheduled", { agentType: "scheduled_task" }),
+    trace("voice-error", { agentType: "realtime", status: "error" }),
+    trace("conflict", { agentType: "scheduled_task" }),
+    trace("unfinished-voice", { agentType: "realtime", status: "running" }),
+  ], [flow("conflict")]);
+  assert.deepEqual(result.sessions.map(session => [session.sessionId, session.agentId]),
+    [["scheduled", "scheduled_task"], ["voice-error", "realtime"]]);
+  assert.ok(result.sessions.every(session => session.sources.join() === "telemetry"));
+});
+
+test("non-TV discovery never reads Cosmos or mislabels its absence as incomplete coverage", async () => {
+  for (const agentId of ["scheduled_task", "realtime"] as const) {
+    const result = await discoverRecordedSessions({
+      loadTelemetry: () => [trace("selected", { agentType: agentId }), trace("tv-only")],
+      loadCosmos: async () => { throw new Error("Cosmos must not be queried for this agent"); },
+    }, agentId);
+    assert.deepEqual(ids(result), ["selected"]);
+    assert.deepEqual(result.warnings, []);
+  }
+});
+
+test("non-TV telemetry failure is an error, not a successful empty skipped source", async t => {
+  t.mock.method(console, "warn", () => {});
+  await assert.rejects(discoverRecordedSessions({
+    loadTelemetry: () => { throw new Error("Telemetry unavailable"); },
+    loadCosmos: async () => { throw new Error("Not a source for this agent"); },
+  }, "realtime"), /No retained-session source is available.*Telemetry unavailable/);
 });
 
 test("discovery logs and returns invalid-identifier warnings", async t => {

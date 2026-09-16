@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { RecordedDailyOutcome } from "../../service/src/evals/scheduling";
-import { enabledSchedules, makeRun, makeSession, openPortal, unsafeReason } from "./evalPortalFixture";
+import { agents, enabledSchedules, makeRun, makeSession, openPortal, unsafeReason } from "./evalPortalFixture";
 
 const outcome = (overrides: Partial<RecordedDailyOutcome> = {}): RecordedDailyOutcome => ({
   id: "recorded-2026-09-15", mode: "recorded", day: "2026-09-15", status: "queued",
@@ -45,6 +45,37 @@ test("both New York schedules, persisted cutoff, and scheduled recorded provenan
   await expect(rows.filter({ hasText: "manual-recorded" })).toContainText("On demand");
   await expect(rows.filter({ hasText: "scheduled-simulated" })).toContainText("4 samples");
   await expect(page.locator("#batches")).toContainText("recorded · Scheduled");
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpectedRequests).toEqual([]);
+});
+
+test("the recorded schedule is TV-only while simulated schedules cover every registered agent", async ({ page }) => {
+  const fresh = { status: "not_evaluated" as const, attemptCount: 0 };
+  const fixture = await openPortal(page, {
+    schedules: enabledSchedules(),
+    sessions: [makeSession("voice-manual", fresh, "realtime")],
+    statuses: { "voice-manual": fresh },
+  });
+  const recorded = page.locator("#recorded-schedule"), simulated = page.locator("#simulated-schedule");
+  for (const agent of agents) {
+    await page.locator("#agent").selectOption(agent.id);
+    await expect(page.locator("#suite-description")).toContainText(agent.name);
+    await expect(recorded.getByRole("heading")).toHaveText("Recorded runs · TV only");
+    await expect(recorded).toContainText("Automatic recorded grading covers TVAgent only");
+    await expect(recorded).toContainText("Other agents remain available for manual recorded evaluation");
+    await expect(recorded).toContainText("Daily at 1 a.m.");
+    await expect(simulated.getByRole("heading")).toHaveText("Simulated suites · All registered agents");
+    await expect(simulated).toContainText("Daily at 3 a.m.");
+    for (const registered of agents) await expect(simulated).toContainText(registered.name);
+    await expect(page.locator("#simulate")).toBeEnabled();
+    await expect(page.locator("#calibrate")).toBeEnabled();
+  }
+  await page.locator("#recorded").click();
+  await page.getByRole("checkbox", { name: "Select session voice-manual", exact: true }).check();
+  await page.locator("#session-run").click();
+  await expect(page.locator("#session-message")).toContainText("Batch accepted");
+  expect(fixture.submissions).toHaveLength(1);
+  expect(fixture.submissions[0]).toMatchObject({ mode: "recorded", agentId: "realtime", sessionIds: ["voice-manual"] });
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpectedRequests).toEqual([]);
 });
