@@ -20,6 +20,42 @@ export interface StepGrade extends Judgment {
   alreadySatisfied: boolean;
   groupId?: string;
 }
+export type TaskProgressLevel = "none" | "prerequisites" | "partial" | "nearly_complete" | "complete";
+export type MistakeSeverity = "minor" | "moderate" | "major";
+export type ScoringComponent = "progress" | "execution" | "reporting";
+export interface ScoringEvidence {
+  sufficient: boolean;
+  reason: string;
+  evidenceIds: string[];
+}
+export interface TaskMistakeEpisode {
+  id: string;
+  severity: MistakeSeverity;
+  reason: string;
+  evidenceIds: string[];
+}
+export interface TaskScoringAssessment {
+  progress: { level: TaskProgressLevel | "unknown"; reason: string; evidenceIds: string[] };
+  mistakes: TaskMistakeEpisode[];
+  evidence: Record<ScoringComponent, ScoringEvidence>;
+}
+export type TaskEvalScore = {
+  status: "scored";
+  rubricVersion: string;
+  value: number;
+  baseScore: number;
+  deductions: Array<TaskMistakeEpisode & { points: number }>;
+  totalDeductions: number;
+  band: { min: number; max: number };
+  bandAdjustedScore: number;
+  reportingCeiling?: number;
+} | {
+  status: "unscored";
+  rubricVersion: string;
+  value: null;
+  reason: string;
+  blockingComponents: ScoringComponent[];
+};
 export interface Grade {
   task: Judgment;
   handling: Judgment;
@@ -28,6 +64,8 @@ export interface Grade {
   steps: StepGrade[];
   context: ComparisonContext;
   gaps: string[];
+  scoringAssessment?: TaskScoringAssessment;
+  score?: TaskEvalScore;
 }
 export interface Usage { inputTokens?: number; outputTokens?: number; totalTokens?: number }
 export interface Assessment {

@@ -3,6 +3,8 @@ import type { TvFlowMemoryDocument } from "../agents/tv/flowMemory";
 import type { Assessment, Evidence } from "./types";
 import { digest } from "./store";
 
+export const RECORDED_IMPORT_VERSION = "recorded-import-2";
+
 export function assessmentFromRecord(trace?: AgentTrace, flow?: TvFlowMemoryDocument): Assessment {
   if (!trace && !flow) throw new Error("Completed run not found in telemetry or Cosmos");
   if (trace && !["completed", "error"].includes(trace.status)) throw new Error("Recorded evals require a completed assistant run");
@@ -13,16 +15,24 @@ export function assessmentFromRecord(trace?: AgentTrace, flow?: TvFlowMemoryDocu
   const add = (item: Omit<Evidence, "id">) => evidence.push({ id: `e${evidence.length + 1}`, ...item });
   if (trace) {
     // LLM snapshots supply initial state and context that Cosmos steps often omit.
-    for (const step of trace.llmSteps) add({ kind: "context", timestamp: step.timestamp, text: JSON.stringify({ messages: step.messages, text: step.text, toolCalls: step.toolCalls }), source: `telemetry:${trace.sessionId}:llm:${step.stepNumber}` });
-    for (const [i, result] of trace.toolResults.entries()) add({ kind: "tool", text: JSON.stringify({ observation: result.observation, toolSuccess: result.toolSuccess }), toolName: result.toolName, args: result.args,
+    for (const step of trace.llmSteps) add({ kind: "context", timestamp: step.timestamp, text: JSON.stringify({
+      stepNumber: step.stepNumber, systemMessages: step.systemMessages, messages: step.messages, text: step.text, toolCalls: step.toolCalls,
+    }), source: `telemetry:${trace.sessionId}:llm:${step.stepNumber}` });
+    for (const [i, result] of trace.toolResults.entries()) add({ kind: "tool", text: JSON.stringify({
+      toolCallId: result.toolCallId || undefined, observation: result.observation, toolSuccess: result.toolSuccess,
+    }), toolName: result.toolName, args: result.args,
       durationMs: result.durationMs, source: `telemetry:${trace.sessionId}:tool:${result.toolCallId || i}` });
     for (const image of trace.screenshots) add({ kind: "image", text: `Screenshot ${image.outcome}`, timestamp: image.timestamp, image: image.dataUrl, source: `telemetry:${trace.sessionId}:screenshot:${image.stepIndex}` });
+    for (const [i, event] of trace.events.entries()) add({
+      kind: "context", timestamp: event.timestamp, text: JSON.stringify({ type: event.type, message: event.message, data: event.data }),
+      source: `telemetry:${trace.sessionId}:event:${i}`,
+    });
   }
   if (flow) for (const step of flow.steps) add({ kind: "tool", toolName: step.toolName, args: step.toolArguments,
     text: JSON.stringify({ observation: step.observation, toolSuccess: step.toolSuccess, appUiContext: step.appUiContext }), source: `cosmos:${flow.id}:step:${step.index}` });
   const finalResponse = trace?.finalMessage || flow?.finalMessage || "";
   add({ kind: "final", text: finalResponse || "Final response was not retained" });
-  add({ kind: "context", text: "Historical record may be incomplete. Legacy success flags and executionScore are proxies, not verified outcomes. Cosmos steps may omit automatically executed tools. Images, observations, or context absent here are unknown; do not infer that the original agent lacked them." });
+  add({ kind: "context", text: "Historical record may be incomplete. Legacy success flags and executionScore are proxies, not verified outcomes. Cosmos steps may omit automatically executed tools. Images, observations, or context absent here are unknown; do not infer that the original agent lacked them. Evidence is grouped by source/type, not a merged chronological timeline. Reconstruct available order from LLM step numbers, tool call IDs, and timestamps; missing order remains an evidence gap. Repeated snapshots, events, and Cosmos copies are not additional actions or mistakes." });
   const models = new Set(trace?.llmSteps.map(s => s.requestModel).filter(Boolean));
   const system = trace?.llmSteps.find(s => s.systemMessages?.length)?.systemMessages;
   return { agentId: "tv", mode: "recorded", request: trace?.userPrompt || flow!.userPrompt, finalResponse,

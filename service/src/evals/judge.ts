@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { Assessment, ComparisonContext, Grade, Judge, StepGroup, Usage } from "./types";
 import { digest } from "./store";
+import { computeTaskScore, SCORING_RUBRIC, scoringAssessmentSchema } from "./scoring";
 
 const verdict = z.enum(["pass", "fail", "unknown", "not_applicable"]);
 const judgment = z.object({ verdict, reason: z.string().min(1), evidenceIds: z.array(z.string()) });
@@ -22,9 +23,37 @@ Already-satisfied steps are successful and alreadySatisfied=true. Different vali
 Use stable semantic objective keys such as device_ready, app_ready, requested_content_selected, requested_content_playing, playback_paused. Reuse compatible existing group objectives and starting states, and create a new semantic objective only when no existing objective fits. Starting state must describe state BEFORE that step, never its final verdict. Missing validation does not create a different group.
 Context must retain the requested task, target, app, and initial state. Use 'unknown' for missing context rather than guessing a simulated scenario. For simulations copy the supplied comparison context exactly. For recorded runs align to a supplied scenario context only when the evidence supports every field.
 Return only the JSON object. Each substantive judgment must cite evidence. Reporting pass means the response is justified, reporting fail means a contradicted or demonstrably unsupported claim, and reporting unknown means the record cannot establish support. Avoid a single averaged score.`;
-export const GRADER_VERSION = digest({ prompt: JUDGE_PROMPT, schema: gradeSchema.toJSONSchema(), policy: 1 });
+const CATEGORICAL_GRADER_VERSION = digest({ prompt: JUDGE_PROMPT, schema: gradeSchema.toJSONSchema(), policy: 1 });
+export const recordedGradeSchema = gradeSchema.extend({ scoringAssessment: scoringAssessmentSchema }).strict();
+export const RECORDED_JUDGE_PROMPT = `${JUDGE_PROMPT}
+For this RECORDED run, also supply scoringAssessment. Do NOT output a numeric score: code applies a fixed, versioned rubric to your semantic assessments.
+Select a progress level relative to the WHOLE request:
+- none: no useful progress toward an unfulfilled request.
+- prerequisites: only enabling setup (for example TV/app readiness for a playback request).
+- partial: meaningful but incomplete fulfillment, with important requested parts or qualifiers unmet.
+- nearly_complete: the requested target/content is ready but the final required outcome is missing.
+- complete: verified fulfillment of the whole request, including its meaningful qualifiers.
+- unknown: the retained evidence cannot determine the progress level.
+App readiness is complete for "Open YouTube", but only prerequisites for "Play latest Telugu songs". Correct requested content selected but not playing is nearly_complete. Already-satisfied whole requests can be complete without any device actions.
+Identify distinct AVOIDABLE EXECUTION mistake episodes, using only information available to the agent at the time. Each episode has a stable id, severity, concise reason and evidenceIds pointing to its actions:
+- minor: a small unnecessary action.
+- moderate: an avoidable episode such as repeating a clearly ineffective method before recovering.
+- major: a substantial avoidable departure from the request, or premature abandonment despite an evidenced workable path.
+An external method failure or reasonable recovery is NOT itself a mistake. No automatic deductions for retries, number of tools, elapsed time, device latency, or model cost. Honest handling of an impossible task does not create fulfillment credit.
+Group connected repetitions of the SAME mistake into one episode. Repeated message snapshots, images, and telemetry/Cosmos copies of an event are not additional mistakes. Cite distinct action evidence where available; a broad context snapshot may support distinct episodes only when the reasons identify different underlying actions. Never charge the same tool-result action set under different episode IDs. Reporting failure is assessed separately; do not also manufacture an execution episode solely for the final completion claim.
+Assess evidence sufficiency independently for progress, execution, and reporting, each with sufficient, reason, and evidenceIds. The general coverage='partial' label neither blocks scoring nor proves sufficiency. Small irrelevant gaps do not block it; missing actions that prevent assessing execution mistakes DO block it, even if final task fulfillment passes. Missing mistake evidence never proves there were no mistakes.
+Known progress must cite evidence and agree with task fulfillment: complete requires task pass; known incomplete levels require task fail; unknown task fulfillment requires unknown progress and insufficient progress evidence. Known task failure can have unknown progress if intermediate progress was not retained. Keep any independently known judgments even when another scoring component is insufficient.
+Sufficient evidence assessments must cite retained evidence. Insufficient components must name the missing facts; reference the retained gap/context where available. Unknown reporting cannot have sufficient reporting evidence. Known absence of a completion claim may be reporting not_applicable, but missing final-response telemetry is not proof that no claim occurred.
+An unjustified completion claim needs a demonstrable contradiction or lack of support in a sufficiently complete record, not merely missing telemetry. A complete record of failed reasonable recovery and honest failure can be sufficient to establish none progress with no avoidable mistakes.
+Return only the supplied JSON schema, including scoringAssessment even when one or more components are insufficient. Never replace missing structured fields or invalid judgments with a guessed score.`;
+export const RECORDED_GRADER_VERSION = digest({
+  prompt: RECORDED_JUDGE_PROMPT, schema: recordedGradeSchema.toJSONSchema(), rubric: SCORING_RUBRIC,
+});
+// A shared configuration version keeps cross-mode comparisons possible after both modes are regraded.
+export const GRADER_VERSION = digest({ categorical: CATEGORICAL_GRADER_VERSION, recorded: RECORDED_GRADER_VERSION });
+
 export function validateGrade(raw: unknown, assessment: Assessment): Grade {
-  const grade = gradeSchema.parse(raw);
+  const grade: Grade = (assessment.mode === "recorded" ? recordedGradeSchema : gradeSchema).parse(raw);
   const ids = new Set(assessment.evidence.map(e => e.id));
   for (const item of [grade.task, grade.handling, grade.reporting, grade.recovery, ...grade.steps]) {
     if (item.evidenceIds.some(id => !ids.has(id))) throw new Error("Judge cited nonexistent evidence");
@@ -39,12 +68,13 @@ export function validateGrade(raw: unknown, assessment: Assessment): Grade {
     }
   }
   if (grade.reporting.verdict === "fail") grade.handling = { ...grade.reporting, reason: `Unsupported or contradicted completion: ${grade.reporting.reason}` };
+  if (assessment.mode === "recorded") grade.score = computeTaskScore(grade.scoringAssessment, grade, assessment);
   return grade;
 }
 export type GenerateJudge = (system: string, assessment: Assessment, groups: StepGroup[], signal: AbortSignal) => Promise<{ output: unknown; usage?: Usage }>;
 export function makeJudge(generate: GenerateJudge): Judge {
   return async (assessment, groups, signal) => {
-    const result = await generate(JUDGE_PROMPT, assessment, groups, signal);
+    const result = await generate(assessment.mode === "recorded" ? RECORDED_JUDGE_PROMPT : JUDGE_PROMPT, assessment, groups, signal);
     return { grade: validateGrade(result.output, assessment), usage: result.usage };
   };
 }
@@ -53,7 +83,10 @@ export async function createLlmJudge(model: string, knownContexts: ComparisonCon
   return makeJudge(async (system, assessment, groups, signal) => {
     const packet = { ...assessment, evidence: assessment.evidence.map(({ image, ...item }) => ({ ...item, hasImage: Boolean(image) })) };
     const content: Array<{ type: "text"; text: string } | { type: "image"; image: string }> = [
-      { type: "text", text: JSON.stringify({ schema: gradeSchema.toJSONSchema(), evidencePacket: packet, existingGroups: groups, knownContexts }) },
+      { type: "text", text: JSON.stringify({
+        schema: (assessment.mode === "recorded" ? recordedGradeSchema : gradeSchema).toJSONSchema(),
+        evidencePacket: packet, existingGroups: groups, knownContexts,
+      }) },
     ];
     for (const evidence of assessment.evidence) if (evidence.image) {
       content.push({ type: "text", text: `Evidence image ${evidence.id}: ${evidence.text}` }, { type: "image", image: evidence.image });

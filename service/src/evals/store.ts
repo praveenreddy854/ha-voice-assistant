@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { EvalAlert, EvalBatch, EvalRun, RecordedEvalAttempt, StepGroup } from "./types";
 import type { EvalJob } from "./worker";
+import { updateRecordedDailyOutcome } from "./scheduling";
 
 export function digest(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 24);
@@ -30,6 +31,22 @@ export class EvalStore {
     await fs.writeFile(temporary, JSON.stringify(item), { mode: 0o600 });
     await fs.rename(temporary, filename);
   }
+  async writeOnce<T extends { id: string }>(kind: string, item: T): Promise<T> {
+    const filename = this.filename(kind, item.id);
+    await fs.mkdir(path.dirname(filename), { recursive: true });
+    const temporary = `${filename}.${randomUUID()}.tmp`;
+    await fs.writeFile(temporary, JSON.stringify(item), { mode: 0o600 });
+    try {
+      // Linking publishes a complete record without replacing another startup's cutoff.
+      try { await fs.link(temporary, filename); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+      const saved = await this.read<T>(kind, item.id);
+      if (!saved) throw new Error(`Persisted eval ${kind} record disappeared`);
+      return saved;
+    } finally {
+      await fs.unlink(temporary);
+    }
+  }
   async read<T>(kind: string, id: string): Promise<T | undefined> {
     try { return JSON.parse(await fs.readFile(this.filename(kind, id), "utf8")); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
@@ -53,9 +70,15 @@ export class EvalStore {
     await this.write("summaries", { ...summary, request: assessment?.request, sourceSessionId: run.sourceSessionId || assessment?.sourceSessionId, usage: assessment?.usage });
   }
   async workerIsActive(): Promise<boolean> {
+    return this.lockIsActive("worker.lock");
+  }
+  async submissionIsActive(): Promise<boolean> {
+    return this.lockIsActive("submission.lock");
+  }
+  private async lockIsActive(name: "worker.lock" | "submission.lock"): Promise<boolean> {
     try {
-      const pid = Number(await fs.readFile(path.join(this.directory, "worker.lock"), "utf8"));
-      if (!Number.isInteger(pid) || pid <= 0) throw new Error("Invalid offline eval worker lock");
+      const pid = Number(await fs.readFile(path.join(this.directory, name), "utf8"));
+      if (!Number.isInteger(pid) || pid <= 0) throw new Error(`Invalid offline eval ${name === "worker.lock" ? "worker" : "submission"} lock`);
       return processIsRunning(pid);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
@@ -133,6 +156,7 @@ export class EvalStore {
       }
     }
     await this.write("jobs", failed);
+    await updateRecordedDailyOutcome(this, failed);
     await this.alert({ id: randomUUID(), key: "tv:worker-failure", batchId: failed.batchId || failed.id, createdAt: failed.finishedAt!,
       kind: "incomplete", message: reason, runIds: [] });
   }

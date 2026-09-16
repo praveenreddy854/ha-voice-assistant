@@ -72,14 +72,15 @@ export function createEvalRouter(supervisor: EvalSupervisor, discover = discover
   router.get("/api/evals", async (req, res, next) => {
     try {
       const busy = await supervisor.busy();
-      const [allRuns, batches, alerts, groups, calibrations, jobs] = await Promise.all([
+      const [allRuns, batches, alerts, groups, calibrations, jobs, schedules] = await Promise.all([
         store.list<EvalRun>("summaries"), store.list<EvalBatch>("batches"), store.list<EvalAlert>("alerts"), store.list<StepGroup>("groups"), store.list("calibrations"), store.list("jobs"),
+        supervisor.scheduleStatus(),
       ]);
       const agentId = typeof req.query.agentId === "string" ? req.query.agentId : undefined;
       const runs = allRuns.filter(r => !agentId || r.agentId === agentId).sort((a, b) => b.gradedAt.localeCompare(a.gradedAt));
       const day = localDay();
       res.json({ busy, timezone: EVAL_TIMEZONE, baseline: { from: shiftDay(day, -7), to: shiftDay(day, -1), minimumSamples: 3 },
-        scheduleEnabled: process.env.OFFLINE_EVAL_ENABLED !== "false", runs: runs.map(r => ({ ...r, verdict: runVerdict(r) })),
+        scheduleEnabled: process.env.OFFLINE_EVAL_ENABLED !== "false", schedules, runs: runs.map(r => ({ ...r, verdict: runVerdict(r) })),
         batches: batches.filter(b => !agentId || b.agentId === agentId).sort((a, b) => b.startedAt.localeCompare(a.startedAt)),
         alerts, groups, calibrations, jobs, fidelity: fidelityPairs(runs),
         fidelityNote: "Only matching task, device/app, starting state, assessed model/prompt, and grading versions are comparable. Missing historical metadata stays unmatched; no aggregate accuracy is inferred." });

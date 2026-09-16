@@ -8,10 +8,10 @@ The general telemetry page is **http://localhost:3005/dashboards**; its **Offlin
 
 From another computer, use the backend machine's hostname or IP in place of `localhost`, retaining port `3005`. Use your configured port if it differs.
 
-If the backend is not running, start it from the service directory:
+If the backend is not running, start it from the repository root:
 
 ```sh
-cd /Users/praveengaddam/Desktop/projects/ha-voice-assistant/service
+cd service
 npm run dev
 ```
 
@@ -19,7 +19,7 @@ If it is already running, use that instance. Do not start a second backend on th
 
 ## 1. Validate the judge
 
-Wait for any running batch to finish, then scroll to **Judge validation** and click **Validate judge**. The dashboard refreshes automatically; **Refresh** also retrieves current results. Expand the new validation result to inspect the six cases.
+Wait for any running batch to finish, then scroll to **Judge validation** and click **Validate judge**. This makes paid model calls for six categorical references and nine recorded-scoring fixtures. The dashboard refreshes automatically; **Refresh** also retrieves current results. Expand the result to inspect the verdicts and scoring assessments.
 
 The expected results below are for the fixed reference examples, not predictions about how a newly simulated agent run will behave:
 
@@ -32,7 +32,7 @@ The expected results below are for the fixed reference examples, not predictions
 | J5: TV unreachable; reasonable recovery and honest failure | fail | pass | pass |
 | J6: retained record lacks the final verification evidence | unknown | unknown | unknown |
 
-All six cases should agree with these reviewed labels. Inspect any disagreement before trusting the affected grading criterion. Model/service errors are validation failures, not evidence of TVAgent failure. This initial check does not establish broad judge accuracy; it is a small reviewed reference set.
+All six categorical cases should agree with these reviewed labels. The nine scoring fixtures additionally check progress, mistake severity, computed score, and evidence sufficiency against the negotiated rubric; their handling expectations are `not_checked`, not a failing verdict. Inspect any disagreement before trusting the affected grading criterion. Model/service errors are validation failures, not evidence of TVAgent failure. This smoke check does not establish broad judge accuracy or replace a separately reviewed held-out set.
 
 The full evidence examples are in [the judge reference cases](./offline-eval-judge-reference-cases.md).
 
@@ -74,6 +74,10 @@ The resulting rows should say `recorded` and `on_demand`. Open **Inspect** and c
 
 For an older trace without enough verification evidence, `unknown` is an expected result. A missing or nonterminal session should produce an execution error, not a successful grade.
 
+Recorded results also show a **Task score** and retain the separate task, handling, recovery, and reporting judgments. Inspect the starting progress value, evidence-backed deductions, band limits, reporting ceiling, and rubric version. Reasonable recovery can earn 100; no achieved progress can score 0 despite passing handling. Duration and model usage are not score deductions.
+
+**Unscored — insufficient evidence** means a required scoring component cannot be assessed, not that the task failed. A verified task may be unscored when its execution history is missing. Older evaluations without scoring remain labeled unavailable for that evaluation; obtain a new score through explicit re-evaluation, without overwriting the previous attempt.
+
 ## 5. Validate historical comparisons
 
 - The daily suite runs at **3:00 a.m. America/New_York** on the backend host. Same-day catch-up runs once after missed availability; older missed days are skipped.
@@ -82,12 +86,26 @@ For an older trace without enough verification evidence, `unknown` is an expecte
 - Failures and successful-task durations above twice the prior median receive at most one confirmation attempt under the agreed rules. Inspect the original and confirmation separately.
 - **Simulation fidelity** requires matching task, target/app, starting state, assessed configuration, and grader versions. Old traces often lack configuration metadata, so `No comparison data yet` is expected. It is not a measured fidelity score.
 
+The score-aware grader has a new shared configuration version. Older results are preserved but are not silently treated as compatible; **Collecting baseline** can recur after this upgrade even though simulated grading remains categorical.
+
+## 6. Check scheduled recorded evaluation
+
+Recorded evaluation is enabled by default and is due at **1:00 a.m. America/New_York**. The portal shows both the recorded and simulated schedules, their enabled state, the recorded enrollment cutoff, and the latest recorded scheduling outcome/warnings.
+
+The cutoff is saved when recorded scheduling first becomes effectively enabled. Only finished TVAgent runs started from that point onward, with no previous evaluation attempt, enter automatic selection. Old history remains available through the portal. Each nightly batch selects at most 100 oldest available eligible runs; overflow and missed-day backlog carry forward without a rolling 24-hour cutoff.
+
+If the host or shared worker is unavailable at 1:00 a.m., one batch can catch up later that local day. It must not interrupt another job or run alongside it. The simulated suite remains due at 3:00 a.m.; it can start later if the worker is still occupied. Repeated polls, restart, and the repeated autumn 1:00 a.m. hour must not launch a second recorded batch for the same date.
+
+An empty selection makes no judge calls and records a no-work outcome. Partial discovery is visibly incomplete rather than an assertion that every source was checked; available eligible sessions may still be graded. Unreadable evaluation history blocks admission, and wholly failed discovery is an error, not an empty backlog.
+
+Recorded scheduled results must say `recorded` and `scheduled`, retaining their intended schedule date and actual timestamps. They do not enter simulated regression baselines. Any existing attempt, including an eval error or a completed unscored judgment, excludes the session from automatic selection. Retry or re-evaluate it explicitly through the portal.
+
 ## CLI alternatives
 
 Run these from the service directory. The browser and CLI use the same configured eval directory; keep `OFFLINE_EVAL_DIR` consistent and avoid changing it when comparing history. Relative paths resolve from the command's working directory. An absolute path avoids accidentally creating separate histories.
 
 ```sh
-# Check the six judge reference cases
+# Check six categorical and nine recorded-scoring reference cases
 npm run eval:calibrate
 
 # Run all twelve simulated scenarios on demand
@@ -100,14 +118,14 @@ npm run eval -- simulated telugu-fresh-search
 npm run eval:recorded -- COMPLETED_SESSION_ID
 
 # Verify framework behavior without live model/device calls
-node --import tsx --test tests/offlineEvals.test.ts tests/offlineTvAdapter.test.ts tests/recordedSessionDiscovery.test.ts tests/recordedEvalLifecycle.test.ts
+node --import tsx --test tests/offlineEvals.test.ts tests/offlineTvAdapter.test.ts tests/recordedSessionDiscovery.test.ts tests/recordedEvalLifecycle.test.ts tests/taskScoring.test.ts tests/recordedEvalScheduling.test.ts
 ```
 
-`OFFLINE_EVAL_JUDGE_MODEL` selects the Azure judge deployment independently from the assessed TVAgent model. `OFFLINE_EVAL_ENABLED=false` disables the daily scheduler while retaining manual runs. Alerts currently appear persistently in the eval dashboard.
+`OFFLINE_EVAL_JUDGE_MODEL` selects the Azure judge deployment independently from the assessed TVAgent model. `OFFLINE_EVAL_ENABLED=false` disables both automatic schedules; `OFFLINE_RECORDED_EVAL_ENABLED=false` disables only the recorded schedule. Both switches retain manual runs. The persisted enrollment cutoff survives restart and disable/re-enable. Alerts currently appear persistently in the eval dashboard.
 
 The history-tab browser checks use mocked API responses and do not start the backend or make paid model calls. With dependencies and Playwright Chromium installed, run from the repository root:
 
 ```sh
 cd service && npx tsc
-cd ../ha-voice-assistant && npm run test:e2e -- e2e/eval-history.spec.ts
+cd ../ha-voice-assistant && npm run test:e2e -- e2e/eval-history.spec.ts e2e/eval-scoring.spec.ts e2e/eval-schedules.spec.ts
 ```

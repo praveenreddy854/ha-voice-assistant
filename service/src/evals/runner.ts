@@ -3,6 +3,7 @@ import type { AgentAdapter, Assessment, Attempt, EvalBatch, EvalRun, Judge, Reco
 import type { EvalJob } from "./worker";
 import { EvalStore } from "./store";
 import { baselineFor, localDay, runVerdict } from "./analytics";
+import { RECORDED_IMPORT_VERSION } from "./recorded";
 
 export class EvalRunner {
   constructor(readonly store: EvalStore, readonly judge: Judge, readonly judgeModel: string, readonly graderVersion: string) {}
@@ -34,7 +35,7 @@ export class EvalRunner {
   async simulated(adapter: AgentAdapter, signal: AbortSignal, options: { scheduledDay?: string; scenarioIds?: string[]; jobId?: string } = {}): Promise<EvalBatch> {
     const scheduledDay = options.scheduledDay;
     if (scheduledDay) {
-      const existing = (await this.store.list<EvalBatch>("batches")).find(b => b.agentId === adapter.id && b.scheduledDay === scheduledDay && b.attempt === "scheduled");
+      const existing = (await this.store.list<EvalBatch>("batches")).find(b => b.mode === "simulated" && b.agentId === adapter.id && b.scheduledDay === scheduledDay && b.attempt === "scheduled");
       if (existing) return existing;
     }
     const batch = this.newBatch(adapter.id, "simulated", scheduledDay);
@@ -65,13 +66,13 @@ export class EvalRunner {
     return this.finish(batch);
   }
   async recorded(agentId: string, inputs: Array<(() => Promise<Assessment>) | { sessionId: string; load: () => Promise<Assessment> }>,
-    signal: AbortSignal, options: { jobId?: string } = {}): Promise<EvalBatch> {
-    const batch = this.newBatch(agentId, "recorded"); await this.saveNewBatch(batch, options.jobId);
+    signal: AbortSignal, options: { jobId?: string; scheduledDay?: string } = {}): Promise<EvalBatch> {
+    const batch = this.newBatch(agentId, "recorded", options.scheduledDay); await this.saveNewBatch(batch, options.jobId);
     const job = options.jobId ? await this.store.read<EvalJob>("jobs", options.jobId) : undefined;
     const attempts = job ? await this.store.queueRecordedAttempts(job) : [];
     for (const input of inputs) {
       if (signal.aborted) { batch.error = "Recorded evaluation interrupted"; break; }
-      await this.assess(batch, "on_demand", "recorded-import-1", typeof input === "function" ? input : input.load, signal, undefined,
+      await this.assess(batch, batch.attempt, RECORDED_IMPORT_VERSION, typeof input === "function" ? input : input.load, signal, undefined,
         typeof input === "function" ? undefined : { sessionId: input.sessionId, attempt: attempts.find(attempt => attempt.sourceSessionId === input.sessionId) });
       if (signal.aborted) break;
     }

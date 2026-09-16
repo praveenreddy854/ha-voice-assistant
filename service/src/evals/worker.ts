@@ -2,7 +2,8 @@ import dotenv from "dotenv";
 import { randomUUID } from "node:crypto";
 import { EvalStore } from "./store";
 import { installNetworkBoundary } from "./network";
-import { localDay, shiftDay } from "./analytics";
+import { localDay } from "./analytics";
+import { simulatedSkippedDays, updateRecordedDailyOutcome } from "./scheduling";
 import type { EvalBatch } from "./types";
 
 export interface EvalJob {
@@ -12,6 +13,7 @@ export interface EvalJob {
   sessionIds?: string[];
   model?: string;
   scheduledDay?: string;
+  attempt?: "scheduled" | "on_demand";
   status?: "queued" | "running" | "completed" | "failed";
   batchId?: string;
   error?: string;
@@ -32,6 +34,7 @@ export async function runWorker(job: EvalJob, store = new EvalStore()): Promise<
     await store.recoverInterruptedBatches();
     job.status = "running"; job.workerPid = process.pid; job.createdAt ||= new Date().toISOString();
     await store.write("jobs", job);
+    await updateRecordedDailyOutcome(store, job);
     await store.queueRecordedAttempts(job);
     const config = await import("../config");
     if (!config.AZURE_OPENAI_RESOURCE_NAME) throw new Error("Azure model endpoint is not configured");
@@ -53,13 +56,12 @@ export async function runWorker(job: EvalJob, store = new EvalStore()): Promise<
         if (!job.sessionIds?.length) throw new Error("Select completed session IDs for recorded evaluation");
         const { loadRecordedAssessment } = await import("./recorded");
         batch = await runner.recorded("tv", [...new Set(job.sessionIds)].map(sessionId => ({ sessionId, load: () => loadRecordedAssessment(sessionId) })),
-          controller.signal, { jobId: job.id });
+          controller.signal, { jobId: job.id, scheduledDay: job.scheduledDay });
       } else {
         if (job.scheduledDay && job.scheduledDay !== localDay()) throw new Error("Scheduled evals only run for the current local day");
         if (job.scheduledDay) {
-          const days = (await store.list<EvalBatch>("batches")).filter(b => b.attempt === "scheduled" && b.scheduledDay).map(b => b.scheduledDay!).sort();
-          for (let day = days.length ? shiftDay(days[days.length - 1], 1) : job.scheduledDay; day < job.scheduledDay; day = shiftDay(day, 1)) {
-            await store.write("batches", { id: `skipped-${day}`, agentId: "tv", mode: "simulated", attempt: "scheduled", scheduledDay: day,
+          for (const day of simulatedSkippedDays(await store.list<EvalBatch>("batches"), job.scheduledDay)) {
+            await store.write("batches", { id: `skipped-simulated-${day}`, agentId: "tv", mode: "simulated", attempt: "scheduled", scheduledDay: day,
               startedAt: new Date().toISOString(), status: "skipped", runIds: [] } as EvalBatch);
           }
         }
@@ -79,7 +81,10 @@ export async function runWorker(job: EvalJob, store = new EvalStore()): Promise<
       job.batchId ||= saved?.batchId;
       job.finishedAt = new Date().toISOString();
       if (job.status === "failed") await store.failJob(job, job.error || "Eval worker failed");
-      else await store.write("jobs", job);
+      else {
+        await store.write("jobs", job);
+        await updateRecordedDailyOutcome(store, job);
+      }
     } finally {
       await release();
       process.removeListener("SIGTERM", stop); process.removeListener("SIGINT", stop);
