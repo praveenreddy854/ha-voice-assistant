@@ -1,4 +1,4 @@
-# Testing offline TVAgent evals
+# Testing offline assistant evals
 
 ## Open the backend-served page
 
@@ -17,9 +17,11 @@ npm run dev
 
 If it is already running, use that instance. Do not start a second backend on the same port. The eval browser script is compiled during the normal backend build; after changing code, rebuild/restart the backend if it is not running the development watcher.
 
+Use **Agent** to select **TVAgent**, **ScheduledTaskAgent**, or **Realtime Voice Agent**. That selection controls the simulation suite, recorded-session picker, history, alerts and judge reference cases. Selections in the recorded-session picker are preserved separately per agent. Switching agents never submits a mixed-agent batch.
+
 ## 1. Validate the judge
 
-Wait for any running batch to finish, then scroll to **Judge validation** and click **Validate judge**. The dashboard refreshes automatically; **Refresh** also retrieves current results. Expand the new validation result to inspect the six cases.
+Select **TVAgent**, wait for any running batch to finish, then scroll to **Judge validation** and click **Validate judge**. The dashboard refreshes automatically; **Refresh** also retrieves current results. Expand the new validation result to inspect the six cases.
 
 The expected results below are for the fixed reference examples, not predictions about how a newly simulated agent run will behave:
 
@@ -36,6 +38,8 @@ All six cases should agree with these reviewed labels. Inspect any disagreement 
 
 The full evidence examples are in [the judge reference cases](./offline-eval-judge-reference-cases.md).
 
+ScheduledTaskAgent and Realtime each have six additional **starter** reference cases, selected by the same Agent control. Their reports stay separate from TV calibration. These new labels are not claimed to have been reviewed by the user; inspect disagreements and use held-out examples before claiming broader judge accuracy.
+
 ## 2. Run the TV simulation suite
 
 Under **Run a simulation**, leave **Alternative deployment** blank and click **Run simulated suite**. This starts a new model-driven run for each of the twelve scenarios, with simulated device tools and rendered screen images. It must not change your real TV, apps, playback, or persistent assistant memory.
@@ -45,6 +49,10 @@ Check **Batch coverage**: the batch should move from `running` to `completed` wi
 Check **Run history and weekly comparison**: the new rows should say `simulated` and `on_demand`. There are multiple variants of the same request; open **Inspect** to see the scenario and its starting-state context.
 
 Use the **All** (default), **Simulated**, and **Real** tabs above the history table to switch between both modes, simulations only, and recorded-run evaluations only. The tabs and the top-level **Mode** filter stay synchronized, including the summary counts. Switching tabs keeps each run's prior-week comparison and Inspect action intact; automatic and manual refreshes preserve the selected tab. Use Left/Right arrows or Home/End to navigate the tabs with a keyboard.
+
+Select **ScheduledTaskAgent** to run twelve scheduling fixtures against the production advanced-model loop and tool schemas. Inspect absolute/relative dates, the DST transition, resolved entities, unchanged fields, occurrence-versus-family cancellation and failed persistence. No real tasks are saved or fired.
+
+Select **Realtime Voice Agent** to run twelve fixtures on the native Realtime deployment with text input and simulated tools. Some fixtures include follow-up turns in the same fresh session. Inspect routing, preserved request qualifiers, follow-up/confirmation ordering, paused-run identity and memory scope. `On it` acknowledges a simulated asynchronous job; it does not establish device completion. These evals do not exercise microphone capture, wake words, ASR or speech quality. An alternative deployment for this agent must support the Realtime API.
 
 ## 3. Inspect a few representative results
 
@@ -60,7 +68,7 @@ The LLM's explanation must point to evidence that actually supports it. A screen
 
 ## 4. Grade an existing real run on demand
 
-Under **Grade completed real runs**, click **Select sessions**. The dialog lists finished TVAgent sessions, including assistant runs that ended in error, from retained telemetry and configured Cosmos records. Duplicate session IDs appear once with their available evidence sources. If a source is unavailable, its warning and retry action remain visible while the available sessions can still be selected.
+Under **Grade completed real runs**, click **Select sessions**. The dialog lists finished sessions for the selected agent, including assistant runs that ended in error. TVAgent uses retained telemetry and configured Cosmos records; ScheduledTaskAgent and Realtime use telemetry only. Duplicate session IDs appear once with their sources. Applicable source failures remain visible with a retry action. Realtime turns predating retained lifecycle traces are not available for backfilling.
 
 Search by request or session ID, filter by session start dates in **America/New_York**, or choose an evaluation status. Select individual sessions or **Select this page**. Selections persist across pages and filters; the total and hidden-selection count must remain accurate. **Review selected** exposes the complete selection and **Clear selection** resets it. A batch is limited to 100 sessions.
 
@@ -68,7 +76,7 @@ Review the inline breakdown of new evaluations and re-evaluations, then click **
 
 Each session independently moves through **Queued**, **Running**, and then **Evaluated** or **Eval error**. A failing or unknown verdict still counts as Evaluated; Eval error means the evaluation could not finish. Only the actively evaluated session should say Running, not every member of its batch. Queued and Running sessions cannot be selected again.
 
-The telemetry viewer at **http://localhost:3005/telemetry** shows the same evaluation status beside TV sessions, with links to their history. Re-evaluation keeps prior attempts and their evidence. If a later attempt is pending or fails, its status remains primary and the last completed verdict is labeled **Previous evaluation** with its grading timestamp. A worker interruption preserves completed results and marks unfinished attempts as errors requiring explicit retry, including attempts that never started.
+The telemetry viewer at **http://localhost:3005/telemetry** shows the same evaluation status beside all supported agents' sessions, with agent-aware links to their history. Re-evaluation keeps prior attempts and their evidence. If a later attempt is pending or fails, its status remains primary and the last completed verdict is labeled **Previous evaluation** with its grading timestamp. A worker interruption preserves completed results and marks unfinished attempts as errors requiring explicit retry, including attempts that never started.
 
 The resulting rows should say `recorded` and `on_demand`. Open **Inspect** and compare the judgment with the retained observations and final message. The importer can supplement telemetry with the matching Cosmos flow when configured. It must not replay device actions.
 
@@ -76,7 +84,7 @@ For an older trace without enough verification evidence, `unknown` is an expecte
 
 ## 5. Validate historical comparisons
 
-- The daily suite runs at **3:00 a.m. America/New_York** on the backend host. Same-day catch-up runs once after missed availability; older missed days are skipped.
+- Daily suites start at **3:00 a.m. America/New_York** on the backend host and run sequentially by agent under the single-worker limit. Same-day catch-up runs once per agent after missed availability; older missed days are skipped. A failed startup for one agent does not retry indefinitely or suppress the others.
 - Historical regression comparisons need **at least three comparable scheduled results from the preceding seven complete local days**. `Collecting baseline` is expected until then.
 - On-demand and confirmation attempts do not fill the scheduled baseline. Do not backdate results to make the baseline appear ready.
 - Failures and successful-task durations above twice the prior median receive at most one confirmation attempt under the agreed rules. Inspect the original and confirmation separately.
@@ -96,14 +104,27 @@ npm run eval:simulated
 # Run one scenario on demand
 npm run eval -- simulated telugu-fresh-search
 
+# Run the other agents with their configured models
+npm run eval:simulated -- --agent scheduled_task
+npm run eval:simulated -- --agent realtime
+
+# Check scheduling across daylight saving time with an alternative deployment
+npm run eval -- simulated --agent scheduled_task --model CANDIDATE_DEPLOYMENT announcement-relative-dst
+
+# Validate the selected agent's judge reference cases
+npm run eval:calibrate -- --agent scheduled_task
+npm run eval:calibrate -- --agent realtime
+
 # Grade a completed real session; replace the example ID
 npm run eval:recorded -- COMPLETED_SESSION_ID
+npm run eval:recorded -- --agent scheduled_task COMPLETED_SCHEDULED_SESSION_ID
+npm run eval:recorded -- --agent realtime COMPLETED_REALTIME_SESSION_ID
 
 # Verify framework behavior without live model/device calls
-node --import tsx --test tests/offlineEvals.test.ts tests/offlineTvAdapter.test.ts tests/recordedSessionDiscovery.test.ts tests/recordedEvalLifecycle.test.ts
+node --import tsx --test tests/offlineEvals.test.ts tests/offlineMultiAgentEvals.test.ts tests/offlineWorker.test.ts tests/offlineTvAdapter.test.ts tests/offlineScheduledTaskAdapter.test.ts tests/offlineScheduledTaskEnvironment.test.ts tests/offlineRealtimeAdapter.test.ts tests/realtimeTrace.test.ts tests/recordedSessionDiscovery.test.ts tests/recordedEvalLifecycle.test.ts
 ```
 
-`OFFLINE_EVAL_JUDGE_MODEL` selects the Azure judge deployment independently from the assessed TVAgent model. `OFFLINE_EVAL_ENABLED=false` disables the daily scheduler while retaining manual runs. Alerts currently appear persistently in the eval dashboard.
+Omitting `--agent` preserves the existing TV default. `OFFLINE_EVAL_JUDGE_MODEL` selects the judge deployment independently of the assessed agent; `AI_MODEL_ADVANCED` supplies TV/scheduling defaults and `AI_MODEL_REALTIME` supplies the native Realtime default. Recorded grading does not construct or execute that agent. `OFFLINE_EVAL_ENABLED=false` disables all daily suites while retaining manual runs. Alerts remain agent-scoped in the dashboard.
 
 The history-tab browser checks use mocked API responses and do not start the backend or make paid model calls. With dependencies and Playwright Chromium installed, run from the repository root:
 

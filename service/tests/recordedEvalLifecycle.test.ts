@@ -189,7 +189,7 @@ test("sessions API combines discovery and eval history, and never hides storage 
   const app = express();
   app.use(express.json());
   app.use(createEvalRouter(supervisor, async () => ({
-    sessions: [{ sessionId: "one", userPrompt: "Open YouTube", startedAt: "2026-09-12T12:00:00Z",
+    sessions: [{ sessionId: "one", agentId: "tv", userPrompt: "Open YouTube", startedAt: "2026-09-12T12:00:00Z",
       status: "error", sources: ["telemetry"] }],
     warnings: ["Session list incomplete: Cosmos unavailable"],
   })));

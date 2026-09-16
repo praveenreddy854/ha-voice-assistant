@@ -3,8 +3,9 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { EvalStore, processIsRunning } from "./store";
 import { isDue, localDay } from "./analytics";
-import type { EvalBatch } from "./types";
+import { EVAL_AGENT_IDS, type EvalBatch } from "./types";
 import type { EvalJob } from "./worker";
+import { getEvalAgent } from "./registry";
 
 function spawnWorker(job: EvalJob, directory: string): ChildProcess {
   const source = __filename.endsWith(".ts");
@@ -13,7 +14,7 @@ function spawnWorker(job: EvalJob, directory: string): ChildProcess {
     env: { ...process.env, OFFLINE_EVAL_DIR: directory },
   });
 }
-type JobInput = Pick<EvalJob, "mode" | "sessionIds" | "scenarioIds" | "model" | "scheduledDay" | "requestId">;
+type JobInput = Pick<EvalJob, "mode" | "agentId" | "sessionIds" | "scenarioIds" | "model" | "scheduledDay" | "requestId">;
 
 export class EvalSupervisor {
   private child?: ChildProcess;
@@ -34,16 +35,24 @@ export class EvalSupervisor {
   private async previousSubmission(input: JobInput): Promise<EvalJob | undefined> {
     if (!input.requestId) return undefined;
     const previous = await this.store.read<EvalJob>("jobs", input.requestId);
-    if (previous && (previous.mode !== input.mode || JSON.stringify(previous.sessionIds) !== JSON.stringify(input.sessionIds))) {
+    if (previous && (previous.mode !== input.mode || (previous.agentId || "tv") !== (input.agentId || "tv")
+      || JSON.stringify(previous.sessionIds) !== JSON.stringify(input.sessionIds))) {
       throw new Error("This submission ID was already used for a different selection");
     }
     return previous;
   }
   async launch(input: JobInput): Promise<EvalJob> {
     await this.recovery;
+    const agent = getEvalAgent(input.agentId);
+    input = { ...input, agentId: agent.id };
     if (input.mode === "recorded" && (!input.sessionIds?.length || input.sessionIds.length > 100
       || new Set(input.sessionIds).size !== input.sessionIds.length
       || input.sessionIds.some(id => !/^[a-zA-Z0-9_-]+$/.test(id)))) throw new Error("Select 1 to 100 unique valid session IDs");
+    if (input.mode === "simulated" && input.scenarioIds) {
+      const scenarios = await agent.scenarios();
+      if (!input.scenarioIds.length || new Set(input.scenarioIds).size !== input.scenarioIds.length
+        || input.scenarioIds.some(id => !scenarios.some(scenario => scenario.id === id))) throw new Error("Unknown or empty scenario selection for this agent");
+    }
     const previous = await this.previousSubmission(input);
     if (previous) return previous;
     if (this.launching) throw new Error("An offline eval submission is already in progress");
@@ -90,10 +99,12 @@ export class EvalSupervisor {
   async tick(now = new Date()): Promise<void> {
     if (await this.busy() || !isDue(now)) return;
     const day = localDay(now);
-    if ((await this.store.list<EvalBatch>("batches")).some(b => b.attempt === "scheduled" && b.scheduledDay === day)) return;
+    const [batches, jobs] = await Promise.all([this.store.list<EvalBatch>("batches"), this.store.list<EvalJob>("jobs")]);
     // Failed startup attempts are retained too; never loop on a broken configuration.
-    if ((await this.store.list<EvalJob>("jobs")).some(j => j.scheduledDay === day)) return;
-    await this.launch({ mode: "simulated", scheduledDay: day });
+    const agentId = EVAL_AGENT_IDS.find(id =>
+      !batches.some(b => b.agentId === id && b.attempt === "scheduled" && b.scheduledDay === day)
+      && !jobs.some(j => (j.agentId || "tv") === id && j.scheduledDay === day));
+    if (agentId) await this.launch({ mode: "simulated", agentId, scheduledDay: day });
   }
   start(): void {
     void this.store.recoverInterruptedJobs().catch(error => console.error("[Offline eval recovery]", error));

@@ -24,6 +24,7 @@ import {
   executeScheduledTaskTool,
   getScheduledTaskToolActionSummary,
 } from "./tools";
+import { renderScheduledTaskSystemPrompt } from "./prompt";
 
 const promptCache = new Map<string, string>();
 
@@ -41,9 +42,7 @@ function loadPromptTemplate(): string {
 function renderSystemPrompt(): string {
   const tz =
     Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  return loadPromptTemplate()
-    .replace("{{{CurrentDateTime}}}", new Date().toISOString())
-    .replace("{{{UserTimezone}}}", tz);
+  return renderScheduledTaskSystemPrompt(loadPromptTemplate(), new Date(), tz);
 }
 
 export const scheduledTaskAgentDefinition: AgentDefinition = {

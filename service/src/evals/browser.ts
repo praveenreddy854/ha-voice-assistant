@@ -8,9 +8,10 @@
   type RunSummary = import("./types").EvalRunSummary;
   type StatusResponse = { statuses: Record<string, Evaluation>; busy: boolean };
   type Snapshot = { runs: Run[]; batches: import("./types").EvalBatch[]; alerts: import("./types").EvalAlert[]; busy: boolean;
+    agents: { id: string; name: string; description: string; scenarioCount: number; referenceCount: number }[];
     baseline: { from: string; to: string }; timezone: string; scheduleEnabled: boolean; fidelityNote: string;
     fidelity: { simulatedId: string; recordedIds: string[]; status: string }[];
-    calibrations: { id: string; judgeModel: string; createdAt: string; passed: boolean; results: { id: string; passed: boolean; expected: string[]; actual?: string[]; error?: string }[] }[] };
+    calibrations: { id: string; agentId?: string; judgeModel: string; createdAt: string; passed: boolean; limitation?: string; results: { id: string; passed: boolean; expected: string[]; actual?: string[]; error?: string }[] }[] };
   let snapshot: Snapshot | undefined;
   let busy: boolean | undefined;
   let submitting = false;
@@ -23,11 +24,13 @@
   let availableIds = new Set<string>();
   let statuses: Record<string, Evaluation> = {};
   const sessionCache = new Map<string, Session>();
-  const selected = new Set<string>();
+  let selected = new Set<string>();
+  const selectionsByAgent = new Map<string, Set<string>>([["tv", selected]]);
+  const currentAgentId = () => element<HTMLSelectElement>("agent").value;
   const rows = new Map<string, HTMLTableRowElement>();
   let page = 1, reviewSelected = false, deferredRows = false;
   let displayed: Session[] = [];
-  let pendingSubmission: { requestId: string; sessionIds: string[] } | undefined;
+  let pendingSubmission: { agentId: string; requestId: string; sessionIds: string[] } | undefined;
   let detailVersion = 0, historySession: string | undefined, returnToSelection = false;
   let historyLoading = false, historyMarkup: string | undefined;
   const selector = element<HTMLDialogElement>("session-selector");
@@ -78,19 +81,27 @@
     }
     element("runs-panel").setAttribute("aria-labelledby", `runs-tab-${mode}`);
     if (!snapshot) return;
-    const runs = snapshot.runs.filter(r => mode === "all" || r.mode === mode);
+    const agentId = currentAgentId(), agent = snapshot.agents.find(candidate => candidate.id === agentId);
+    if (agent) {
+      element("suite-description").textContent = `Run ${agent.scenarioCount} ${agent.name} scenarios with the current configuration or an alternative deployment. ${agent.description} On-demand results stay outside the daily baseline.`;
+      element("judge-description").textContent = `Check ${agent.referenceCount} ${agentId === "tv" ? "reviewed" : "starter"} reference cases for ${agent.name}. This is an initial agreement check, not a measured general accuracy claim.`;
+      element("session-selector-title").textContent = `Select recorded ${agent.name} sessions`;
+    }
+    const agentRuns = snapshot.runs.filter(r => r.agentId === agentId);
+    const runs = agentRuns.filter(r => mode === "all" || r.mode === mode);
     element("window").textContent = `Baseline ${snapshot.baseline.from} – ${snapshot.baseline.to} · ${snapshot.timezone} · Daily schedule ${snapshot.scheduleEnabled ? "3 a.m." : "disabled"}`;
     element("cards").innerHTML = [["Evaluated runs", runs.length], ["Tasks fulfilled", runs.filter(r => r.grade?.task.verdict === "pass").length], ["Handling passed", runs.filter(r => r.verdict === "pass").length], ["Unknown / incomplete", runs.filter(r => ["unknown", "error"].includes(r.verdict)).length]].map(([label, count]) => `<div class="card"><div class="muted">${label}</div><div class="number">${count}</div></div>`).join("");
-    element("alerts").innerHTML = snapshot.alerts.filter(a => !a.resolvedAt).map(a => `<div class="alert">${esc(a.message)} <small>${esc(date(a.createdAt))}</small></div>`).join("") || "No active regression alerts.";
+    element("alerts").innerHTML = snapshot.alerts.filter(a => !a.resolvedAt && (a.agentId || a.key.split(":")[0]) === agentId).map(a => `<div class="alert">${esc(a.message)} <small>${esc(date(a.createdAt))}</small></div>`).join("") || "No active regression alerts.";
     const emptyRuns = mode === "simulated" ? "No simulated evals yet. Run a simulation above."
       : mode === "recorded" ? "No real evals yet. Select completed real sessions above."
       : "No evals yet. Run a simulation or select completed real sessions above.";
     element("runs").innerHTML = runs.map(r => `<tr><td>${esc(date(r.assessedAt))}<br><small>Graded ${esc(date(r.gradedAt))}</small></td><td>${esc(r.request || r.scenarioId || r.id)}<br><small>${esc(r.assessedModel || "Model unknown")}</small></td><td>${badge(r.mode)}<br><small>${esc(r.attempt)}</small></td><td>${badge(r.grade?.task.verdict)}</td><td>${badge(r.grade?.handling.verdict || (r.status !== "completed" ? "error" : "unknown"))}</td><td>${badge(r.grade?.reporting.verdict)}</td><td>${duration(r.durationMs)}</td><td>${r.comparison ? r.comparison.baselineCount >= 3 ? `${r.comparison.baselineCount} samples<br>Median ${duration(r.comparison.medianMs)}<br>${esc(r.comparison.signal || "No alert threshold crossed")} ${esc(r.comparison.confirmation || "")}` : `Collecting baseline (${r.comparison.baselineCount}/3)` : "On demand"}</td><td><button data-run="${esc(r.id)}">Inspect</button></td></tr>`).join("") || `<tr><td colspan="9">${emptyRuns}</td></tr>`;
     element("fidelity-note").textContent = snapshot.fidelityNote;
-    const pairs = snapshot.fidelity.filter(p => p.recordedIds.length);
-    element("fidelity").innerHTML = pairs.map(p => `<p>${esc(snapshot!.runs.find(r => r.id === p.simulatedId)?.scenarioId)} · ${p.recordedIds.length} comparable recorded runs <button data-pair="${esc(p.simulatedId)}:${esc(p.recordedIds[0])}">Compare steps</button></p>`).join("") || `No comparison data yet. ${snapshot.fidelity.length} simulated runs currently unmatched.`;
-    element("batches").innerHTML = snapshot.batches.map(b => `<p>${esc(b.scheduledDay || date(b.startedAt))} · ${esc(b.mode)} · ${badge(b.status)} · ${b.runIds.length} attempts ${esc(b.error || "")}</p>`).join("") || "No batches recorded.";
-    element("calibrations").innerHTML = snapshot.calibrations.map(c => `<details><summary>${esc(c.judgeModel)} · ${badge(c.passed ? "pass" : "fail")} · ${esc(date(c.createdAt))}</summary>${c.results.map(r => `<p>${esc(r.id)} ${badge(r.passed ? "pass" : "fail")} expected ${esc(r.expected.join(" / "))}; actual ${esc(r.actual?.join(" / ") || r.error)}</p>`).join("")}</details>`).join("") || "<p class=muted>The judge has not been validated against the reference cases yet.</p>";
+    const fidelity = snapshot.fidelity.filter(p => agentRuns.some(run => run.id === p.simulatedId));
+    const pairs = fidelity.filter(p => p.recordedIds.length);
+    element("fidelity").innerHTML = pairs.map(p => `<p>${esc(agentRuns.find(r => r.id === p.simulatedId)?.scenarioId)} · ${p.recordedIds.length} comparable recorded runs <button data-pair="${esc(p.simulatedId)}:${esc(p.recordedIds[0])}">Compare steps</button></p>`).join("") || `No comparison data yet. ${fidelity.length} simulated runs currently unmatched.`;
+    element("batches").innerHTML = snapshot.batches.filter(b => b.agentId === agentId).map(b => `<p>${esc(b.scheduledDay || date(b.startedAt))} · ${esc(b.mode)} · ${badge(b.status)} · ${b.runIds.length} attempts ${esc(b.error || "")}</p>`).join("") || "No batches recorded.";
+    element("calibrations").innerHTML = snapshot.calibrations.filter(c => (c.agentId || "tv") === agentId).map(c => `<details><summary>${esc(c.judgeModel)} · ${badge(c.passed ? "pass" : "fail")} · ${esc(date(c.createdAt))}</summary>${c.results.map(r => `<p>${esc(r.id)} ${badge(r.passed ? "pass" : "fail")} expected ${esc(r.expected.join(" / "))}; actual ${esc(r.actual?.join(" / ") || r.error)}</p>`).join("")}${c.limitation ? `<p class="muted">${esc(c.limitation)}</p>` : ""}</details>`).join("") || "<p class=muted>The judge has not been validated against the reference cases yet.</p>";
   }
   function refresh(options: { sessions?: boolean; sources?: boolean } = {}): Promise<void> {
     reloadSessions ||= Boolean(options.sessions);
@@ -117,7 +128,7 @@
         if (sessionsInitialized) {
           if (loadSessions) {
             try {
-              const result = await request<import("./types").RecordedSessionsResponse>(`/api/evals/sessions${forceSources ? "?refresh=true" : ""}`);
+              const result = await request<import("./types").RecordedSessionsResponse>(`/api/evals/sessions?agentId=${encodeURIComponent(currentAgentId())}${forceSources ? "&refresh=true" : ""}`);
               if (version === mutationVersion) {
                 sessions = result.sessions.slice().sort((a, b) => (Date.parse(b.startedAt) - Date.parse(a.startedAt)) || b.sessionId.localeCompare(a.sessionId));
                 availableIds = new Set(sessions.map(session => session.sessionId));
@@ -169,7 +180,7 @@
   }
   function active(id: string) { return ["queued", "running"].includes(lifecycle(id) || ""); }
   function available(id: string) { return availableIds.has(id); }
-  function eligible(id: string) { return metadataKnown && statusesKnown && available(id) && !active(id); }
+  function eligible(id: string) { return metadataKnown && statusesKnown && available(id) && sessionCache.get(id)?.agentId === currentAgentId() && !active(id); }
   function setHtml(target: HTMLElement, html: string) { if (target.innerHTML !== html) target.innerHTML = html; }
   function judgments(run: RunSummary) {
     return `Task ${badge(run.grade?.task.verdict)} · Handling ${badge(run.grade?.handling.verdict)} · Reporting ${badge(run.grade?.reporting.verdict)}`;
@@ -184,7 +195,7 @@
     const search = element<HTMLInputElement>("session-search").value.trim().toLocaleLowerCase();
     const from = element<HTMLInputElement>("session-from").value, to = element<HTMLInputElement>("session-to").value;
     const filter = element<HTMLSelectElement>("session-filter").value, day = nyDay(session.startedAt);
-    return (!search || `${session.userPrompt} ${session.sessionId}`.toLocaleLowerCase().includes(search))
+    return session.agentId === currentAgentId() && (!search || `${session.userPrompt} ${session.sessionId}`.toLocaleLowerCase().includes(search))
       && (!from || Boolean(day && day >= from)) && (!to || Boolean(day && day <= to))
       && (filter === "all" || lifecycle(session.sessionId) === filter);
   }
@@ -221,7 +232,7 @@
         }
         if (body.children[index] !== row) body.insertBefore(row, body.children[index] || null);
       });
-      if (!displayed.length) body.innerHTML = `<tr data-empty><td colspan="6">${!metadataKnown ? metadataError ? "Session list could not be loaded. Refresh to retry." : "Loading finished TV sessions..." : reviewSelected ? "No sessions selected." : "No sessions match these filters."}</td></tr>`;
+      if (!displayed.length) body.innerHTML = `<tr data-empty><td colspan="6">${!metadataKnown ? metadataError ? "Session list could not be loaded. Refresh to retry." : "Loading finished sessions..." : reviewSelected ? "No sessions selected." : "No sessions match these filters."}</td></tr>`;
       deferredRows = false;
     } else deferredRows = true;
     for (const session of displayed) {
@@ -247,6 +258,7 @@
     selectionSummary(); updateControls();
   }
   function updateControls() {
+    element<HTMLSelectElement>("agent").disabled = submitting || Boolean(pendingSubmission);
     element<HTMLButtonElement>("simulate").disabled = submitting || busy !== false || Boolean(pendingSubmission);
     element<HTMLButtonElement>("calibrate").disabled = submitting || busy !== false || Boolean(pendingSubmission);
     element("global-busy").textContent = busy === true ? "An offline eval worker is busy. New submissions are disabled until it finishes." : busy === undefined ? "Checking worker availability. New submissions are disabled until its state is known." : "";
@@ -280,7 +292,7 @@
       if (!metadataKnown || !statusesKnown || busy === undefined) throw new Error("Current state is unavailable. Refresh before submitting.");
       if (!pendingSubmission) {
         if (busy || !selected.size || [...selected].some(id => !eligible(id))) throw new Error("The worker or selected sessions are no longer available. Your selection is preserved.");
-        pendingSubmission = { sessionIds: [...selected].sort(), requestId: crypto.randomUUID() };
+        pendingSubmission = { agentId: currentAgentId(), sessionIds: [...selected].sort(), requestId: crypto.randomUUID() };
       }
       mutationVersion++;
       element("session-message").textContent = "Submitting selected sessions...";
@@ -333,7 +345,7 @@
       const run = await request<Run>(`/api/evals/runs/${encodeURIComponent(id)}`);
       if (version !== detailVersion || !detail.open) return;
       const sourceSessionId = sessionId || run.sourceSessionId || run.assessment?.sourceSessionId;
-      element("detail-body").innerHTML = `${historyLink(sourceSessionId)}<h3>${esc(run.assessment?.request || run.id)}</h3><p>${esc(run.assessment?.finalResponse || "")}</p>${run.error ? `<p class="error" role="alert">${esc(run.error)}</p>` : ""}<p>${judgments(run)}</p><pre>${esc(JSON.stringify({ status: run.status, assessedAt: run.assessedAt, gradedAt: run.gradedAt, sourceSessionId, coverage: run.assessment?.coverage, model: run.assessedModel, promptVersion: run.promptVersion, judge: run.judgeModel, graderVersion: run.graderVersion, usage: run.assessment?.usage, judgeUsage: run.judgeUsage }, null, 2))}</pre><h3>Task and step judgments</h3><pre>${esc(JSON.stringify(run.grade, null, 2))}</pre><h3>Source evidence</h3>${evidenceHtml(run)}`;
+      element("detail-body").innerHTML = `${historyLink(sourceSessionId)}<h3>${esc(run.assessment?.request || run.id)}</h3><p>${esc(run.assessment?.finalResponse || "")}</p>${run.error ? `<p class="error" role="alert">${esc(run.error)}</p>` : ""}<p>${judgments(run)}</p><pre>${esc(JSON.stringify({ agentId: run.agentId, status: run.status, assessedAt: run.assessedAt, gradedAt: run.gradedAt, sourceSessionId, coverage: run.assessment?.coverage, model: run.assessedModel, promptVersion: run.promptVersion, judge: run.judgeModel, graderVersion: run.graderVersion, usage: run.assessment?.usage, judgeUsage: run.judgeUsage }, null, 2))}</pre><h3>Task and step judgments</h3><pre>${esc(JSON.stringify(run.grade, null, 2))}</pre><h3>Source evidence</h3>${evidenceHtml(run)}`;
     } catch (error) {
       if (version === detailVersion && detail.open) element("detail-body").innerHTML = `${historyLink(sessionId)}<p class="error" role="alert">Could not load this evaluation: ${esc(String(error))}</p><button data-run="${esc(id)}"${sessionId ? ` data-history-session="${esc(sessionId)}"` : ""}>Retry inspection</button>`;
     }
@@ -391,15 +403,25 @@
       }).join("")}</div>`;
     }).join("");
   }
-  element("simulate").onclick = () => { void launch({ mode: "simulated", ...(element<HTMLInputElement>("model").value.trim() ? { model: element<HTMLInputElement>("model").value.trim() } : {}) }); };
+  element("simulate").onclick = () => { void launch({ mode: "simulated", agentId: currentAgentId(), ...(element<HTMLInputElement>("model").value.trim() ? { model: element<HTMLInputElement>("model").value.trim() } : {}) }); };
   element("recorded").onclick = () => {
     sessionsInitialized = true;
     selector.showModal(); renderSessions();
     void refresh({ sessions: true });
   };
-  element("calibrate").onclick = () => { void launch({ mode: "calibrate" }); };
+  element("calibrate").onclick = () => { void launch({ mode: "calibrate", agentId: currentAgentId() }); };
   element("refresh").onclick = () => { void refresh({ sessions: sessionsInitialized }); };
-  element("mode").onchange = render; element("agent").onchange = () => { void refresh(); };
+  element("mode").onchange = render;
+  element("agent").onchange = () => {
+    mutationVersion++;
+    selected = selectionsByAgent.get(currentAgentId()) || new Set<string>();
+    selectionsByAgent.set(currentAgentId(), selected);
+    page = 1; reviewSelected = false; sessions = []; availableIds.clear(); metadataKnown = false; metadataError = "";
+    element("session-warning").hidden = true; element("session-source-retry").hidden = true;
+    element("session-message").textContent = "";
+    render(); renderSessions();
+    void refresh({ sessions: sessionsInitialized });
+  };
   runModes.forEach((mode, index) => {
     const tab = element<HTMLButtonElement>(`runs-tab-${mode}`);
     tab.onclick = () => { element<HTMLSelectElement>("mode").value = mode; render(); };
@@ -472,6 +494,12 @@
       : button.dataset.run ? inspect(button.dataset.run, button.dataset.historySession) : pair(button.dataset.pair!.split(":")));
   });
   const params = new URLSearchParams(location.search);
+  const requestedAgent = params.get("agentId");
+  if (requestedAgent && [...element<HTMLSelectElement>("agent").options].some(option => option.value === requestedAgent)) {
+    element<HTMLSelectElement>("agent").value = requestedAgent;
+    selected = selectionsByAgent.get(requestedAgent) || new Set<string>();
+    selectionsByAgent.set(requestedAgent, selected);
+  }
   if (params.has("sessionId")) {
     sessionsInitialized = true;
     void openHistory(params.get("sessionId") || "");

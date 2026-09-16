@@ -1,7 +1,8 @@
 import type { CosmosClientOptions, FeedOptions } from "@azure/cosmos";
 import type { TvFlowMemoryDocument } from "../agents/tv/flowMemory";
 import type { AgentTrace } from "../tracing/agentTraceStore";
-import type { RecordedSession } from "./types";
+import type { EvalAgentId, RecordedSession } from "./types";
+import { isEvalAgentId } from "./registry";
 
 export interface SessionDiscovery {
   sessions: Array<Omit<RecordedSession, "evaluation">>;
@@ -23,7 +24,7 @@ export type SessionFlowMetadata = Pick<
 };
 
 export interface SessionDiscoveryDependencies {
-  /** Return all retained traces, including nonterminal/non-TV conflict records. */
+  /** Return all retained traces, including nonterminal/unsupported conflict records. */
   loadTelemetry(signal: AbortSignal): Promise<readonly SessionTraceMetadata[]> | readonly SessionTraceMetadata[];
   /** Return all projected flow metadata; null means Cosmos is not configured. */
   loadCosmos(signal: AbortSignal): Promise<readonly SessionFlowMetadata[] | null>;
@@ -58,7 +59,7 @@ const SOURCE_TIMEOUT_MS = 60_000;
 const COSMOS_QUERY = "SELECT c.sessionId, c.agent, c.userPrompt, c.status, c.createdAt, c.updatedAt FROM c";
 
 function terminalTrace(trace: SessionTraceMetadata): trace is SessionTraceMetadata & { status: "completed" | "error" } {
-  return trace.agentType === "tv" && Boolean(trace.completedAt) &&
+  return isEvalAgentId(trace.agentType) && Boolean(trace.completedAt) &&
     (trace.status === "completed" || trace.status === "error");
 }
 
@@ -99,15 +100,16 @@ export function mergeRecordedSessions(
     // Do not filter either source before joining: retained conflicts veto import.
     if (trace && !terminalTrace(trace)) continue;
     if (flow && !terminalFlow(flow)) continue;
+    if (trace && flow && trace.agentType !== flow.agent) continue;
     if (trace && terminalTrace(trace)) {
       sessions.push({
-        sessionId, userPrompt: trace.userPrompt, startedAt: trace.startedAt,
+        sessionId, agentId: trace.agentType, userPrompt: trace.userPrompt, startedAt: trace.startedAt,
         completedAt: trace.completedAt, status: trace.status,
         sources: flow ? ["telemetry", "cosmos"] : ["telemetry"],
       });
     } else if (flow && terminalFlow(flow)) {
       sessions.push({
-        sessionId, userPrompt: flow.userPrompt, startedAt: flow.createdAt,
+        sessionId, agentId: "tv", userPrompt: flow.userPrompt, startedAt: flow.createdAt,
         completedAt: flow.updatedAt || flow.createdAt, status: flow.status, sources: ["cosmos"],
       });
     }
@@ -160,8 +162,7 @@ const defaultDependencies: SessionDiscoveryDependencies = {
   async loadTelemetry(signal) {
     const { getAllTraces } = await import("../tracing/agentTraceStore");
     signal.throwIfAborted();
-    // The simulated adapter uses the bare loop, not the orchestrator's lifecycle
-    // telemetry/Cosmos writer. It does not emit finished TV session records.
+    // Simulators do not emit production lifecycle telemetry or Cosmos records.
     return getAllTraces().map(({ sessionId, agentType, userPrompt, startedAt, completedAt, status }) =>
       ({ sessionId, agentType, userPrompt, startedAt, completedAt, status }));
   },
@@ -196,12 +197,14 @@ async function boundedRead<T>(load: (signal: AbortSignal) => T | Promise<T>, tim
 /** Load sources independently; callers decorate evaluation status outside this module. */
 export async function discoverRecordedSessions(
   dependencies: SessionDiscoveryDependencies = defaultDependencies,
+  agentId?: EvalAgentId,
 ): Promise<SessionDiscovery> {
   const timeoutMs = dependencies.timeoutMs ?? SOURCE_TIMEOUT_MS;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("Session discovery timeoutMs must be positive and finite");
+  const usesCosmos = agentId === undefined || agentId === "tv";
   const [telemetry, cosmos] = await Promise.allSettled([
     boundedRead(signal => dependencies.loadTelemetry(signal), timeoutMs),
-    boundedRead(signal => dependencies.loadCosmos(signal), timeoutMs),
+    usesCosmos ? boundedRead(signal => dependencies.loadCosmos(signal), timeoutMs) : Promise.resolve([]),
   ]);
   const warnings: string[] = [];
   function warn(message: string): void {
@@ -213,8 +216,8 @@ export async function discoverRecordedSessions(
   }
   if (telemetry.status === "rejected") unavailable("Telemetry", telemetry.reason);
   if (cosmos.status === "rejected") unavailable("Cosmos", cosmos.reason);
-  if (cosmos.status === "fulfilled" && cosmos.value === null) warn("Cosmos TV-flow storage is not configured; skipping Cosmos discovery.");
-  if (telemetry.status === "rejected" && (cosmos.status === "rejected" || cosmos.value === null)) {
+  if (usesCosmos && cosmos.status === "fulfilled" && cosmos.value === null) warn("Cosmos TV-flow storage is not configured; skipping Cosmos discovery.");
+  if (telemetry.status === "rejected" && (!usesCosmos || cosmos.status === "rejected" || cosmos.value === null)) {
     throw new Error(`No retained-session source is available. ${warnings.join(" ")}`);
   }
   const merged = mergeRecordedSessions(
@@ -222,5 +225,5 @@ export async function discoverRecordedSessions(
     cosmos.status === "fulfilled" ? cosmos.value ?? [] : [],
   );
   merged.warnings.forEach(warn);
-  return { sessions: merged.sessions, warnings };
+  return { sessions: merged.sessions.filter(session => !agentId || session.agentId === agentId), warnings };
 }

@@ -99,7 +99,7 @@ export class EvalStore {
       const legacyRun = legacyRunId ? await this.read<EvalRun>("runs", legacyRunId) : undefined;
       if (legacyRun) await this.saveRun({ ...legacyRun, sourceSessionId: sessionId });
       const attempt: RecordedEvalAttempt = previous || {
-        id, jobId: job.id, sourceSessionId: sessionId,
+        id, jobId: job.id, agentId: job.agentId || "tv", sourceSessionId: sessionId,
         status: legacyRun ? legacyRun.status === "completed" ? "evaluated" : "eval_error" : "queued",
         requestedAt: job.createdAt || batch?.startedAt || new Date().toISOString(),
         runId: legacyRun?.id, finishedAt: legacyRun?.gradedAt, error: legacyRun?.error,
@@ -133,7 +133,7 @@ export class EvalStore {
       }
     }
     await this.write("jobs", failed);
-    await this.alert({ id: randomUUID(), key: "tv:worker-failure", batchId: failed.batchId || failed.id, createdAt: failed.finishedAt!,
+    await this.alert({ id: randomUUID(), agentId: failed.agentId || "tv", key: `${failed.agentId || "tv"}:worker-failure`, batchId: failed.batchId || failed.id, createdAt: failed.finishedAt!,
       kind: "incomplete", message: reason, runIds: [] });
   }
   async recoverInterruptedJobs(): Promise<void> {
@@ -157,7 +157,7 @@ export class EvalStore {
     for (const batch of await this.list<EvalBatch>("batches")) if (batch.status === "running") {
       batch.status = "incomplete"; batch.error = "Eval worker stopped before finishing"; batch.finishedAt = new Date().toISOString();
       await this.write("batches", batch);
-      await this.alert({ id: randomUUID(), key: `${batch.agentId}:incomplete`, batchId: batch.id, createdAt: batch.finishedAt, kind: "incomplete", message: batch.error, runIds: batch.runIds });
+      await this.alert({ id: randomUUID(), agentId: batch.agentId, key: `${batch.agentId}:incomplete`, batchId: batch.id, createdAt: batch.finishedAt, kind: "incomplete", message: batch.error, runIds: batch.runIds });
     }
   }
 }

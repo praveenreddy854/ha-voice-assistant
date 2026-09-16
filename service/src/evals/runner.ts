@@ -19,6 +19,8 @@ export class EvalRunner {
     try {
       signal.throwIfAborted();
       const assessment = await execute();
+      if (assessment.agentId !== batch.agentId || assessment.mode !== batch.mode) throw new Error("Assessment agent or mode does not match its evaluation batch");
+      if (recorded && assessment.sourceSessionId !== recorded.sessionId) throw new Error("Retained assessment does not match the selected session");
       run.assessment = assessment; run.assessedAt = assessment.startedAt; run.durationMs = assessment.durationMs;
       run.assessedModel = assessment.model; run.promptVersion = assessment.promptVersion; run.status = "grading_error";
       const judged = await this.judge(assessment, (await this.store.list<StepGroup>("groups")).filter(g => g.agentId === assessment.agentId), signal);
@@ -52,7 +54,7 @@ export class EvalRunner {
             const confirmation = await this.assess(batch, "confirmation", adapter.version, () => adapter.execute(scenario, signal), signal, scenario);
             const repeated = baselineFor(confirmation, prior).signal === run.comparison.signal;
             run.comparison.confirmation = runVerdict(confirmation) === "error" ? "incomplete" : repeated ? "confirmed" : "intermittent";
-            if (repeated) await this.store.alert({ id: randomUUID(), key: `${adapter.id}:${scenario.id}:${run.comparison.signal}`, kind: run.comparison.signal,
+            if (repeated) await this.store.alert({ id: randomUUID(), agentId: adapter.id, key: `${adapter.id}:${scenario.id}:${run.comparison.signal}`, kind: run.comparison.signal,
               batchId: batch.id, createdAt: new Date().toISOString(), message: `${scenario.request}: confirmed ${run.comparison.signal} against the previous seven complete days.`, runIds: [run.id, confirmation.id] });
           } else if (runVerdict(run) === "pass") {
             await this.store.resolveAlert(`${adapter.id}:${scenario.id}:failure`);
@@ -65,13 +67,13 @@ export class EvalRunner {
     return this.finish(batch);
   }
   async recorded(agentId: string, inputs: Array<(() => Promise<Assessment>) | { sessionId: string; load: () => Promise<Assessment> }>,
-    signal: AbortSignal, options: { jobId?: string } = {}): Promise<EvalBatch> {
+    signal: AbortSignal, options: { jobId?: string; adapterVersion?: string } = {}): Promise<EvalBatch> {
     const batch = this.newBatch(agentId, "recorded"); await this.saveNewBatch(batch, options.jobId);
     const job = options.jobId ? await this.store.read<EvalJob>("jobs", options.jobId) : undefined;
     const attempts = job ? await this.store.queueRecordedAttempts(job) : [];
     for (const input of inputs) {
       if (signal.aborted) { batch.error = "Recorded evaluation interrupted"; break; }
-      await this.assess(batch, "on_demand", "recorded-import-1", typeof input === "function" ? input : input.load, signal, undefined,
+      await this.assess(batch, "on_demand", options.adapterVersion || "recorded-import-1", typeof input === "function" ? input : input.load, signal, undefined,
         typeof input === "function" ? undefined : { sessionId: input.sessionId, attempt: attempts.find(attempt => attempt.sourceSessionId === input.sessionId) });
       if (signal.aborted) break;
     }
@@ -98,7 +100,7 @@ export class EvalRunner {
     const runs = await Promise.all(batch.runIds.map(id => this.store.read<EvalRun>("summaries", id)));
     batch.status = batch.error || runs.some(run => !run || run.status !== "completed") ? "incomplete" : "completed";
     batch.finishedAt = new Date().toISOString(); await this.store.write("batches", batch);
-    if (batch.status === "incomplete") await this.store.alert({ id: randomUUID(), key: `${batch.agentId}:incomplete`, batchId: batch.id, createdAt: batch.finishedAt,
+    if (batch.status === "incomplete") await this.store.alert({ id: randomUUID(), agentId: batch.agentId, key: `${batch.agentId}:incomplete`, batchId: batch.id, createdAt: batch.finishedAt,
       kind: "incomplete", message: batch.error || "One or more eval runs could not finish execution or grading.", runIds: batch.runIds });
     else await this.store.resolveAlert(`${batch.agentId}:incomplete`);
     return batch;

@@ -1,3 +1,5 @@
+import { evalAgents } from "./registry";
+
 export const evalPage = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Offline assistant evals</title>
 <style>
@@ -6,13 +8,13 @@ export const evalPage = `<!doctype html>
 .run-tabs{display:flex;gap:8px;margin:16px 0}.run-tabs button{background:#172337}.run-tabs button[aria-selected=true]{background:#2457a6;border-color:#9bc7ff;font-weight:650}
 </style></head><body>
 <nav class="toolbar" aria-label="Navigation"><a href="/">Home</a><a href="/dashboards">Telemetry dashboards</a><a href="/telemetry">Trace explorer</a></nav>
-<h1>Offline assistant evals</h1><p>TVAgent · Daily simulations and on-demand recorded-run grading. Every verdict links to its evidence.</p>
-<div class="toolbar"><label>Agent <select id="agent"><option value="tv">TVAgent</option></select></label><label>Mode <select id="mode"><option value="all">Both modes</option><option value="simulated">Simulated</option><option value="recorded">Recorded runs</option></select></label><button id="refresh">Refresh</button><span id="window" class="muted"></span></div>
+<h1>Offline assistant evals</h1><p>Daily simulations and on-demand recorded-run grading for every supported assistant agent. Every verdict links to its evidence; comparisons stay within the selected agent.</p>
+<div class="toolbar"><label>Agent <select id="agent">${Object.values(evalAgents).map(agent => `<option value="${agent.id}">${agent.name}</option>`).join("")}</select></label><label>Mode <select id="mode"><option value="all">Both modes</option><option value="simulated">Simulated</option><option value="recorded">Recorded runs</option></select></label><button id="refresh">Refresh</button><span id="window" class="muted"></span></div>
 <div id="status" role="status" aria-live="polite"></div><div id="global-busy" role="status"></div><div id="cards" class="cards"></div>
 <section><h2>Regression alerts</h2><p class="muted">Persistent dashboard notifications for confirmed regressions and incomplete batches. Unchanged issues are grouped.</p><div id="alerts"></div></section>
-<div class="two"><section><h2>Run a simulation</h2><p>Run the 12 TV scenarios with the current configuration, or specify an alternative model deployment. These on-demand runs stay separate from the daily baseline.</p><label>Alternative deployment <input id="model" placeholder="Current backend model"></label><p><button id="simulate">Run simulated suite</button></p></section>
-<section><h2>Grade completed real runs</h2><p>Select finished TV sessions, including assistant errors, from stored telemetry and available Cosmos evidence. Previous evaluations remain available for explicit re-evaluation.</p><button id="recorded" aria-haspopup="dialog" aria-controls="session-selector">Select sessions</button></section></div>
-<section><h2>Run history and weekly comparison</h2><p class="muted">Task fulfillment and correct handling are separate. An unreachable-TV scenario can pass handling without completing the task. Simulation timing is model wall time with virtual device waits.</p>
+<div class="two"><section><h2>Run a simulation</h2><p id="suite-description">Run the selected agent's scenarios with its current configuration, or specify an alternative deployment. These on-demand runs stay separate from the daily baseline.</p><label>Alternative deployment <input id="model" placeholder="Current backend model"></label><p><button id="simulate">Run simulated suite</button></p></section>
+<section><h2>Grade completed real runs</h2><p id="recorded-description">Select finished sessions for this agent, including assistant errors. TV runs can supplement retained telemetry with Cosmos evidence; other agents use retained telemetry. Re-evaluations preserve previous attempts.</p><button id="recorded" aria-haspopup="dialog" aria-controls="session-selector">Select sessions</button></section></div>
+<section><h2>Run history and weekly comparison</h2><p class="muted">Task fulfillment and correct handling are separate: an impossible request can pass handling without completing the task. Simulation timing is model wall time with virtual device waits; Realtime simulations assess text/tool decisions, not audio quality.</p>
 <div class="run-tabs" role="tablist" aria-label="Evaluation mode">
 <button type="button" id="runs-tab-all" role="tab" aria-selected="true" aria-controls="runs-panel">All</button>
 <button type="button" id="runs-tab-simulated" role="tab" aria-selected="false" aria-controls="runs-panel" tabindex="-1">Simulated</button>
@@ -21,11 +23,11 @@ export const evalPage = `<!doctype html>
 <div id="runs-panel" class="scroll" role="tabpanel" aria-labelledby="runs-tab-all" tabindex="0"><table><thead><tr><th>Assessed</th><th>Task / scenario</th><th>Mode / attempt</th><th>Task</th><th>Handling</th><th>Reporting</th><th>Time</th><th>Prior week</th><th>Evidence</th></tr></thead><tbody id="runs"></tbody></table></div></section>
 <section><h2>Simulation fidelity</h2><p id="fidelity-note"></p><div id="fidelity"></div><p class="muted">Open a comparable pair to inspect matching step objectives and each run's exact tool calls. Unknown or incompatible metadata stays unmatched.</p></section>
 <section><h2>Batch coverage</h2><div id="batches"></div></section>
-<section><h2>Judge validation</h2><p>Check the judge against the six reviewed examples: success, false success, wrong content, valid recovery, honest failure, and missing evidence. This is an initial agreement check, not a measured general accuracy claim.</p><button id="calibrate">Validate judge</button><div id="calibrations"></div></section>
+<section><h2>Judge validation</h2><p id="judge-description">Check the selected agent's reference cases for supported success, incorrect actions or claims, and missing evidence. This is an initial agreement check, not a measured general accuracy claim.</p><button id="calibrate">Validate judge</button><div id="calibrations"></div></section>
 <dialog id="session-selector" aria-labelledby="session-selector-title" aria-describedby="session-cost">
 <button class="close" id="session-close" aria-label="Close session selection">Close</button>
-<h2 id="session-selector-title">Select recorded TV sessions</h2>
-<p>Only finished TV sessions are listed, newest first. Assistant status is separate from evaluation lifecycle and task, handling, and reporting verdicts.</p>
+<h2 id="session-selector-title">Select recorded sessions</h2>
+<p>Only finished sessions for the selected agent are listed, newest first. Selections are preserved separately for each agent. Assistant status is separate from evaluation lifecycle and verdicts.</p>
 <div class="toolbar session-filters">
 <label>Search request or session ID <input id="session-search" type="search" placeholder="Request or session ID" autofocus></label>
 <label>Started from (New York) <input id="session-from" type="date"></label>
@@ -38,7 +40,7 @@ export const evalPage = `<!doctype html>
 <div id="session-state-error" class="session-warning" role="alert" hidden></div>
 <div class="toolbar"><label><input id="session-page-select" type="checkbox"> Select this page</label><button id="session-review" aria-pressed="false">Review selected</button><button id="session-clear">Clear selection</button><span id="session-selection-count" role="status"></span></div>
 <p id="session-filter-note" class="muted"></p>
-<div class="scroll"><table><caption class="visually-hidden">Recorded TV sessions available for evaluation</caption><thead><tr><th scope="col">Select</th><th scope="col">Request / session ID</th><th scope="col">Started (New York)</th><th scope="col">Assistant status / sources</th><th scope="col">Evaluation / verdicts</th><th scope="col">History</th></tr></thead><tbody id="session-rows"></tbody></table></div>
+<div class="scroll"><table><caption class="visually-hidden">Recorded sessions available for this agent's evaluation</caption><thead><tr><th scope="col">Select</th><th scope="col">Request / session ID</th><th scope="col">Started (New York)</th><th scope="col">Assistant status / sources</th><th scope="col">Evaluation / verdicts</th><th scope="col">History</th></tr></thead><tbody id="session-rows"></tbody></table></div>
 <div class="toolbar session-pagination"><button id="session-prev">Previous page</button><span id="session-page-count" role="status"></span><button id="session-next">Next page</button></div>
 <div class="selection-footer"><p id="session-summary"></p><p id="session-cost">Grading makes paid model calls using currently retained evidence. It never replays device actions. Re-evaluation preserves earlier attempts and their evidence; changed verdicts may reflect changed evidence, not just a different judge.</p><p class="muted">Closing this dialog or page does not cancel an accepted batch. Results update as individual sessions finish.</p><div id="session-busy" role="status"></div><div id="session-message" role="status" aria-live="polite"></div><button id="session-run" disabled>Run selected evaluations</button></div>
 </dialog>
