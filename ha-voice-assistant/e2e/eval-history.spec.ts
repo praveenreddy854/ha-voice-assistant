@@ -4,6 +4,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { evalPage } from "../../service/src/evals/page";
 import type { EvalRunSummary, RecordedSession, RecordedSessionEvaluation } from "../../service/src/evals/types";
 import type { EvalJob } from "../../service/src/evals/worker";
+import { agents } from "./evalPortalFixture";
 
 type Run = EvalRunSummary & { verdict: string };
 const run = (id: string, mode: Run["mode"], overrides: Partial<Run> = {}): Run => ({
@@ -17,11 +18,6 @@ const mixedRuns = [
   run("simulation-confirmation", "simulated", { attempt: "confirmation" }),
   run("simulation-scheduled", "simulated", { attempt: "scheduled", comparison: { baselineCount: 4, medianMs: 1000 } }),
   run("real-completed", "recorded"),
-];
-const agents = [
-  { id: "tv", name: "TVAgent", description: "TV and playback state.", scenarioCount: 12, referenceCount: 6 },
-  { id: "scheduled_task", name: "ScheduledTaskAgent", description: "Dates and isolated task storage.", scenarioCount: 12, referenceCount: 6 },
-  { id: "realtime", name: "Realtime Voice Agent", description: "Text/tool decisions, not audio quality.", scenarioCount: 12, referenceCount: 6 },
 ];
 const sessions: RecordedSession[] = agents.map(agent => ({
   sessionId: `${agent.id}-source`, agentId: agent.id, userPrompt: `${agent.name} recorded request`,

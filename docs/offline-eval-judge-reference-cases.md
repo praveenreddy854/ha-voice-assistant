@@ -1,4 +1,4 @@
-# Proposed offline-judge reference cases
+# Offline-judge reference cases
 
 These are synthetic evidence examples for reviewing the grading rubric, not evaluations of actual historical sessions, executable TV fixtures, or additional daily scenarios. The user accepted the proposed labels as the initial reference judgments. This initial set illustrates the rubric; it does not establish measured judge accuracy or replace a separate held-out validation set.
 
@@ -106,6 +106,8 @@ Proposed labels:
 
 The dashboard must not count this as a completed user task. Its passing handling verdict means the agent responded appropriately to an impossible scenario.
 
+Agreed numeric anchor for recorded-run task scoring: **0/100** when retained evidence establishes these facts. No task objective or useful intermediate progress was achieved; passing handling and supported reporting remain visible separately. The TVS2 scoring fixture below checks this numeric anchor.
+
 ## J6: A retained record cannot establish the outcome
 
 Request: "Play latest Telugu songs on Apple TV."
@@ -122,3 +124,23 @@ Proposed labels:
 - Completion reporting: **unknown**; the retained record neither supports nor disproves the completion claim.
 
 Do not infer successful playback from an accepted command. Do not infer that the agent skipped verification merely because the retained record is incomplete. Keep the occurrence in its matching task-step group and show the evidence gap.
+
+## Recorded task-scoring fixtures
+
+TVAgent judge validation also runs nine synthetic retained-record fixtures from [`service/src/evals/references.ts`](../service/src/evals/references.ts). Their numeric expectations implement the agreed scoring rubric; they are not evaluations of historical sessions, additions to the daily simulated suite, or a separately human-labeled held-out set. The TVS prefix distinguishes these scoring fixtures from ScheduledTaskAgent's categorical S1-S6 cases.
+
+| Case | Retained behavior | Progress | Execution deductions | Expected score |
+| --- | --- | --- | --- | ---: |
+| TVS1 | Unavailable direct launch, justified navigation, verified success | Complete | None | 100 |
+| TVS2 | Unreachable TV, reasonable recovery, honest failure, no progress | None | None | 0 |
+| TVS3 | TV and YouTube ready, but parental PIN prevents content selection | Prerequisites | None | 15 |
+| TVS4 | Exact requested playlist selected but authorization blocks playback | Nearly complete | None | 45 |
+| TVS5 | One episode of repeated unsupported launches, then verified recovery; duplicate evidence copies | Complete | Moderate: 15 | 85 |
+| TVS6 | One redundant launch of an app already observed ready | Complete | Minor: 5 | 95 |
+| TVS7 | One unrelated wrong-TV reboot before completing the request on the correct TV | Complete | Major: 30 | 70 |
+| TVS8 | Correct playlist paused behind an authorization block, but falsely reported playing | Nearly complete | None; reporting ceiling applies | 20 |
+| TVS9 | Verified final app state and supported response, but execution history missing | Complete | Cannot assess | Unscored |
+
+These checks compare task/reporting verdicts, progress, mistake severities, numeric score, and blocking evidence components. Handling is labeled `not_checked` in TVS1–TVS9 because this scoring rubric does not introduce new categorical handling thresholds; J1–J6 retain the reviewed handling checks. Expected scoring labels are not supplied in the judge's evidence packet.
+
+The calculator has separate deterministic checks for meaningful partial fulfillment (30), accumulated deductions, the completed-task floor of 50, the incomplete-task ceiling of 49, and reporting-capped results below 20. A passing smoke check is not a measured judge-accuracy claim; tune against a separate reviewed held-out set.

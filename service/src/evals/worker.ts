@@ -2,7 +2,8 @@ import dotenv from "dotenv";
 import { randomUUID } from "node:crypto";
 import { EvalStore } from "./store";
 import { installNetworkBoundary } from "./network";
-import { localDay, shiftDay } from "./analytics";
+import { localDay } from "./analytics";
+import { simulatedSkippedDays, updateRecordedDailyOutcome } from "./scheduling";
 import type { EvalBatch } from "./types";
 import { getEvalAgent } from "./registry";
 
@@ -14,6 +15,7 @@ export interface EvalJob {
   sessionIds?: string[];
   model?: string;
   scheduledDay?: string;
+  attempt?: "scheduled" | "on_demand";
   status?: "queued" | "running" | "completed" | "failed";
   batchId?: string;
   error?: string;
@@ -36,6 +38,7 @@ export async function runWorker(job: EvalJob, store = new EvalStore()): Promise<
     job.agentId = registration.id;
     job.status = "running"; job.workerPid = process.pid; job.createdAt ||= new Date().toISOString();
     await store.write("jobs", job);
+    await updateRecordedDailyOutcome(store, job);
     await store.queueRecordedAttempts(job);
     const config = await import("../config");
     if (!config.AZURE_OPENAI_RESOURCE_NAME) throw new Error("Azure model endpoint is not configured");
@@ -56,16 +59,15 @@ export async function runWorker(job: EvalJob, store = new EvalStore()): Promise<
       if (job.mode === "recorded") {
         if (!job.sessionIds?.length) throw new Error("Select completed session IDs for recorded evaluation");
         batch = await runner.recorded(registration.id, [...new Set(job.sessionIds)].map(sessionId => ({ sessionId, load: () => registration.loadRecorded(sessionId) })),
-          controller.signal, { jobId: job.id, adapterVersion: registration.recordedVersion });
+          controller.signal, { jobId: job.id, scheduledDay: job.scheduledDay, adapterVersion: registration.recordedVersion });
       } else {
         if (job.mode !== "simulated") throw new Error("Unknown offline evaluation mode");
         const adapter = await registration.createAdapter(job.model);
         if (adapter.id !== registration.id) throw new Error("Registered adapter returned a different agent identity");
         if (job.scheduledDay && job.scheduledDay !== localDay()) throw new Error("Scheduled evals only run for the current local day");
         if (job.scheduledDay) {
-          const days = (await store.list<EvalBatch>("batches")).filter(b => b.agentId === registration.id && b.attempt === "scheduled" && b.scheduledDay).map(b => b.scheduledDay!).sort();
-          for (let day = days.length ? shiftDay(days[days.length - 1], 1) : job.scheduledDay; day < job.scheduledDay; day = shiftDay(day, 1)) {
-            await store.write<EvalBatch>("batches", { id: `skipped-${registration.id}-${day}`, agentId: registration.id, mode: "simulated", attempt: "scheduled", scheduledDay: day,
+          for (const day of simulatedSkippedDays(await store.list<EvalBatch>("batches"), job.scheduledDay, registration.id)) {
+            await store.write<EvalBatch>("batches", { id: `skipped-${registration.id}-simulated-${day}`, agentId: registration.id, mode: "simulated", attempt: "scheduled", scheduledDay: day,
               startedAt: new Date().toISOString(), status: "skipped", runIds: [] });
           }
         }
@@ -85,7 +87,10 @@ export async function runWorker(job: EvalJob, store = new EvalStore()): Promise<
       job.batchId ||= saved?.batchId;
       job.finishedAt = new Date().toISOString();
       if (job.status === "failed") await store.failJob(job, job.error || "Eval worker failed");
-      else await store.write("jobs", job);
+      else {
+        await store.write("jobs", job);
+        await updateRecordedDailyOutcome(store, job);
+      }
     } finally {
       await release();
       process.removeListener("SIGTERM", stop); process.removeListener("SIGINT", stop);

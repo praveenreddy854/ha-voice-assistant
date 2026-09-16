@@ -8,6 +8,15 @@
   let supportedAgents: string[] | undefined;
   let known = false, loading = false, error = "";
   const date = (value: string) => new Date(value).toLocaleString("en-US", { timeZone: "America/New_York", timeZoneName: "short" });
+  function scoreText(run: import("./types").EvalRunSummary) {
+    if (run.agentId !== "tv") return "task eval score: N/A for this agent";
+    if (run.mode !== "recorded") return "task eval score: N/A — simulated evaluation";
+    if (run.status !== "completed") return "no completed task eval score — evaluation did not finish";
+    const score = run.grade?.score;
+    if (!score) return "Scoring unavailable for this evaluation";
+    return score.status === "scored" ? `task eval score: ${score.value}/100`
+      : `Unscored — insufficient evidence: ${score.reason}`;
+  }
   function render() {
     document.querySelectorAll<HTMLElement>("[data-eval-session-id]").forEach(placeholder => {
       if (supportedAgents && !supportedAgents.includes(placeholder.dataset.agentType || "")) { placeholder.hidden = true; return; }
@@ -19,7 +28,7 @@
       const previous = !known || status !== "evaluated" || Boolean(attempt?.runId && result && attempt.runId !== result.id);
       const text = known ? `Eval: ${labels[status]}` : error ? "Eval: status unavailable" : "Eval: loading status...";
       const verdicts = result
-        ? `${previous ? "Previous evaluation" : "Evaluation"}: task ${result.grade?.task.verdict || "unknown"}; handling ${result.grade?.handling.verdict || "unknown"}; reporting ${result.grade?.reporting.verdict || "unknown"}; graded ${date(result.gradedAt)}${!known ? " (last loaded)" : ""}`
+        ? `${previous ? "Previous evaluation" : "Evaluation"}: ${scoreText(result)}; task ${result.grade?.task.verdict || "unknown"}; handling ${result.grade?.handling.verdict || "unknown"}; reporting ${result.grade?.reporting.verdict || "unknown"}; graded ${date(result.gradedAt)}${!known ? " (last loaded)" : ""}`
         : "";
       const title = [text, error, attempt ? `Requested ${date(attempt.requestedAt)}` : "",
         attempt?.startedAt ? `Started ${date(attempt.startedAt)}` : "", attempt?.finishedAt ? `Finished ${date(attempt.finishedAt)}` : "",

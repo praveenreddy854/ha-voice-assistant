@@ -7,8 +7,8 @@ export function localDay(date = new Date()): string {
 export function shiftDay(day: string, delta: number): string {
   const date = new Date(`${day}T12:00:00Z`); date.setUTCDate(date.getUTCDate() + delta); return date.toISOString().slice(0, 10);
 }
-export function isDue(date = new Date()): boolean {
-  return Number(new Intl.DateTimeFormat("en-US", { timeZone: EVAL_TIMEZONE, hour: "2-digit", hourCycle: "h23" }).format(date)) >= 3;
+export function isDue(date = new Date(), hour = 3): boolean {
+  return Number(new Intl.DateTimeFormat("en-US", { timeZone: EVAL_TIMEZONE, hour: "2-digit", hourCycle: "h23" }).format(date)) >= hour;
 }
 export function median(values: number[]): number | undefined {
   if (!values.length) return undefined;

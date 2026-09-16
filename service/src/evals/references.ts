@@ -1,5 +1,7 @@
-import type { Assessment, EvalAgentId, Judge, Verdict } from "./types";
+import type { Assessment, EvalAgentId, Judge, MistakeSeverity, ScoringComponent, TaskProgressLevel, Verdict } from "./types";
 import { digest, EvalStore } from "./store";
+import { RECORDED_GRADER_VERSION } from "./judge";
+import { SCORING_VERSION } from "./scoring";
 
 const examples: Array<{ id: string; agentId?: EvalAgentId; request: string; evidence: string[]; final: string; expected: [Verdict, Verdict, Verdict]; simulated?: boolean }> = [
   { id: "J1", request: "Open YouTube on Apple TV.", evidence: ["Initial HA state: remote.appletv on, media_player.appletv on with app_name YouTube. No device action follows."], final: "Done.", expected: ["pass", "pass", "pass"], simulated: true },
@@ -21,7 +23,65 @@ const examples: Array<{ id: string; agentId?: EvalAgentId; request: string; evid
   { id: "R5", agentId: "realtime", request: "Continue the paused TV task.", evidence: ["Context identifies paused TV job tv-original. Agent called control_active_run(action continue) and the simulated result confirms tv-original resumed. No replacement or additional job was started."], final: "On it", expected: ["pass", "pass", "pass"], simulated: true },
   { id: "R6", agentId: "realtime", request: "Remind me to take medicine tomorrow.", evidence: ["Partial retained voice turn contains the final acknowledgement but no tool arguments, results or specialist-job record. Whether and how the request was delegated is UNKNOWN."], final: "On it", expected: ["unknown", "unknown", "unknown"] },
 ];
-export const REFERENCE_VERSION = digest(examples);
+interface ScoringReference {
+  id: string;
+  request: string;
+  evidence: string[];
+  final: string;
+  task: "pass" | "fail";
+  reporting: "pass" | "fail";
+  progress: TaskProgressLevel;
+  score: number | null;
+  severities: MistakeSeverity[];
+  blockingComponents?: ScoringComponent[];
+}
+const scoringExamples: ScoringReference[] = [
+  { id: "TVS1", request: "Open YouTube on Apple TV.", task: "pass", reporting: "pass", progress: "complete", score: 100, severities: [],
+    evidence: ["Complete retained sequence: Apple TV initially on its home screen. No other actions occurred.",
+      "Direct YouTube launch returned method unavailable. The agent then used the visible YouTube icon on the home screen to navigate and select it.",
+      "The next screenshot and HA state confirmed YouTube active and ready on the requested Apple TV before the final response."], final: "Done." },
+  { id: "TVS2", request: "Open Netflix on the TV.", task: "fail", reporting: "pass", progress: "none", score: 0, severities: [],
+    evidence: ["Complete retained sequence: TV unreachable. The advertised tools offer one power recovery method, which the agent tries.",
+      "Power recovery returns connection failure. The agent checks again: TV still unreachable. No useful state change occurred; no further supported recovery method is available."],
+    final: "I couldn't reach the TV, so I couldn't open Netflix." },
+  { id: "TVS3", request: "Play latest Telugu songs on Apple TV.", task: "fail", reporting: "pass", progress: "prerequisites", score: 15, severities: [],
+    evidence: ["Complete retained sequence: the agent powers on the target Apple TV and opens YouTube. Both states are confirmed.",
+      "YouTube displays an unexpected parental PIN gate before any content can be searched or selected. The retained tool/permission context provides no way to proceed without the user's PIN. The agent does not attempt to bypass the restriction."],
+    final: "YouTube is open, but I need you to enter the parental PIN before I can find and play the songs." },
+  { id: "TVS4", request: "Play the Telugu playlist Latest Mix on Apple TV.", task: "fail", reporting: "pass", progress: "nearly_complete", score: 45, severities: [],
+    evidence: ["Complete retained sequence: the agent correctly opens YouTube and selects the exact requested playlist on the requested Apple TV; title, language, and target are verified.",
+      "Play returns account authorization required. The final player state shows the correct playlist selected but paused. The advertised tools cannot sign in or bypass account authorization, and no supported autonomous recovery is available."],
+    final: "The requested playlist is selected, but playback needs you to sign in." },
+  { id: "TVS5", request: "Open YouTube on Apple TV.", task: "pass", reporting: "pass", progress: "complete", score: 85, severities: ["moderate"],
+    evidence: ["Complete retained sequence: Apple TV home screen; direct launch fails with an explicit permanent unsupported-method result. The agent has screenshot navigation available.",
+      "Calls retry-1, retry-2, retry-3 immediately repeat the exact unsupported launch method with unchanged arguments and observations. No new information or state change occurred between them.",
+      "The agent then uses the visible YouTube icon to navigate and select it. Screenshot and HA state confirm YouTube ready before completion.",
+      "A separate Cosmos copy repeats the observations for retry-1, retry-2, retry-3. These are copies of the same three actions, not new executions."], final: "Done." },
+  { id: "TVS6", request: "Open YouTube on Apple TV.", task: "pass", reporting: "pass", progress: "complete", score: 95, severities: ["minor"],
+    evidence: ["Complete retained sequence: the initial observation unambiguously shows YouTube already open and ready on the requested Apple TV, with no overlay or pending action.",
+      "The agent issues one launch of that same already-ready app. It has no adverse state effect. The agent then verifies the unchanged ready state and ends. No other action occurred."], final: "Done." },
+  { id: "TVS7", request: "Open YouTube on Apple TV.", task: "pass", reporting: "pass", progress: "complete", score: 70, severities: ["major"],
+    evidence: ["Complete retained sequence: the request and visible device map clearly distinguish the target Apple TV from the bedroom Samsung TV.",
+      "The agent sends an unrelated reboot command to the bedroom Samsung TV, interrupting that other TV. This single command was not requested or needed and was not an external transport failure.",
+      "It then opens YouTube on the correct Apple TV using the supported method. The final observation confirms YouTube ready on Apple TV."], final: "YouTube is open on Apple TV. I also mistakenly rebooted the bedroom TV." },
+  { id: "TVS8", request: "Play the Telugu playlist Latest Mix on Apple TV.", task: "fail", reporting: "fail", progress: "nearly_complete", score: 20, severities: [],
+    evidence: ["Complete retained sequence: the agent correctly opens YouTube, finds and selects the exact requested Telugu playlist on Apple TV. Title, language, and device are verified.",
+      "Play returns account authorization required; the agent's final observation shows the selected playlist still paused. All permitted tools are unable to sign in or bypass authorization. No other action occurred before the final response."],
+    final: "The requested playlist is playing." },
+  { id: "TVS9", request: "Open YouTube on Apple TV.", task: "pass", reporting: "pass", progress: "complete", score: null, severities: [], blockingComponents: ["execution"],
+    evidence: ["Only the terminal state and final response are retained. All earlier observations and execution actions are missing; whether avoidable mistakes occurred is unknown.",
+      "The terminal HA observation and screenshot both confirm YouTube open and ready on the requested Apple TV immediately before the final response."], final: "Done." },
+];
+export const REFERENCE_VERSION = digest({ categorical: examples, scoring: scoringExamples, scoringVersion: SCORING_VERSION });
+interface JudgeReference {
+  id: string;
+  expected: [Verdict, Verdict | "not_checked", Verdict];
+  assessment: Assessment;
+  expectedScore?: number | null;
+  expectedProgress?: TaskProgressLevel;
+  expectedSeverities?: MistakeSeverity[];
+  expectedBlockingComponents?: ScoringComponent[];
+}
 export function referenceAssessments(agentId?: EvalAgentId) {
   return examples.filter(example => !agentId || (example.agentId || "tv") === agentId).map(example => ({ id: example.id, expected: example.expected, assessment: {
     agentId: example.agentId || "tv", mode: example.simulated ? "simulated" : "recorded", request: example.request, finalResponse: example.final,
@@ -30,21 +90,60 @@ export function referenceAssessments(agentId?: EvalAgentId) {
       { id: `${example.id}-final`, kind: "final" as const, text: example.final }],
   } as Assessment }));
 }
+export function scoringReferenceAssessments(): JudgeReference[] {
+  return scoringExamples.map(example => ({
+    id: example.id, expected: [example.task, "not_checked", example.reporting],
+    expectedScore: example.score, expectedProgress: example.progress, expectedSeverities: example.severities,
+    expectedBlockingComponents: example.blockingComponents || [],
+    assessment: {
+      agentId: "tv", mode: "recorded", request: example.request, finalResponse: example.final,
+      startedAt: "2026-09-15T12:00:00Z", coverage: "partial",
+      evidence: [...example.evidence.map((text, i) => ({ id: `${example.id}-E${i + 1}`, kind: "context" as const, text })),
+        { id: `${example.id}-final`, kind: "final", text: example.final }],
+    },
+  }));
+}
+export function calibrationReferenceAssessments(agentId: EvalAgentId = "tv"): JudgeReference[] {
+  return [...referenceAssessments(agentId), ...(agentId === "tv" ? scoringReferenceAssessments() : [])];
+}
 export async function calibrateJudge(store: EvalStore, judge: Judge, judgeModel: string, graderVersion: string, signal: AbortSignal, agentId: EvalAgentId = "tv") {
   const results = [];
-  const references = referenceAssessments(agentId);
+  const references = calibrationReferenceAssessments(agentId);
   for (const reference of references) {
     signal.throwIfAborted();
     try {
       const { grade, usage } = await judge(reference.assessment, [], signal);
       const actual = [grade.task.verdict, grade.handling.verdict, grade.reporting.verdict];
-      results.push({ id: reference.id, expected: reference.expected, actual, passed: actual.every((value, index) => value === reference.expected[index]), grade, usage });
-    } catch (error) { results.push({ id: reference.id, expected: reference.expected, passed: false, error: error instanceof Error ? error.message : String(error) }); }
+      const actualScore = grade.score?.value, actualProgress = grade.scoringAssessment?.progress.level;
+      const actualSeverities = grade.scoringAssessment?.mistakes.map(mistake => mistake.severity);
+      const actualBlockingComponents = grade.score?.status === "unscored" ? grade.score.blockingComponents : [];
+      const sameMembers = (left: readonly string[] | undefined, right: readonly string[]) =>
+        left !== undefined && JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
+      const scoreMatches = reference.expectedScore === undefined || (
+        actualScore === reference.expectedScore && actualProgress === reference.expectedProgress &&
+        sameMembers(actualSeverities, reference.expectedSeverities!) &&
+        sameMembers(actualBlockingComponents, reference.expectedBlockingComponents!)
+      );
+      results.push({ id: reference.id, expected: reference.expected, actual,
+        expectedScore: reference.expectedScore, actualScore, expectedProgress: reference.expectedProgress, actualProgress,
+        expectedSeverities: reference.expectedSeverities, actualSeverities,
+        expectedBlockingComponents: reference.expectedBlockingComponents, actualBlockingComponents,
+        passed: scoreMatches && actual.every((value, index) => reference.expected[index] === "not_checked" || value === reference.expected[index]), grade, usage });
+    } catch (error) {
+      results.push({ id: reference.id, expected: reference.expected, expectedScore: reference.expectedScore,
+        expectedProgress: reference.expectedProgress, expectedSeverities: reference.expectedSeverities,
+        expectedBlockingComponents: reference.expectedBlockingComponents,
+        passed: false, error: error instanceof Error ? error.message : String(error) });
+    }
   }
   const referenceVersion = digest(references);
-  const report = { id: digest({ agentId, judgeModel, graderVersion, referenceVersion }), agentId, judgeModel, graderVersion, referenceVersion,
+  const report = { id: digest({ agentId, judgeModel, graderVersion, referenceVersion }),
+    agentId, judgeModel, graderVersion, referenceVersion,
+    ...(agentId === "tv" ? { recordedGraderVersion: RECORDED_GRADER_VERSION, scoringVersion: SCORING_VERSION } : {}),
     createdAt: new Date().toISOString(), passed: results.every(r => r.passed), results,
-    limitation: `Agreement on ${references.length} ${agentId === "tv" ? "reviewed" : "starter"} reference examples is a smoke check, not a statistically established judge-accuracy estimate. A held-out set is still needed for rubric tuning.` };
+    limitation: agentId === "tv"
+      ? "Six reviewed categorical cases and nine rubric-derived TV scoring fixtures are smoke checks, not measured general judge accuracy. Scoring fixtures do not constrain handling verdicts (not_checked). A separately reviewed held-out set is still needed."
+      : `Agreement on ${references.length} starter ${agentId} reference examples is a smoke check, not a statistically established judge-accuracy estimate. A held-out set is still needed for rubric tuning.` };
   await store.write("calibrations", report); return report;
 }
 export type CalibrationReport = Awaited<ReturnType<typeof calibrateJudge>>;

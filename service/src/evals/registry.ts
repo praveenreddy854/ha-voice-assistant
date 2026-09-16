@@ -1,4 +1,4 @@
-import { EVAL_AGENT_IDS, type AgentAdapter, type Assessment, type EvalAgentId, type Scenario } from "./types";
+import { EVAL_AGENT_IDS, RECORDED_IMPORT_VERSION, type AgentAdapter, type Assessment, type EvalAgentId, type Scenario } from "./types";
 
 interface EvalAgentRegistration {
   id: EvalAgentId;
@@ -24,7 +24,7 @@ export const evalAgents: Record<EvalAgentId, EvalAgentRegistration> = {
     scenarios: async () => (await import("./tv/scenarios")).tvScenarios,
     createAdapter: async model => (await import("./tv/adapter")).createTvAdapter(model),
     loadRecorded: recordedLoader("tv"),
-    recordedVersion: "recorded-import-2",
+    recordedVersion: RECORDED_IMPORT_VERSION,
   },
   scheduled_task: {
     id: "scheduled_task",
@@ -34,7 +34,7 @@ export const evalAgents: Record<EvalAgentId, EvalAgentRegistration> = {
     scenarios: async () => (await import("./scheduled-task/scenarios")).scheduledTaskScenarios,
     createAdapter: async model => (await import("./scheduled-task/adapter")).createScheduledTaskAdapter(model),
     loadRecorded: recordedLoader("scheduled_task"),
-    recordedVersion: "recorded-import-2",
+    recordedVersion: RECORDED_IMPORT_VERSION,
   },
   realtime: {
     id: "realtime",
@@ -44,7 +44,7 @@ export const evalAgents: Record<EvalAgentId, EvalAgentRegistration> = {
     scenarios: async () => (await import("./realtime/scenarios")).realtimeScenarios,
     createAdapter: async model => (await import("./realtime/adapter")).createRealtimeAdapter(model),
     loadRecorded: recordedLoader("realtime"),
-    recordedVersion: "recorded-import-2",
+    recordedVersion: RECORDED_IMPORT_VERSION,
   },
 };
 

@@ -132,6 +132,10 @@ _Avoid_: Tool call, remote-button press.
 An alternative way to achieve a Task step from a particular device or app state.
 _Avoid_: Task step, entire task.
 
+**Task recovery**:
+An evidence-supported continuation toward the same smart-home objective after an unsuccessful Execution method.
+_Avoid_: Recorded-run re-evaluation, every repeated action.
+
 **Execution history summary**:
 A compact account of comparable attempts at an Execution method, including observed outcomes and time spent, with references to the original interactions.
 _Avoid_: Entire conversation, persistent user preference, reported success alone.
@@ -147,11 +151,11 @@ An assessment of assistant behavior against expected outcomes, separate from the
 _Avoid_: Live-home test, network-free test.
 
 **Simulated eval**:
-An Offline assistant eval of a new assistant run against a Simulated assistant environment.
-_Avoid_: Recorded-run eval.
+An Offline assistant eval of orchestration in a new assistant run against a Simulated assistant environment.
+_Avoid_: Synthetic eval, recorded-run eval.
 
 **Recorded-run eval**:
-An Offline assistant eval of a finished real assistant run, including one that ended in error, using its retained observations and final response.
+An Offline assistant eval of a finished real assistant run's end-to-end behavior and task outcome, including unsuccessful runs, using retained evidence.
 _Avoid_: Real eval, live-device replay.
 
 **Recorded-run eval status**:
@@ -161,6 +165,26 @@ _Avoid_: Assistant outcome, task verdict.
 **Recorded-run re-evaluation**:
 A new Recorded-run eval attempt assessing the same original assistant run while retaining its earlier eval attempts.
 _Avoid_: Device-action replay, replacement result.
+
+**Task eval score**:
+A 0–100 assessment of a smart-home task run that prioritizes fulfillment of the whole request and allows limited credit for incomplete progress.
+_Avoid_: Step pass rate, reported success, scenario-handling verdict.
+
+**Task progress level**:
+A category of evidence-supported progress toward the user's smart-home request, ranging from no useful progress to verified full fulfillment.
+_Avoid_: Tool success count, step pass rate.
+
+**Task mistake episode**:
+A distinct avoidable decision or connected sequence of actions that departs from reasonable pursuit of a smart-home request given the observations available to the agent.
+_Avoid_: Every tool call, external method failure, duplicated trace entry.
+
+**Unscored task eval**:
+A completed Offline assistant eval whose retained evidence cannot establish a required component of the Task eval score.
+_Avoid_: Failed task, eval error, score of zero.
+
+**Unjustified completion claim**:
+A claim that a smart-home objective was achieved that is contradicted by applicable observations or demonstrably lacks support in a sufficiently complete record.
+_Avoid_: Unknown outcome, missing telemetry alone.
 
 **Simulated assistant environment**:
 A controlled representation of an assistant's task context that changes in response to its actions and supplies corresponding observations during a Simulated eval.
@@ -210,6 +234,7 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 - A **Simulated eval** of **ScheduledTaskAgent** uses isolated task storage, entity state and memory with a fixed clock and timezone; it does not fire real effects.
 - A **Simulated eval** of the **Realtime Voice Agent** assesses text/tool decisions on the configured Realtime model with simulated delegation and memory. It does not assess microphone input, wake-word detection, transcription or speech quality.
 - A **Recorded-run eval** assesses retained evidence from a finished real assistant run, including one that ended in error, without repeating its device actions.
+- A **Recorded-run eval** can be scheduled or requested on demand without becoming a **Simulated eval**.
 - Eval histories, scheduled baselines, alerts and judge reference cases are scoped to the assessed agent. A Realtime delegation acknowledgement is not a **Verified task outcome** for the delegated device action.
 - A finished real assistant run can have multiple **Recorded-run eval** attempts; **Recorded-run re-evaluation** preserves the earlier attempts.
 - **Simulation fidelity** is assessed by comparing **Simulated eval** and **Recorded-run eval** results at both the **Task step** and whole-request levels.
@@ -219,7 +244,12 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 - An **Offline assistant eval** can pass for correct handling of an impossible scenario without a **Verified task outcome**; passing the eval does not itself mean the requested home objective was achieved.
 - A multi-step agent request contains several **Task step**s, each of which may have multiple applicable **Execution method**s.
 - An **Execution method** may involve one or several device actions to achieve the same **Task step**.
+- **Task recovery** can complete a **Task step** after an unsuccessful **Execution method**; the unsuccessful attempt does not by itself make the whole request a failure.
 - Completing an individual **Task step** does not establish a **Verified task outcome** for the whole request.
+- A **Task eval score** assesses a whole request rather than the proportion of successful **Task step**s.
+- A **Task progress level** is relative to the whole request; app readiness can fulfill an app-opening request while being only a prerequisite for a playback request.
+- A **Task mistake episode** may span multiple actions and appear in multiple retained observations without becoming multiple mistakes.
+- An **Unscored task eval** retains its judgments and evidence gaps without assigning a **Task eval score**.
 - An **Execution history summary** describes an **Execution method** using evidence from successful and failed attempts in comparable circumstances.
 - An **Execution history summary** draws on **Execution record**s for comparable attempts; an **Execution record** can describe success, failure, or an outcome that remains unverified.
 - An **Execution history summary** describes past attempts, while **Persistent agent memory** holds durable preferences, facts, and guidance.
@@ -286,7 +316,7 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 > **Domain expert:** "No — the Simulated TV environment responds to the actions it chooses; different valid sequences can achieve the same objective."
 
 > **Dev:** "Does a Recorded-run eval ask TVAgent to repeat the real task?"
-> **Domain expert:** "No — it grades the retained observations and final response from the completed run."
+> **Domain expert:** "No — it assesses the completed run end to end, from the request through the task outcome supported by retained evidence, without repeating device actions."
 
 > **Dev:** "Can a Recorded-run eval assess a TVAgent run that ended in error?"
 > **Domain expert:** "Yes. Finished does not mean successful; unsuccessful assistant behavior is also evaluated."
@@ -311,6 +341,15 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 
 > **Dev:** "If Disney+ opens successfully, have we fulfilled 'Play The Mandalorian on Disney+ on Apple TV'?"
 > **Domain expert:** "No — that is one completed **Task step**; a **Verified task outcome** for the request needs evidence that the requested content is playing on the requested device."
+
+> **Dev:** "Can turning on the TV, opening YouTube, and finding the requested playlist earn a successful-task score if playback never starts?"
+> **Domain expert:** "No — those completed **Task step**s can receive limited partial credit, but the **Task eval score** must primarily reflect that the whole request remains unfulfilled."
+
+> **Dev:** "Must a task score less because direct app launch failed before navigation successfully opened the app?"
+> **Domain expert:** "No — justified **Task recovery** can receive full credit; avoidable mistakes and repeated ineffective actions are different from a reasonable response to an unavailable method."
+
+> **Dev:** "Can task fulfillment pass while the Task eval score is unavailable?"
+> **Domain expert:** "Yes — the final outcome may be verified while missing execution evidence prevents assessing **Task mistake episode**s; that is an **Unscored task eval**, not a failed task."
 
 > **Dev:** "Does an Execution history summary contain every conversation about Disney+?"
 > **Domain expert:** "No — it describes comparable attempts at an **Execution method**, including their successes and failures, and points back to the original interactions for supporting detail."
@@ -402,7 +441,12 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 ## Flagged ambiguities
 
 - "Offline eval" includes both **Simulated eval** and **Recorded-run eval**; both are in scope and remain distinct.
+- "Synthetic eval" means **Simulated eval**, used to assess orchestration in a controlled environment rather than establish real-device task fulfillment.
 - "Real eval" means **Recorded-run eval**, which grades an existing real run without repeating device actions.
+- "End-to-end" in a **Recorded-run eval** describes the scope of assessment, not a new execution of the task on real devices.
+- "Score" for a recorded task means an outcome-first **Task eval score**, not an average of successful setup steps that can conceal failure of the whole request.
+- "Unscored" means the retained evidence cannot establish a required scoring component; task fulfillment may still be known, and evaluation may still have finished.
+- An **Unjustified completion claim** requires evidence of contradiction or lack of support, rather than an assumption based on an incomplete historical record.
 - "Finished" for a **Recorded-run eval** includes real assistant runs that ended in error; it does not mean the requested task succeeded.
 - "Evaluated" means a **Recorded-run eval** produced a grading result, including fail or unknown verdicts; "Eval error" means evaluation did not finish, not that the assistant failed its task.
 - "Accuracy of simulated runs" means **Simulation fidelity**, assessed through both **Task step** and whole-request comparisons.

@@ -10,8 +10,9 @@ import express from "express";
 import { createEvalRouter } from "../src/evals/api";
 import { baselineFor, fidelityPairs } from "../src/evals/analytics";
 import { recordedHistories, sessionEvaluations } from "../src/evals/history";
-import { assessmentFromRecord } from "../src/evals/recorded";
-import { calibrateJudge, referenceAssessments } from "../src/evals/references";
+import { makeJudge } from "../src/evals/judge";
+import { assessmentFromRecord, RECORDED_IMPORT_VERSION } from "../src/evals/recorded";
+import { calibrateJudge, calibrationReferenceAssessments, referenceAssessments } from "../src/evals/references";
 import { evalAgentCatalog, getEvalAgent, isEvalAgentId } from "../src/evals/registry";
 import { EvalRunner } from "../src/evals/runner";
 import { EvalStore } from "../src/evals/store";
@@ -55,6 +56,7 @@ test("eval registry enumerates bounded suites without constructing live agents",
     assert.ok(agent.scenarioCount > 0 && agent.scenarioCount <= 12);
     assert.equal(new Set(agent.scenarios.map(scenario => scenario.id)).size, agent.scenarioCount);
     assert.equal(getEvalAgent(agent.id).id, agent.id);
+    assert.equal(getEvalAgent(agent.id).recordedVersion, RECORDED_IMPORT_VERSION);
   }
   assert.equal(getEvalAgent().id, "tv");
   for (const id of ["__proto__", "scheduled-task", "home_assistant", "unknown", ""]) {
@@ -126,13 +128,14 @@ test("runner never grades an assessment under another agent, mode or selected so
 
 test("scheduled batches run every agent once, sequentially, without a persistent queue", () => withStore(async store => {
   const launches: EvalJob[] = [], children: ChildProcess[] = [];
+  let now = new Date("2026-09-15T06:59:00Z");
   const supervisor = new EvalSupervisor(store, job => {
     launches.push(job);
     const child = new ChildProcess(); children.push(child); return child;
-  });
-  const now = new Date("2026-09-15T12:00:00Z");
-  await supervisor.tick(new Date("2026-09-15T06:59:00Z"));
+  }, { now: () => now, configuration: () => ({ simulated: true, recorded: false }) });
+  await supervisor.tick(now);
   assert.equal(launches.length, 0);
+  now = new Date("2026-09-15T12:00:00Z");
   for (const [index, agentId] of EVAL_AGENT_IDS.entries()) {
     await supervisor.tick(now);
     assert.equal(launches.length, index + 1);
@@ -151,8 +154,10 @@ test("scheduled batches run every agent once, sequentially, without a persistent
 test("legacy TV scheduled history does not suppress scheduled-task or realtime batches", () => withStore(async store => {
   await store.write("jobs", { id: "legacy-tv", mode: "simulated", scheduledDay: "2026-09-15", status: "failed" });
   let launched: EvalJob | undefined;
-  const supervisor = new EvalSupervisor(store, job => { launched = job; return new ChildProcess(); });
-  await supervisor.tick(new Date("2026-09-15T12:00:00Z"));
+  const now = new Date("2026-09-15T12:00:00Z");
+  const supervisor = new EvalSupervisor(store, job => { launched = job; return new ChildProcess(); },
+    { now: () => now, configuration: () => ({ simulated: true, recorded: false }) });
+  await supervisor.tick(now);
   assert.equal(launched?.agentId, "scheduled_task");
 }));
 
@@ -197,18 +202,44 @@ test("judge calibration runs only the selected agent's reference set and persist
   const all = referenceAssessments();
   assert.equal(all.length, 18);
   assert.equal(new Set(all.map(reference => reference.id)).size, 18);
+  const complete = EVAL_AGENT_IDS.flatMap(agentId => calibrationReferenceAssessments(agentId));
+  assert.equal(complete.length, 27);
+  assert.equal(new Set(complete.map(reference => reference.id)).size, 27);
   for (const agentId of EVAL_AGENT_IDS) {
     const seen: string[] = [];
-    const report = await calibrateJudge(store, async input => {
+    const references = calibrationReferenceAssessments(agentId);
+    const judge = makeJudge(async (_system, input) => {
       seen.push(input.agentId);
-      const reference = all.find(example => example.assessment.evidence[0].id === input.evidence[0].id)!;
-      const item = (verdict: typeof reference.expected[number]) => ({ verdict, reason: "Reference fixture", evidenceIds: [input.evidence[0].id] });
-      return { grade: { ...structuredClone(grade), task: item(reference.expected[0]), handling: item(reference.expected[1]), reporting: item(reference.expected[2]) } };
-    }, "judge", "1", new AbortController().signal, agentId);
+      const reference = references.find(example => example.assessment.evidence[0].id === input.evidence[0].id)!;
+      const item = (verdict: typeof grade.task.verdict) => ({ verdict, reason: "Reference fixture", evidenceIds: [input.evidence[0].id] });
+      const output: Grade = { ...structuredClone(grade), steps: [], task: item(reference.expected[0]),
+        handling: item(reference.expected[1] === "not_checked" ? "pass" : reference.expected[1]), reporting: item(reference.expected[2]),
+        recovery: item("not_applicable") };
+      if (agentId === "tv") {
+        const level = reference.expectedProgress || (reference.expected[0] === "pass" ? "complete" : reference.expected[0] === "fail" ? "none" : "unknown");
+        const support = { reason: "Reference fixture", evidenceIds: [input.evidence[0].id] };
+        const blocked = new Set(reference.expectedBlockingComponents);
+        output.scoringAssessment = {
+          progress: { level, ...support },
+          mistakes: (reference.expectedSeverities || []).map((severity, index) => ({ id: `episode-${index}`, severity, ...support })),
+          evidence: {
+            progress: { sufficient: level !== "unknown" && !blocked.has("progress"), ...support },
+            execution: { sufficient: !blocked.has("execution"), ...support },
+            reporting: { sufficient: reference.expected[2] !== "unknown" && !blocked.has("reporting"), ...support },
+          },
+        };
+      }
+      return { output };
+    });
+    const report = await calibrateJudge(store, judge, "judge", "1", new AbortController().signal, agentId);
     assert.equal(report.agentId, agentId);
-    assert.equal(report.results.length, 6);
+    assert.equal(report.results.length, agentId === "tv" ? 15 : 6);
     assert.equal(report.passed, true);
     assert.ok(seen.every(id => id === agentId));
+    if (agentId !== "tv") {
+      assert.equal(report.scoringVersion, undefined);
+      assert.ok(report.results.every(result => result.grade?.score === undefined));
+    }
   }
   assert.equal((await store.list("calibrations")).length, 3);
 }));
@@ -241,7 +272,10 @@ test("API scopes runs, alerts, jobs, calibrations and discovery, and rejects unk
     for (const agentId of EVAL_AGENT_IDS) {
       const response = await fetch(`${base}/api/evals?agentId=${agentId}`);
       assert.equal(response.status, 200);
-      const data = await response.json() as Record<string, Array<{ agentId?: string; id: string }>>;
+      const data = await response.json() as Record<string, Array<{ agentId?: string; id: string; referenceCount?: number }>>;
+      assert.deepEqual(data.agents.map(agent => ({ id: agent.id, count: agent.referenceCount })), [
+        { id: "tv", count: 15 }, { id: "scheduled_task", count: 6 }, { id: "realtime", count: 6 },
+      ]);
       assert.equal(data.runs.length, 1);
       assert.equal(data.runs[0].agentId, agentId);
       for (const key of ["batches", "alerts", "jobs"]) assert.equal(data[key].length, 1);

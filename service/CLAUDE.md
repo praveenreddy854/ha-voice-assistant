@@ -72,7 +72,7 @@ npm run eval:recorded -- --agent scheduled_task COMPLETED_SESSION_ID
 npm run eval:calibrate -- --agent realtime
 ```
 
-The dashboard at `/dashboards/evals` scopes runs, selections, baselines and alerts by agent. Daily suites run sequentially under one worker. Recorded evaluation only reads terminal production traces (plus optional TV Cosmos evidence) and never replays actions. See `docs/offline-evals.md` and `docs/offline-eval-testing.md`.
+The dashboard at `/dashboards/evals` scopes runs, selections, baselines and alerts by agent. Daily simulated suites run sequentially from 3 a.m. America/New_York under one worker. TV recorded runs also have a default-on 1 a.m. schedule and evidence-grounded 0-100 task scoring; ScheduledTask and Realtime recorded evals remain on demand and categorical. Recorded evaluation only reads terminal production traces (plus optional TV Cosmos evidence) and never replays actions. See `docs/offline-evals.md` and `docs/offline-eval-testing.md`.
 
 ### Key Directories
 
