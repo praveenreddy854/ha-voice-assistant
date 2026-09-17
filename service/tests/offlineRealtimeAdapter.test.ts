@@ -9,7 +9,8 @@ import test from "node:test";
 import { buildRealtimeInstructions, buildRealtimeTurnInstructions, needsActionConfirmation, REALTIME_TOOLS } from "../src/realtimeAgent";
 import { createRealtimeAdapter, createRealtimeAdapterWithTransport } from "../src/evals/realtime/adapter";
 import { RealtimeEnvironment } from "../src/evals/realtime/environment";
-import { executeRealtimeSession, realtimeDeploymentUrl } from "../src/evals/realtime/executor";
+import { executeRealtimeSession, realtimeDeploymentUrl, realtimeUsage } from "../src/evals/realtime/executor";
+import { EvalExecutionError, TrialTelemetry } from "../src/evals/telemetry";
 import type { RealtimeExecutionOptions, RealtimeSocket, RealtimeTransport } from "../src/evals/realtime/executor";
 import { realtimeScenarios } from "../src/evals/realtime/scenarios";
 import { installNetworkBoundary } from "../src/evals/network";
@@ -126,6 +127,15 @@ test("native Realtime request shape, isolated job acceptance, complete evidence 
     assert.equal(result.model, config.model);
     assert.equal(result.finalResponse, "On it");
     assert.deepEqual(result.usage, { inputTokens: 20, outputTokens: 4, totalTokens: 24 });
+    assert.equal(result.metrics?.userTurns, 1);
+    assert.equal(result.metrics?.assistantTurns, 2);
+    assert.equal(result.metrics?.modelRequests, 2);
+    assert.equal(result.metrics?.toolCalls, 1);
+    assert.equal(result.metrics?.toolExecutions, 1);
+    assert.equal(result.metrics?.completionCalls, 0);
+    assert.equal(result.metrics?.toolErrors, 0);
+    assert.equal(result.trace?.toolCalls[0].toolCallId, "call-1");
+    assert.doesNotMatch(JSON.stringify(result.trace), /fixture-key-not-for-evidence/);
     assert.equal(result.coverage, "complete");
     assert.match(result.expectations!, /Audio, microphone/);
     assert.deepEqual(new Set(result.evidence.map(item => item.kind)), new Set(["initial", "tool", "context", "final", "assertion"]));
@@ -191,6 +201,10 @@ test("all twelve stateful fixtures support their expected paths and leave langua
     const assertion = JSON.parse(result.evidence[result.evidence.length - 1].text);
     assert.deepEqual(assertion.violations, [], fixture.id);
     assert.notEqual(result.taskAssertion, false, fixture.id);
+    assert.equal(result.metrics?.userTurns, fixture.initial.turns.length, fixture.id);
+    assert.equal(result.metrics?.assistantTurns, script.length, fixture.id);
+    assert.equal(result.metrics?.modelRequests, script.length, fixture.id);
+    assert.equal(result.metrics?.toolCalls, script.flat().filter(item => item.type === "function_call").length, fixture.id);
     if (fixture.initial.turns.some(turn => !["delegate", "control"].includes(turn.goal.kind))) {
       assert.equal(result.taskAssertion, undefined, fixture.id);
     }
@@ -350,7 +364,13 @@ test("abort, timeout, dial errors and early closes settle and shut down the sock
   await assert.rejects(executeRealtimeSession(options(aborting.transport, { signal: controller.signal })), /stop eval/);
   assert.equal(aborting.sockets[0].readyState, 3);
   const hanging = transportFor(() => {});
-  await assert.rejects(executeRealtimeSession(options(hanging.transport, { timeoutMs: 10 })), /timed out/);
+  const telemetry = new TrialTelemetry();
+  await assert.rejects(executeRealtimeSession(options(hanging.transport, { timeoutMs: 10, telemetry })), /timed out/);
+  const timeoutMetrics = telemetry.finish(new Error("Timed out")).metrics;
+  assert.equal(timeoutMetrics.stopReason, "timeout");
+  assert.equal(timeoutMetrics.modelErrors, 1);
+  assert.equal(timeoutMetrics.modelRequests, 1);
+  assert.equal(timeoutMetrics.assistantTurns, 0);
   assert.equal(hanging.sockets[0].readyState, 3);
   const closed = transportFor((_index, ws) => ws.close(1006));
   await assert.rejects(executeRealtimeSession(options(closed.transport)), /closed before completion/);
@@ -363,6 +383,55 @@ test("abort, timeout, dial errors and early closes settle and shut down the sock
   assert.equal(failedSocket!.terminateCalls, 1);
   const upgrade = transportFor((_index, ws) => ws.emit("unexpected-response", {}, { statusCode: 401 }));
   await assert.rejects(executeRealtimeSession(options(upgrade.transport)), /upgrade rejected: HTTP 401/);
+});
+
+test("Realtime duplicate completions are counted once and native token subsets are retained", async () => {
+  const fake = transportFor((index, ws) => {
+    const frame = done(`response-${index}`, index === 0
+      ? [call("execute_home_assistant_command", { command: "Dim only the kitchen lights to 30 percent." })]
+      : [message("On it")], {
+        usage: { ...usage, input_token_details: { cached_tokens: 3 }, output_token_details: { reasoning_tokens: 1 } },
+      });
+    ws.server(frame);
+    ws.server(frame);
+  });
+  const result = await createRealtimeAdapterWithTransport(config, fake.transport)
+    .execute(scenario("ha-immediate-qualified"), new AbortController().signal);
+  assert.equal(result.metrics?.assistantTurns, 2);
+  assert.equal(result.metrics?.toolCalls, 1);
+  assert.equal(result.metrics?.modelRequests, 2);
+  assert.deepEqual(result.usage, { inputTokens: 20, outputTokens: 4, totalTokens: 24, cacheReadTokens: 6, reasoningTokens: 2 });
+  assert.equal(realtimeUsage({ input_tokens: -1 }).inputTokens, undefined);
+});
+
+test("Realtime transport failures keep partial response text, prior tool evidence and honest usage coverage", async () => {
+  const fake = transportFor((index, ws) => {
+    if (index === 0) ws.server(done("tool-response", [
+      call("execute_home_assistant_command", { command: "Dim only the kitchen lights to 30 percent." }),
+    ]));
+    else {
+      ws.server({ type: "response.text.delta", delta: "On" });
+      setImmediate(() => ws.emit("error", new Error("Connection lost")));
+    }
+  });
+  const adapter = createRealtimeAdapterWithTransport(config, fake.transport);
+  await assert.rejects(adapter.execute(scenario("ha-immediate-qualified"), new AbortController().signal), (error: unknown) => {
+    assert.ok(error instanceof EvalExecutionError);
+    const result = error.assessment;
+    assert.equal(result.coverage, "partial");
+    assert.equal(result.metrics?.stopReason, "error");
+    assert.equal(result.metrics?.assistantTurns, 1);
+    assert.equal(result.metrics?.modelRequests, 2);
+    assert.equal(result.metrics?.modelErrors, 1);
+    assert.equal(result.metrics?.toolExecutions, 1);
+    assert.equal(result.usage?.totalTokens, undefined);
+    assert.equal(result.trace?.modelCalls[0].responses[0].usage?.totalTokens, 12);
+    assert.equal(result.trace?.modelCalls[1].partialText, "On");
+    assert.equal(result.evidence.filter(item => item.kind === "tool").length, 1);
+    assert.doesNotMatch(JSON.stringify(result), /fixture-key-not-for-evidence/);
+    return true;
+  });
+  assert.equal(fake.sockets[0].readyState, 3);
 });
 
 test("abort during an isolated tool prevents later outputs, calls and response creation", async () => {

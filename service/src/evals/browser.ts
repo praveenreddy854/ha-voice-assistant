@@ -1,7 +1,7 @@
 (() => {
   const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
   const esc = (value: unknown) => String(value ?? "—").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
-  type Run = import("./types").EvalRun & { request?: string; verdict: string };
+  type Run = import("./types").EvalRunSummary & { assessment?: import("./types").Assessment; verdict: string };
   type Session = import("./types").RecordedSession;
   type Evaluation = import("./types").RecordedSessionEvaluation;
   type History = import("./types").RecordedSessionHistory;
@@ -12,7 +12,7 @@
     expectedScore?: number | null; actualScore?: number | null; expectedProgress?: string; actualProgress?: string;
     expectedSeverities?: string[]; actualSeverities?: string[];
     expectedBlockingComponents?: string[]; actualBlockingComponents?: string[] };
-  type Snapshot = { runs: Run[]; batches: import("./types").EvalBatch[]; alerts: import("./types").EvalAlert[]; busy: boolean;
+  type Snapshot = { runs: Run[]; batches: import("./types").EvalBatchSummary[]; alerts: import("./types").EvalAlert[]; busy: boolean;
     agents: { id: string; name: string; description: string; scenarioCount: number; referenceCount: number }[];
     baseline: { from: string; to: string }; timezone: string; scheduleEnabled: boolean; schedules?: Schedules; fidelityNote: string;
     fidelity: { simulatedId: string; recordedIds: string[]; status: string }[];
@@ -37,6 +37,7 @@
   let displayed: Session[] = [];
   let pendingSubmission: { agentId: string; requestId: string; sessionIds: string[] } | undefined;
   let detailVersion = 0, historySession: string | undefined, returnToSelection = false;
+  let detailDownloadUrl: string | undefined;
   let historyLoading = false, historyMarkup: string | undefined;
   const selector = element<HTMLDialogElement>("session-selector");
   const detail = element<HTMLDialogElement>("detail");
@@ -57,6 +58,21 @@
     return ["year", "month", "day"].map(type => parts.find(part => part.type === type)!.value).join("-");
   };
   const duration = (value?: number) => value == null ? "Unknown" : `${(value / 1000).toFixed(1)}s`;
+  const metricNumber = (value?: number) => value == null || !Number.isFinite(value) || value < 0 ? "Unavailable" : value.toLocaleString("en-US");
+  const latency = (value?: number) => value == null || !Number.isFinite(value) || value < 0 ? "Unavailable"
+    : value < 1000 ? `${value.toFixed(0)} ms` : `${(value / 1000).toFixed(2)} s`;
+  const runMetrics = (run: Run) => run.assessment?.metrics || run.metrics;
+  const agentUsage = (run: Run) => run.assessment?.usage || run.usage;
+  function metricCells(run: Run) {
+    const metrics = runMetrics(run), usage = agentUsage(run);
+    return `<td class="trial-turns">${metricNumber(metrics?.assistantTurns)}${metrics ? `<br><small>${metricNumber(metrics.userTurns)} user turns</small>` : ""}</td><td class="trial-tools">${metricNumber(metrics?.toolCalls)}${metrics ? `<br><small>${metricNumber(metrics.toolExecutions)} executed<br>${metricNumber(metrics.toolErrors)} failed / ${metricNumber(metrics.rejectedToolCalls)} rejected</small>` : ""}</td><td class="trial-tokens">${metricNumber(usage?.totalTokens)}${usage ? `<br><small>In ${metricNumber(usage.inputTokens)} / out ${metricNumber(usage.outputTokens)}</small>` : ""}</td>`;
+  }
+  function batchHtml(batch: import("./types").EvalBatchSummary) {
+    const heading = `${esc(batch.scheduledDay || date(batch.startedAt))} · ${esc(batch.mode)} · ${batch.attempt === "scheduled" ? "Scheduled" : "On demand"} · ${badge(batch.status)} · ${batch.runIds.length} attempts ${esc(batch.error || "")}`;
+    if (batch.mode !== "simulated") return `<p>${heading}</p>`;
+    const metrics = batch.metricsByAttempt;
+    return `<details class="batch-metrics"><summary>${heading}</summary>${batch.missingRunSummaries ? `<p class="error" role="alert">${metricNumber(batch.missingRunSummaries)} run summaries unavailable. Totals below cover only retained summaries, not the entire batch.</p>` : ""}${metrics?.length ? `<div class="scroll"><table><caption>Retained simulated trial metrics</caption><thead><tr><th>Attempt</th><th>Telemetry coverage</th><th>Assistant turns</th><th>Tool calls / failures</th><th>Agent tokens</th><th>Judge tokens</th><th>Agent latency p50 / p95</th><th>Execution / grading errors</th></tr></thead><tbody>${metrics.map(item => `<tr><td>${esc(item.attempt)}</td><td>${metricNumber(item.measuredRuns)} / ${metricNumber(item.runCount)} trials</td><td>${metricNumber(item.assistantTurns)}</td><td>${metricNumber(item.toolCalls)} / ${metricNumber(item.toolErrors)}</td><td>${metricNumber(item.usage.totalTokens)}</td><td>${metricNumber(item.judgeUsage.totalTokens)}</td><td>${latency(item.p50DurationMs)} / ${latency(item.p95DurationMs)}<br><small>${metricNumber(item.latencySamples)} samples</small></td><td>${metricNumber(item.executionErrors)} / ${metricNumber(item.gradingErrors)}</td></tr>`).join("")}</tbody></table></div><p class="muted">Scheduled, confirmation, and on-demand attempts stay separate. Latencies include unsuccessful attempts; p95 uses the nearest-rank sample. Missing token contributions make the total unavailable.</p>` : '<p class="muted">Trial metrics unavailable for this batch.</p>'}</details>`;
+  }
   function scoreHtml(run: RunSummary) {
     if (run.agentId !== "tv") return '<span class="task-score muted">Task eval score: N/A for this agent</span>';
     if (run.mode !== "recorded") return '<span class="task-score muted">Task eval score: N/A — simulated evaluation</span>';
@@ -142,12 +158,12 @@
     const emptyRuns = mode === "simulated" ? "No simulated evals yet. Run a simulation above."
       : mode === "recorded" ? "No real evals yet. Select completed real sessions above."
       : "No evals yet. Run a simulation or select completed real sessions above.";
-    element("runs").innerHTML = runs.map(r => `<tr><td>${esc(date(r.assessedAt))}<br><small>Graded ${esc(date(r.gradedAt))}</small></td><td>${esc(r.request || r.scenarioId || r.id)}<br><small>${esc(r.assessedModel || "Model unknown")}</small></td><td>${badge(r.mode)}<br><small>${esc(r.attempt)}</small></td><td>${scoreHtml(r)}</td><td>${badge(r.grade?.task.verdict)}</td><td>${badge(r.grade?.handling.verdict || (r.status !== "completed" ? "error" : "unknown"))}</td><td>${badge(r.grade?.reporting.verdict)}</td><td>${duration(r.durationMs)}</td><td>${r.comparison ? r.comparison.baselineCount >= 3 ? `${r.comparison.baselineCount} samples<br>Median ${duration(r.comparison.medianMs)}<br>${esc(r.comparison.signal || "No alert threshold crossed")} ${esc(r.comparison.confirmation || "")}` : `Collecting baseline (${r.comparison.baselineCount}/3)` : r.attempt === "scheduled" ? `Scheduled${r.scheduledDay ? `<br>${esc(r.scheduledDay)}` : ""}${r.mode === "recorded" ? "<br><small>Not part of the simulated baseline</small>" : ""}` : r.attempt === "confirmation" ? "Confirmation" : "On demand"}</td><td><button data-run="${esc(r.id)}">Inspect</button></td></tr>`).join("") || `<tr><td colspan="10">${emptyRuns}</td></tr>`;
+    element("runs").innerHTML = runs.map(r => `<tr><td>${esc(date(r.assessedAt))}<br><small>Graded ${esc(date(r.gradedAt))}</small></td><td>${esc(r.request || r.scenarioId || r.id)}<br><small>${esc(r.assessedModel || "Model unknown")}</small></td><td>${badge(r.mode)}<br><small>${esc(r.attempt)}</small></td><td>${scoreHtml(r)}</td><td>${badge(r.grade?.task.verdict)}</td><td>${badge(r.grade?.handling.verdict || (r.status !== "completed" ? "error" : "unknown"))}</td><td>${badge(r.grade?.reporting.verdict)}</td>${metricCells(r)}<td>${duration(r.durationMs)}${runMetrics(r) ? `<br><small>${esc(runMetrics(r)!.stopReason.replace(/_/g, " "))}</small>` : ""}</td><td>${r.comparison ? r.comparison.baselineCount >= 3 ? `${r.comparison.baselineCount} samples<br>Median ${duration(r.comparison.medianMs)}<br>${esc(r.comparison.signal || "No alert threshold crossed")} ${esc(r.comparison.confirmation || "")}` : `Collecting baseline (${r.comparison.baselineCount}/3)` : r.attempt === "scheduled" ? `Scheduled${r.scheduledDay ? `<br>${esc(r.scheduledDay)}` : ""}${r.mode === "recorded" ? "<br><small>Not part of the simulated baseline</small>" : ""}` : r.attempt === "confirmation" ? "Confirmation" : "On demand"}</td><td><button data-run="${esc(r.id)}">Inspect</button></td></tr>`).join("") || `<tr><td colspan="13">${emptyRuns}</td></tr>`;
     element("fidelity-note").textContent = snapshot.fidelityNote;
     const fidelity = snapshot.fidelity.filter(p => agentRuns.some(run => run.id === p.simulatedId));
     const pairs = fidelity.filter(p => p.recordedIds.length);
     element("fidelity").innerHTML = pairs.map(p => `<p>${esc(agentRuns.find(r => r.id === p.simulatedId)?.scenarioId)} · ${p.recordedIds.length} comparable recorded runs <button data-pair="${esc(p.simulatedId)}:${esc(p.recordedIds[0])}">Compare steps</button></p>`).join("") || `No comparison data yet. ${fidelity.length} simulated runs currently unmatched.`;
-    element("batches").innerHTML = snapshot.batches.filter(b => b.agentId === agentId).map(b => `<p>${esc(b.scheduledDay || date(b.startedAt))} · ${esc(b.mode)} · ${b.attempt === "scheduled" ? "Scheduled" : "On demand"} · ${badge(b.status)} · ${b.runIds.length} attempts ${esc(b.error || "")}</p>`).join("") || "No batches recorded.";
+    element("batches").innerHTML = snapshot.batches.filter(b => b.agentId === agentId).map(batchHtml).join("") || "No batches recorded.";
     element("calibrations").innerHTML = snapshot.calibrations.filter(c => (c.agentId || "tv") === agentId).map(c => `<details><summary>${esc(c.judgeModel)} · ${badge(c.passed ? "pass" : "fail")} · ${esc(date(c.createdAt))}</summary>${c.results.map(result => calibrationHtml(result, agentId)).join("")}${c.limitation ? `<p class="muted">${esc(c.limitation)}</p>` : ""}</details>`).join("") || "<p class=muted>The judge has not been validated against the reference cases yet.</p>";
   }
   function refresh(options: { sessions?: boolean; sources?: boolean } = {}): Promise<void> {
@@ -374,6 +390,31 @@
   function evidenceHtml(run: Run, ids?: string[]) {
     return (run.assessment?.evidence || []).filter(e => !ids || ids.includes(e.id)).map(e => `<details${ids ? "" : ` id="evidence-${esc(encodeURIComponent(e.id))}"`}><summary>${esc(e.id)} · ${esc(e.toolName || e.kind)} · ${e.durationMs == null ? "" : duration(e.durationMs)}</summary><pre>${esc(JSON.stringify({ ...e, image: undefined }, null, 2))}</pre>${e.image?.startsWith("data:image/") ? `<img alt="Evidence ${esc(e.id)}" src="${esc(e.image)}">` : ""}</details>`).join("");
   }
+  function diagnosticsHtml(run: Run) {
+    const metrics = runMetrics(run);
+    const counts: Array<[string, number | undefined]> = [
+      ["User turns", metrics?.userTurns], ["Assistant turns", metrics?.assistantTurns],
+      ["Model requests", metrics?.modelRequests], ["Model errors", metrics?.modelErrors],
+      ["Tool calls", metrics?.toolCalls], ["Tool executions", metrics?.toolExecutions],
+      ["Tool failures", metrics?.toolErrors], ["Rejected tool calls", metrics?.rejectedToolCalls],
+      ["Unexecuted tool calls", metrics?.unexecutedToolCalls], ["Completion signals", metrics?.completionCalls],
+    ];
+    const timings: Array<[string, number | undefined]> = [
+      ["Agent wall time", run.durationMs], ["Model request time", metrics?.modelTimeMs],
+      ["Simulated tool time", metrics?.toolTimeMs], ["First complete response", metrics?.timeToFirstResponseMs],
+      ["Offline grading time", run.gradingDurationMs], ["Evaluation time", run.evaluationDurationMs],
+    ];
+    if (metrics?.virtualDeviceTimeMs !== undefined) timings.push(["Virtual device waits", metrics.virtualDeviceTimeMs]);
+    const usages: Array<[string, import("./types").Usage | undefined]> = [
+      ["Assessed agent", agentUsage(run)], ["Offline judge", run.judgeUsage],
+    ];
+    return `<section aria-label="Trial diagnostics"><h3>Trial diagnostics</h3>${metrics ? `<p><strong>Stop reason:</strong> ${esc(metrics.stopReason.replace(/_/g, " "))} · Metrics v${esc(metrics.version)}${run.status === "execution_error" ? " · Partial trace retained; execution did not finish." : ""}</p>` : '<p class="unknown">Trial metrics unavailable for this evaluation. Older and recorded evaluations are not backfilled.</p>'}<div class="two"><dl class="score-calculation">${counts.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${metricNumber(value)}</dd>`).join("")}</dl><dl class="score-calculation">${timings.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${latency(value)}</dd>`).join("")}</dl></div><div class="scroll"><table class="token-usage"><caption>Token usage by role</caption><thead><tr><th>Role</th><th>Input</th><th>Output</th><th>Total</th><th>Cache read</th><th>Reasoning</th></tr></thead><tbody>${usages.map(([label, usage]) => `<tr><th scope="row">${esc(label)}</th>${(["inputTokens", "outputTokens", "totalTokens", "cacheReadTokens", "reasoningTokens"] as const).map(key => `<td>${metricNumber(usage?.[key])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>${metrics ? `<p>Token usage reported for ${metricNumber(metrics.usageReportedResponses)} / ${metricNumber(metrics.assistantTurns)} returned responses. Requests without a reported response also make total usage unavailable.</p>` : ""}<p class="muted">An assistant turn is a model response, not a user message. Tool calls include completion signals and rejected requests; only tool executions reached a simulator. Cache-read and reasoning tokens are subsets of input and output, not additional tokens. Missing usage is unavailable, not zero. Cost is unavailable because deployment pricing is not configured.</p><p class="muted">Agent wall time excludes offline grading. Model time covers provider requests; tool time is simulator wall time, not live device latency. First complete response is not time to first token. Virtual waits are not added to measured wall time. Efficiency metrics do not change task-quality judgments.</p><a id="trial-download" download="${esc(run.id)}.json">Download trial JSON</a></section>`;
+  }
+  function traceHtml(run: Run) {
+    const trace = run.assessment?.trace;
+    if (!trace) return '<h3>Model and tool trace</h3><p class="muted">Structured trace unavailable for this evaluation. Inspect the retained source evidence below.</p>';
+    return `<section aria-label="Model and tool trace"><h3>Model and tool trace</h3><p class="muted">Requests are ordered within this trial. Offsets start at trial execution; response IDs identify provider calls. Repeated calls remain visible, including rejections and incomplete execution.</p>${trace.modelCalls.map(call => `<details class="model-call"${call.status === "error" ? " open" : ""}><summary>${esc(call.id)} · User turn ${metricNumber(call.userTurn)} · ${esc(call.model || "Model unavailable")} · ${latency(call.durationMs)} · ${badge(call.status)}</summary><p>Started at +${latency(call.offsetMs)}${call.error ? `<br><span class="error">${esc(call.error)}</span>` : ""}</p>${call.responses.map(response => `<details class="model-response"><summary>Assistant turn ${metricNumber(response.turn)} · ${esc(response.responseId || "Response ID unavailable")} · ${esc(response.finishReason || "Finish reason unavailable")} · ${metricNumber(response.usage?.totalTokens)} tokens</summary><pre>${esc(JSON.stringify(response, null, 2))}</pre></details>`).join("") || "<p>No complete model response was retained.</p>"}${call.partialText ? `<p>Partial streamed text:</p><pre>${esc(call.partialText)}</pre>` : ""}${trace.toolCalls.filter(tool => tool.modelCallId === call.id).map(tool => `<details class="tool-call"${tool.status === "error" || tool.status === "rejected" ? " open" : ""}><summary>${esc(tool.name)} · ${esc(tool.toolCallId)} · ${badge(tool.status)} · ${tool.executed ? latency(tool.durationMs) : "Not executed"}</summary><p>Assistant turn ${metricNumber(tool.turn)} · +${latency(tool.offsetMs)}${tool.error ? `<br><span class="error">${esc(tool.error)}</span>` : ""}</p><pre>${esc(JSON.stringify({ arguments: tool.arguments, result: tool.result }, null, 2))}</pre></details>`).join("")}</details>`).join("") || "<p>No model requests started.</p>"}<details class="trial-transcript"><summary>Full retained transcript</summary><pre>${esc(JSON.stringify({ systemMessages: trace.systemMessages, messages: trace.messages }, null, 2))}</pre></details></section>`;
+  }
   function citations(ids: string[]) {
     return ids.length ? `<small>Evidence: ${ids.map(id => `<a href="#evidence-${esc(encodeURIComponent(id))}" data-evidence="${esc(id)}">${esc(id)}</a>`).join(", ")}</small>` : "<small>No evidence cited.</small>";
   }
@@ -398,6 +439,7 @@
     return `${intro}<p>${scoreHtml(run)}</p><p>Rubric version: <code>${esc(score.rubricVersion)}</code></p><dl class="score-calculation"><dt>Starting score</dt><dd>${esc(score.baseScore)}</dd><dt>Mistake deductions</dt><dd>${esc(score.totalDeductions)} points</dd><dt>Before task band</dt><dd>${esc(score.baseScore)} − ${esc(score.totalDeductions)} = ${esc(score.baseScore - score.totalDeductions)}</dd><dt>Task fulfillment band</dt><dd>${esc(score.band.min)}–${esc(score.band.max)}</dd><dt>After band limits</dt><dd>${esc(score.bandAdjustedScore)}</dd><dt>Reporting ceiling</dt><dd>${score.reportingCeiling == null ? "Not applied" : `${esc(score.reportingCeiling)}/100 — final score cannot exceed this ceiling`}</dd><dt>Final task eval score</dt><dd>${esc(score.value)}/100</dd></dl><h4>Distinct mistake episodes</h4>${score.deductions.length ? `<ul>${score.deductions.map(mistake => `<li><strong>${esc(mistake.id)} · ${esc(mistake.severity)} · −${esc(mistake.points)} points</strong><br>${esc(mistake.reason)}<br>${citations(mistake.evidenceIds)}</li>`).join("")}</ul>` : "<p>No assessed mistake deductions.</p>"}${score.reportingCeiling == null ? "" : `<h4>Reporting ceiling reason</h4><p>${esc(run.grade?.reporting.reason)}<br>${citations(run.grade?.reporting.evidenceIds || [])}</p>`}${assessmentHtml}${gaps}`;
   }
   function openDetail(title: string) {
+    clearDetailDownload();
     detailVersion++;
     historySession = undefined; historyMarkup = undefined;
     element("detail-title").textContent = title;
@@ -405,6 +447,10 @@
     if (selector.open) { returnToSelection = true; selector.close(); }
     if (!detail.open) detail.showModal();
     return detailVersion;
+  }
+  function clearDetailDownload() {
+    if (detailDownloadUrl) URL.revokeObjectURL(detailDownloadUrl);
+    detailDownloadUrl = undefined;
   }
   function historyLink(id?: string) {
     return id ? `<p><button data-session-history="${esc(id)}">Back to session attempt history</button></p>` : "";
@@ -415,7 +461,9 @@
       const run = await request<Run>(`/api/evals/runs/${encodeURIComponent(id)}`);
       if (version !== detailVersion || !detail.open) return;
       const sourceSessionId = sessionId || run.sourceSessionId || run.assessment?.sourceSessionId;
-      element("detail-body").innerHTML = `${historyLink(sourceSessionId)}<h3>${esc(run.assessment?.request || run.id)}</h3><p>${esc(run.assessment?.finalResponse || "")}</p>${run.error ? `<p class="error" role="alert">${esc(run.error)}</p>` : ""}<p>${judgments(run)}</p><section aria-label="Task eval score breakdown">${scoreDetails(run)}</section><pre>${esc(JSON.stringify({ agentId: run.agentId, status: run.status, assessedAt: run.assessedAt, gradedAt: run.gradedAt, sourceSessionId, coverage: run.assessment?.coverage, model: run.assessedModel, promptVersion: run.promptVersion, judge: run.judgeModel, graderVersion: run.graderVersion, usage: run.assessment?.usage, judgeUsage: run.judgeUsage }, null, 2))}</pre><h3>Task and step judgments</h3><pre>${esc(JSON.stringify(run.grade, null, 2))}</pre><h3>Source evidence</h3>${evidenceHtml(run)}`;
+      element("detail-body").innerHTML = `${historyLink(sourceSessionId)}<h3>${esc(run.assessment?.request || run.id)}</h3><p>${esc(run.assessment?.finalResponse || "")}</p>${run.error ? `<p class="error" role="alert">${esc(run.error)}</p>` : ""}<p>${judgments(run)}</p>${diagnosticsHtml(run)}<section aria-label="Task eval score breakdown">${scoreDetails(run)}</section><pre>${esc(JSON.stringify({ agentId: run.agentId, status: run.status, assessedAt: run.assessedAt, gradedAt: run.gradedAt, sourceSessionId, coverage: run.assessment?.coverage, model: run.assessedModel, promptVersion: run.promptVersion, judge: run.judgeModel, graderVersion: run.graderVersion }, null, 2))}</pre>${traceHtml(run)}<h3>Task and step judgments</h3><pre>${esc(JSON.stringify(run.grade, null, 2))}</pre><h3>Source evidence</h3>${evidenceHtml(run)}`;
+      detailDownloadUrl = URL.createObjectURL(new Blob([JSON.stringify(run, null, 2)], { type: "application/json" }));
+      element<HTMLAnchorElement>("trial-download").href = detailDownloadUrl;
     } catch (error) {
       if (version === detailVersion && detail.open) element("detail-body").innerHTML = `${historyLink(sessionId)}<p class="error" role="alert">Could not load this evaluation: ${esc(String(error))}</p><button data-run="${esc(id)}"${sessionId ? ` data-history-session="${esc(sessionId)}"` : ""}>Retry inspection</button>`;
     }
@@ -515,6 +563,7 @@
   });
   element("close").onclick = () => detail.close();
   detail.addEventListener("close", () => {
+    clearDetailDownload();
     detailVersion++; historySession = undefined; historyMarkup = undefined; historyLoading = false;
     if (returnToSelection) { returnToSelection = false; selector.showModal(); renderSessions(); }
   });

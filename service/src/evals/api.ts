@@ -4,13 +4,14 @@ import { z } from "zod";
 import { EvalSupervisor } from "./supervisor";
 import { EvalStore } from "./store";
 import { EVAL_TIMEZONE, fidelityPairs, localDay, runVerdict, shiftDay } from "./analytics";
-import { EVAL_AGENT_IDS, type EvalAgentId, type EvalAlert, type EvalBatch, type EvalRun, type RecordedSessionEvaluation, type RecordedSessionsResponse, type StepGroup } from "./types";
+import { EVAL_AGENT_IDS, type EvalAgentId, type EvalAlert, type EvalBatch, type EvalRun, type EvalRunSummary, type RecordedSessionEvaluation, type RecordedSessionsResponse, type StepGroup } from "./types";
 import { evalPage } from "./page";
 import { discoverRecordedSessions } from "./sessions";
 import { recordedHistories, sessionEvaluations } from "./history";
 import { evalAgentCatalog, isEvalAgentId } from "./registry";
 import { calibrationReferenceAssessments, type CalibrationReport } from "./references";
 import type { EvalJob } from "./worker";
+import { aggregateTrialMetrics } from "./telemetry";
 
 const agentSelection = z.enum(EVAL_AGENT_IDS).default("tv");
 const jobSchema = z.discriminatedUnion("mode", [
@@ -86,15 +87,21 @@ export function createEvalRouter(supervisor: EvalSupervisor, discover = discover
     try {
       const busy = await supervisor.busy();
       const [allRuns, batches, alerts, groups, calibrations, jobs, agents, schedules] = await Promise.all([
-        store.list<EvalRun>("summaries"), store.list<EvalBatch>("batches"), store.list<EvalAlert>("alerts"), store.list<StepGroup>("groups"),
+        store.list<EvalRunSummary>("summaries"), store.list<EvalBatch>("batches"), store.list<EvalAlert>("alerts"), store.list<StepGroup>("groups"),
         store.list<CalibrationReport>("calibrations"), store.list<EvalJob>("jobs"), evalAgentCatalog(), supervisor.scheduleStatus(),
       ]);
       const runs = allRuns.filter(r => !agentId || r.agentId === agentId).sort((a, b) => b.gradedAt.localeCompare(a.gradedAt));
+      const runById = new Map(runs.map(run => [run.id, run]));
       const day = localDay();
       res.json({ busy, agents: agents.map(agent => ({ ...agent, referenceCount: calibrationReferenceAssessments(agent.id).length })),
         timezone: EVAL_TIMEZONE, baseline: { from: shiftDay(day, -7), to: shiftDay(day, -1), minimumSamples: 3 },
         scheduleEnabled: process.env.OFFLINE_EVAL_ENABLED !== "false", schedules, runs: runs.map(r => ({ ...r, verdict: runVerdict(r) })),
-        batches: batches.filter(b => !agentId || b.agentId === agentId).sort((a, b) => b.startedAt.localeCompare(a.startedAt)),
+        batches: batches.filter(b => !agentId || b.agentId === agentId).sort((a, b) => b.startedAt.localeCompare(a.startedAt)).map(batch => ({
+          ...batch,
+          missingRunSummaries: batch.runIds.filter(id => !runById.has(id)).length,
+          metricsByAttempt: batch.mode === "simulated" ? aggregateTrialMetrics(batch.runIds
+            .map(id => runById.get(id)).filter((run): run is EvalRunSummary => run !== undefined)) : undefined,
+        })),
         alerts: alerts.filter(alert => !agentId || (alert.agentId || alert.key.split(":")[0]) === agentId),
         groups: groups.filter(group => !agentId || group.agentId === agentId),
         calibrations: calibrations.filter(calibration => !agentId || (calibration.agentId || "tv") === agentId),

@@ -135,6 +135,40 @@ The following limits apply to simulated batches. Recorded scheduling has its sep
 - Retain available model usage by run and batch, distinguishing assessed-agent calls from offline grouping/grading calls and scheduled attempts from confirmation attempts, to support that later adjustment. Missing usage or pricing information must remain unavailable rather than be reported as zero cost.
 - This decision leaves the agreed scenario and confirmation-attempt limits in place; it does not authorize unlimited retries or expansion of the daily suite.
 
+## Simulated trial telemetry
+
+Each simulated scenario attempt is an **Eval trial**. The implementation follows Anthropic's [Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents): retain the trial transcript and observed outcome, track efficiency separately from quality, and inspect failed traces rather than trusting an aggregate score alone. Existing independent state assertions, grading rules, fresh environments, and bounded confirmation attempts remain unchanged.
+
+Every new TV, ScheduledTask, and Realtime simulated assessment retains versioned `metrics`, `usage`, and a structured `trace`. The history table exposes assistant turns, requested tool calls, agent tokens, and agent execution time. **Inspect** adds counts, timing and token breakdowns, model response IDs, tool arguments/results, errors, stop reasons, and the full retained transcript. **Download trial JSON** exports the exact inspected attempt, including its evidence and configuration identifiers.
+
+| Metric | Definition |
+| --- | --- |
+| `userTurns` | Fixture user messages actually started. Injected screenshots and tool outputs are not additional user turns. |
+| `assistantTurns` | Returned model responses, including text, tool requests, completion signals, and failed/incomplete native Realtime responses. A transport failure before any response is not an assistant turn. |
+| `modelRequests` | Individual AI SDK provider attempts for TV/ScheduledTask, including SDK retries, or native Realtime `response.create` requests. Session setup and tool-result messages are not model requests. |
+| `toolCalls` | Every returned tool invocation, including `complete_task`, invalid/rejected calls, and calls stopped by a limit. Repeated requests are retained; duplicate deliveries of the same Realtime response are counted once. |
+| `toolExecutions` | Invocations that reached an isolated simulator. Completion signals and rejected calls are not simulator executions. |
+| `toolErrors` | Executed tools that threw, were interrupted, or reported `toolSuccess: false` / `success: false`. A failed completion claim is not itself a tool execution failure. |
+| `rejectedToolCalls`, `unexecutedToolCalls`, `completionCalls` | Rejected requests, remaining unexecuted requests, and completion signals, respectively. These distinguish SDK argument-validation errors, one-tool-per-turn rejections, premature completion, and iteration-limit stops. |
+| `modelErrors` | Provider request failures, failed/incomplete Realtime responses, or interrupted requests. Tool validation rejections remain distinct from provider failures. |
+| `durationMs` | Monotonic agent trial wall time, excluding offline grading. It includes local orchestration and, for Realtime, connection setup/cleanup. It is not measured real-device latency. |
+| `modelTimeMs`, `toolTimeMs` | Wall time inside provider requests and isolated tool executions. Model time excludes retry backoff between provider attempts. These do not include virtual device waits. |
+| `timeToFirstResponseMs` | Trial start to the first complete model response. This is **not** streaming time to first token or audio latency. |
+| `virtualDeviceTimeMs` | TV simulator waits, kept separate from measured elapsed time and never added to it. |
+| `gradingDurationMs` | Offline judge-call and validation time, retained at the run level even when grading fails. |
+| `evaluationDurationMs` | Runner execution/import, group lookup, and grading time, before final artifact persistence. It does not replace the assessed agent's duration. |
+| `stopReason` | `completed`, `iteration_limit`, `response_limit`, `tool_limit`, `error`, `aborted`, or `timeout`. Completion of execution does not imply task fulfillment. |
+
+Token totals sum provider-reported input/output/total usage, not estimates from message length. Cache-read tokens are a subset of input; reasoning tokens are a subset of output. They are displayed only when explicitly reported, not when the SDK defaults absent detail counters to zero. `usageReportedResponses` shows how many returned responses have all three primary counts. If any contributing response or request lacks a count, that aggregate field remains unavailable; the known per-response counts remain inspectable. Actual reported zeroes remain zero. An unreported retry is not assumed to be free.
+
+Assessed-agent usage and offline-judge usage stay separate. Invalid judge JSON or a rejected grading schema retains available judge usage without claiming a completed grade. Deployment pricing is not configured, so monetary cost remains unavailable rather than zero or an inferred price. No new spending cap or extra model calls are introduced.
+
+Handled execution errors, cancellations, and timeouts retain the partial assessment and trace; they remain `execution_error` and are not sent to the judge. Grading failures preserve the completed agent assessment and remain `grading_error`. Late Realtime tool results cannot overwrite the saved interrupted trace. A hard worker kill or power loss before an assessment is saved can still leave no per-trial trace; interruption recovery must not invent those measurements.
+
+`runs/:id` stores full assessment details; lightweight `summaries/:id` stores metrics and usage without the transcript or screenshots. `/api/evals/runs/:id` returns the full attempt; `/api/evals` reads summaries and supplies batch `metricsByAttempt`. Batch totals, median (p50), nearest-rank p95, sample counts, and execution/grading error counts remain separate for scheduled, confirmation, and on-demand trials within each agent and batch. Latency samples include unsuccessful attempts, with coverage shown. Missing summaries are explicitly reported and excluded, not presented as complete batch coverage. Legacy runs without counters make corresponding totals unavailable.
+
+Recorded and older simulated evaluations are not backfilled by counting evidence entries, which are not equivalent to model turns or tool executions. Existing durations and token usage remain visible where available. Telemetry is not a new quality grader: it does not penalize valid alternative tool sequences, justified recovery, or slow devices. Targeted confirmation attempts are not independent random trials, so this change does not infer Anthropic's `pass@k` or `pass^k` measures from them.
+
 ## Agreed model and prompt selection
 
 - Daily simulated evals assess the backend's currently configured model and prompts. TVAgent and ScheduledTaskAgent use `AI_MODEL_ADVANCED`; Realtime uses `AI_MODEL_REALTIME` through the native Azure Realtime API, not a substituted chat-completions model. No automatic matrix of alternative models or prompts is run.

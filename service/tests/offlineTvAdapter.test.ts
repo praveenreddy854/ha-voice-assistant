@@ -21,6 +21,18 @@ test("TV eval reuses model loop and contracts while replacing all tool execution
     assert.equal(result.taskAssertion, true); assert.equal(result.finalResponse, "Done."); assert.equal(call, 2);
     assert.ok(result.evidence.some(e => e.image)); assert.equal(result.mode, "simulated");
     assert.ok(result.promptVersion); assert.equal(result.usage?.inputTokens, 20);
+    assert.equal(result.metrics?.userTurns, 1);
+    assert.equal(result.metrics?.assistantTurns, 2);
+    assert.equal(result.metrics?.modelRequests, 2);
+    assert.equal(result.metrics?.toolCalls, 2);
+    assert.equal(result.metrics?.toolExecutions, 1);
+    assert.equal(result.metrics?.completionCalls, 1);
+    assert.equal(result.metrics?.toolErrors, 0);
+    assert.equal(result.metrics?.stopReason, "completed");
+    assert.equal(result.trace?.modelCalls[0].responses[0].responseId, "response-screen");
+    assert.ok(JSON.stringify(result.trace?.messages).includes('"type":"image"'));
+    assert.ok(JSON.stringify(result.trace?.messages).includes('"mediaType":"image/png"'));
+    assert.doesNotMatch(JSON.stringify(result.trace), /test-key/);
   } finally { globalThis.fetch = original; }
 });
 
@@ -44,6 +56,11 @@ test("shared offline loop preserves TV's one-tool-per-turn rejection", async (t)
   assert.equal(result.taskAssertion, true);
   assert.deepEqual(result.evidence.filter(event => event.kind === "tool").map(event => event.toolName), ["get_device_state"]);
   assert.ok(result.evidence.every(event => !event.image));
+  assert.equal(result.metrics?.toolCalls, 3);
+  assert.equal(result.metrics?.toolExecutions, 1);
+  assert.equal(result.metrics?.rejectedToolCalls, 1);
+  assert.equal(result.metrics?.unexecutedToolCalls, 0);
+  assert.match(result.trace!.toolCalls[1].error!, /only one tool/);
 });
 
 test("shared offline loop still rejects premature TV completion until required research happens", async (t) => {
@@ -67,6 +84,12 @@ test("shared offline loop still rejects premature TV completion until required r
   assert.equal(result.taskAssertion, true);
   assert.deepEqual(result.evidence.filter(event => event.kind === "tool").map(event => event.toolName), ["launch_app", "web_search", "launch_app"]);
   assert.equal(result.usage?.inputTokens, 50);
+  assert.equal(result.metrics?.assistantTurns, 5);
+  assert.equal(result.metrics?.toolCalls, 5);
+  assert.equal(result.metrics?.toolExecutions, 3);
+  assert.equal(result.metrics?.toolErrors, 1);
+  assert.equal(result.metrics?.rejectedToolCalls, 1);
+  assert.equal(result.metrics?.completionCalls, 2);
 });
 
 test("shared offline loop retains TV iteration-cap ordering for pending tools and completion", async (t) => {
@@ -87,6 +110,10 @@ test("shared offline loop retains TV iteration-cap ordering for pending tools an
     assert.match(result.finalResponse, /iteration limit reached without completion/);
     assert.equal(JSON.parse(result.evidence.at(-1)!.text).stoppedAtIterationLimit, true);
     assert.equal(result.taskAssertion, true, "Existing TV semantics keep already-satisfied device state independent of loop termination");
+    assert.equal(result.metrics?.toolCalls, cap);
+    assert.equal(result.metrics?.toolExecutions, cap - 1);
+    assert.equal(result.metrics?.unexecutedToolCalls, 1);
+    assert.equal(result.metrics?.stopReason, "iteration_limit");
   });
   await t.test("completion at cap is returned even when further research would otherwise be required", async (subtest) => {
     let calls = 0;
@@ -124,6 +151,66 @@ test("shared offline loop preserves unknown TV usage and propagates cancellation
     const result = await adapter.execute(adapter.scenarios[0], new AbortController().signal);
     assert.equal(result.taskAssertion, true);
     assert.deepEqual(result.usage, { inputTokens: undefined, outputTokens: undefined, totalTokens: undefined });
+    assert.equal(result.metrics?.usageReportedResponses, 1);
+    assert.equal(result.metrics?.assistantTurns, 2);
+  });
+
+  await t.test("TV raw telemetry retains SDK-rejected calls and their usage while preserving model recovery", async t => {
+    t.mock.method(console, "error", () => {});
+    let calls = 0;
+    t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      readModelRequest(input, init);
+      return ++calls === 1 ? toolResponse("not_a_real_tool", { target: "TV" }, "invalid")
+        : toolResponse("complete_task", { success: false, message: "Cannot use that tool." }, "done");
+    });
+    const adapter = await (await import("../src/evals/tv/adapter")).createTvAdapter();
+    const result = await adapter.execute(adapter.scenarios[0], new AbortController().signal);
+    assert.equal(result.metrics?.assistantTurns, 2);
+    assert.equal(result.metrics?.toolCalls, 2);
+    assert.equal(result.metrics?.toolExecutions, 0);
+    assert.equal(result.metrics?.rejectedToolCalls, 1);
+    assert.equal(result.metrics?.stopReason, "completed");
+    assert.equal(result.usage?.inputTokens, 20);
+    assert.equal(result.trace?.toolCalls[0].name, "not_a_real_tool");
+    assert.equal(result.trace?.toolCalls[0].status, "rejected");
+    assert.equal(result.trace?.modelCalls[0].responses[0].responseId, "response-invalid");
+    assert.equal(result.evidence.filter(item => item.kind === "tool").length, 0);
+  });
+
+  await t.test("TV metrics include each SDK retry without pretending missing usage was free", async t => {
+    let calls = 0;
+    t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      readModelRequest(input, init);
+      if (++calls === 1) return Response.json({ error: { message: "Rate limited", type: "rate_limit_error" } }, {
+        status: 429, headers: { "retry-after-ms": "1" },
+      });
+      return toolResponse("complete_task", { success: true, message: "Already open." }, "done");
+    });
+    const adapter = await (await import("../src/evals/tv/adapter")).createTvAdapter();
+    const result = await adapter.execute(adapter.scenarios[0], new AbortController().signal);
+    assert.equal(calls, 2);
+    assert.equal(result.metrics?.modelRequests, 2);
+    assert.equal(result.metrics?.modelErrors, 1);
+    assert.equal(result.metrics?.assistantTurns, 1);
+    assert.equal(result.metrics?.toolCalls, 1);
+    assert.equal(result.usage?.totalTokens, undefined);
+    assert.equal(result.trace?.modelCalls[1].responses[0].usage?.totalTokens, 15);
+    assert.equal(result.taskAssertion, true);
+  });
+
+  await t.test("TV virtual waits are tracked separately from real simulator and model latency", async t => {
+    let calls = 0;
+    t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      readModelRequest(input, init);
+      return ++calls === 1 ? toolResponse("wait", { duration_ms: 1500, reason: "Let the fixture settle" }, "wait")
+        : toolResponse("complete_task", { success: true, message: "Ready." }, "done");
+    });
+    const adapter = await (await import("../src/evals/tv/adapter")).createTvAdapter();
+    const result = await adapter.execute(adapter.scenarios[0], new AbortController().signal);
+    assert.equal(result.metrics?.virtualDeviceTimeMs, 1500);
+    assert.equal(result.metrics?.toolExecutions, 1);
+    assert.ok(result.durationMs! >= result.metrics!.toolTimeMs + result.metrics!.modelTimeMs);
+    assert.equal(result.metrics?.stopReason, "completed");
   });
   await t.test("aborted execution returns no success assessment", async (subtest) => {
     subtest.mock.method(console, "error", () => {});

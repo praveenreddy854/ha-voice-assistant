@@ -14,11 +14,13 @@ import {
   tool,
   jsonSchema,
   stepCountIs,
+  wrapLanguageModel,
 } from "ai";
 import type {
   ModelMessage,
   Tool,
   ToolExecutionOptions,
+  LanguageModelMiddleware,
 } from "ai";
 import type { z } from "zod";
 import { AI_MODEL_ADVANCED } from "../../config";
@@ -63,6 +65,8 @@ export interface AgentLoopConfig {
   tools: ToolDefinition[];
   maxIterations?: number;
   model?: string;
+  /** Optional observation middleware; offline evals retain raw calls before tool validation. */
+  modelMiddleware?: LanguageModelMiddleware;
   /** Called after each LLM step for logging/tracking. */
   onStepFinish?: (event: StepEvent) => void;
 }
@@ -70,7 +74,7 @@ export interface AgentLoopConfig {
 export interface StepEvent {
   stepNumber: number;
   text: string;
-  toolCalls: Array<{ toolName: string; toolCallId: string; args: unknown }>;
+  toolCalls: Array<{ toolName: string; toolCallId: string; args: unknown; error?: string }>;
   finishReason: string;
   requestModel: string;
   responseModel?: string;
@@ -320,8 +324,9 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
       const toolsContext = Object.fromEntries(
         Object.keys(aiTools).map((toolName) => [toolName, sharedToolContext])
       );
+      const languageModel = azureProvider(model ?? "");
       const result = await generateText<typeof aiTools, AgentToolContext>({
-        model: azureProvider(model ?? ""),
+        model: config.modelMiddleware ? wrapLanguageModel({ model: languageModel, middleware: config.modelMiddleware }) : languageModel,
         tools: aiTools,
         system: systemPrompt,
         messages: session.messages,
@@ -338,6 +343,7 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
                   toolName: tc.toolName,
                   toolCallId: tc.toolCallId,
                   args: (tc as { input?: unknown }).input,
+                  ...(tc.invalid ? { error: tc.error instanceof Error ? tc.error.message : String(tc.error) } : {}),
                 })),
                 finishReason: finishReason || "unknown",
                 requestModel: model ?? "unknown",

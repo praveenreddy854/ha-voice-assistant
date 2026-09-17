@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { runOfflineAgentLoop } from "../loop";
 import { digest } from "../store";
+import { captureTrial } from "../telemetry";
 import type { AgentAdapter, Assessment, Scenario } from "../types";
 import { assertScheduledTaskToolCoverage, ScheduledTaskEnvironment } from "./environment";
 import { scheduledTaskScenarios, type ScheduledTaskState } from "./scenarios";
@@ -41,7 +42,6 @@ export async function createScheduledTaskAdapter(modelOverride?: string): Promis
       const environment = new ScheduledTaskEnvironment(scenario, {
         tools, dueDateError, validateMemoryWrite: memory.validateMemoryWrite, normalizeMemoryScopes: memory.normalizeMemoryScopes,
       });
-      const started = Date.now();
       const fixtureMemory = memory.formatMemoryContext(environment.state.memories.map(item => ({
         ...item, pk: "offline-fixture", status: "active" as const, embedding: [], createdAt: item.updatedAt, useCount: 0,
       })));
@@ -51,32 +51,31 @@ export async function createScheduledTaskAdapter(modelOverride?: string): Promis
         kind: "context",
         text: JSON.stringify({ systemPrompt, initialMessage, memorySource: "isolated fixture only; no live context or completion hooks" }),
       });
-      const result = await runOfflineAgentLoop({
-        createLoop: createAgentLoop, systemPrompt, tools, model,
-        maxIterations: constants.SCHEDULED_TASK_AGENT_MAX_ITERATIONS, initialMessage, signal, requireInputSchemas: true,
-        record: item => environment.record(item),
-        async executeTool(name, args) {
-          signal.throwIfAborted();
-          return { result: await environment.execute(name, args) };
-        },
+      return captureTrial({
+        agentId: "scheduled_task", request: scenario.request, model, promptVersion,
+        evidence: environment.evidence, context: scenario.context, expectations: scenario.expectations,
+      }, signal, async telemetry => {
+        const result = await runOfflineAgentLoop({
+          createLoop: createAgentLoop, systemPrompt, tools, model, telemetry,
+          maxIterations: constants.SCHEDULED_TASK_AGENT_MAX_ITERATIONS, initialMessage, signal, requireInputSchemas: true,
+          record: item => environment.record(item),
+          async executeTool(name, args) {
+            signal.throwIfAborted();
+            return { result: await environment.execute(name, args) };
+          },
+        });
+        const assertion = environment.assertion(result.finalResponse);
+        const taskAssertion = assertion.taskSatisfied && !result.stoppedAtIterationLimit;
+        environment.record({ kind: "final", text: result.finalResponse });
+        environment.record({
+          kind: "assertion",
+          text: JSON.stringify({
+            ...assertion, taskSatisfied: taskAssertion, stoppedAtIterationLimit: result.stoppedAtIterationLimit,
+            completionSuccess: result.completionSuccess, steps: result.steps,
+          }),
+        });
+        return { finalResponse: result.finalResponse, taskAssertion };
       });
-      const durationMs = Date.now() - started;
-      const assertion = environment.assertion(result.finalResponse);
-      const taskAssertion = assertion.taskSatisfied && !result.stoppedAtIterationLimit;
-      environment.record({ kind: "final", text: result.finalResponse });
-      environment.record({
-        kind: "assertion",
-        text: JSON.stringify({
-          ...assertion, taskSatisfied: taskAssertion, stoppedAtIterationLimit: result.stoppedAtIterationLimit,
-          completionSuccess: result.completionSuccess, steps: result.steps,
-        }),
-      });
-      return {
-        agentId: "scheduled_task", mode: "simulated", request: scenario.request, finalResponse: result.finalResponse,
-        startedAt: new Date(started).toISOString(), durationMs, model, promptVersion,
-        evidence: environment.evidence, coverage: "complete", context: scenario.context,
-        expectations: scenario.expectations, taskAssertion, usage: result.usage,
-      };
     },
   };
 }

@@ -4,7 +4,7 @@ import { expect, type Page } from "@playwright/test";
 import { evalPage } from "../../service/src/evals/page";
 import type { EvalScheduleStatus } from "../../service/src/evals/scheduling";
 import type {
-  EvalAgentId, EvalAlert, EvalBatch, EvalRun, Grade, RecordedSession, RecordedSessionEvaluation, RecordedSessionHistory, TaskEvalScore,
+  EvalAgentId, EvalAlert, EvalBatchSummary, EvalRun, Grade, RecordedSession, RecordedSessionEvaluation, RecordedSessionHistory, TaskEvalScore,
 } from "../../service/src/evals/types";
 
 export type PortalRun = EvalRun & { request: string; verdict: string };
@@ -82,7 +82,7 @@ interface FixtureState {
   sessions: RecordedSession[];
   statuses: Record<string, RecordedSessionEvaluation>;
   histories: Record<string, RecordedSessionHistory>;
-  batches: EvalBatch[];
+  batches: EvalBatchSummary[];
   alerts: EvalAlert[];
   fidelity: { simulatedId: string; recordedIds: string[]; status: string }[];
   calibrations: { id: string; agentId?: string; judgeModel: string; createdAt: string; passed: boolean; limitation?: string; results: {
@@ -113,7 +113,9 @@ export async function openPortal(page: Page, initial: Partial<FixtureState> = {}
       await route.fulfill({ contentType: "application/javascript", body: browserScript });
     } else if (url.pathname === "/api/evals") {
       await route.fulfill({ json: {
-        agents: state.agents, runs: state.runs.filter(run => !agentId || run.agentId === agentId),
+        agents: state.agents, runs: state.runs.filter(run => !agentId || run.agentId === agentId).map(({ assessment, ...run }) => ({
+          ...run, metrics: assessment?.metrics, usage: assessment?.usage,
+        })),
         busy: state.busy, schedules: state.schedules, scheduleEnabled: state.scheduleEnabled,
         alerts: state.alerts.filter(alert => !agentId || (alert.agentId || alert.key.split(":")[0]) === agentId),
         batches: state.batches.filter(batch => !agentId || batch.agentId === agentId),

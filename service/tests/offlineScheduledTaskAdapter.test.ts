@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { Databases } from "@azure/cosmos";
+import { EvalExecutionError } from "../src/evals/telemetry";
 import type { Scenario } from "../src/evals/types";
 import { scheduledTaskScenarios, type ScheduledTaskState } from "../src/evals/scheduled-task/scenarios";
 import {
@@ -93,6 +94,14 @@ test("ScheduledTask adapter uses production loop, schemas and rendered prompt wi
   assert.equal(result.coverage, "complete");
   assert.equal(result.expectations, scenario.expectations);
   assert.deepEqual(result.usage, { inputTokens: 20, outputTokens: 10, totalTokens: 30 });
+  assert.equal(result.metrics?.userTurns, 1);
+  assert.equal(result.metrics?.assistantTurns, 2);
+  assert.equal(result.metrics?.toolCalls, 2);
+  assert.equal(result.metrics?.toolExecutions, 1);
+  assert.equal(result.metrics?.completionCalls, 1);
+  assert.equal(result.metrics?.stopReason, "completed");
+  assert.match(result.trace!.systemMessages!.join("\n"), /2026-03-07T12:00:00\.000Z/);
+  assert.ok(result.trace!.modelCalls.every(call => call.durationMs! >= 0));
   assert.equal(requests.length, 2);
   assert.equal(cosmos.mock.callCount(), 0);
   assert.ok(executors.every(executor => executor.mock.callCount() === 0));
@@ -178,7 +187,19 @@ test("schema-invalid and unsupported model tool calls fail closed before simulat
     await t.test(call.name + JSON.stringify(call.args), async (subtest) => {
       subtest.mock.method(console, "error", () => {});
       const requests = script(subtest, [call]);
-      await assert.rejects(adapter.execute(fixture("announcement-at-time"), new AbortController().signal));
+      await assert.rejects(adapter.execute(fixture("announcement-at-time"), new AbortController().signal), (error: unknown) => {
+        assert.ok(error instanceof EvalExecutionError);
+        assert.equal(error.assessment.metrics?.assistantTurns, 1);
+        assert.equal(error.assessment.metrics?.toolCalls, 1);
+        assert.equal(error.assessment.metrics?.toolExecutions, 0);
+        assert.equal(error.assessment.metrics?.rejectedToolCalls, 1);
+        assert.equal(error.assessment.metrics?.stopReason, "error");
+        assert.equal(error.assessment.metrics?.modelRequests, 2, "The SDK feeds invalid-call errors back before the scripted provider stops");
+        assert.equal(error.assessment.usage?.totalTokens, undefined);
+        assert.equal(error.assessment.trace?.modelCalls[0].responses[0].usage?.totalTokens, 15);
+        assert.equal(error.assessment.coverage, "partial");
+        return true;
+      });
       assert.equal(requests.length, 1);
     });
   }
@@ -243,6 +264,25 @@ test("a successful completion claim after a failed write or a wrong state never 
     assert.equal(result.taskAssertion, false);
     assert.equal(result.finalResponse, "Saved successfully.");
     assert.match(JSON.stringify(result.evidence), /Task not saved/);
+    assert.equal(result.metrics?.toolErrors, 1);
+    assert.equal(result.metrics?.modelErrors, 0);
+    assert.equal(result.metrics?.stopReason, "completed", "An assistant's task failure is not a harness execution error");
+  });
+
+  test("explicit cached and reasoning tokens survive SDK normalization without adding to totals", async t => {
+    let calls = 0;
+    t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      readModelRequest(input, init);
+      const response = await toolResponse("complete_task", { success: false, message: "Cannot schedule." }, String(++calls)).json();
+      response.usage.input_tokens_details = { cached_tokens: 4 };
+      response.usage.output_tokens_details = { reasoning_tokens: 2 };
+      return Response.json(response);
+    });
+    const result = await (await loadAdapter()).execute(fixture("announcement-at-time"), new AbortController().signal);
+    assert.deepEqual(result.usage, { inputTokens: 10, outputTokens: 5, totalTokens: 15, cacheReadTokens: 4, reasoningTokens: 2 });
+    assert.equal(result.metrics?.completionCalls, 1);
+    assert.equal(result.metrics?.toolExecutions, 0);
+    assert.equal(result.metrics?.toolErrors, 0, "An honest failed completion is not a failed tool execution");
   });
   await t.test("wrong due time", async (subtest) => {
     script(subtest, [{ ...save(), args: { ...save().args, dueDate: "2026-03-07T10:00:00-05:00" } }, complete()]);
