@@ -13,7 +13,7 @@ import { assessmentFromRecord } from "../src/evals/recorded";
 import { tvScenarios } from "../src/evals/tv/scenarios";
 import { TvEnvironment } from "../src/evals/tv/environment";
 import { referenceAssessments } from "../src/evals/references";
-import type { AgentAdapter, Assessment, EvalAlert, EvalRun, Grade, Judge, Verdict } from "../src/evals/types";
+import type { AgentAdapter, Assessment, EvalAlert, EvalRun, EvalRunSummary, Grade, Judge, Verdict } from "../src/evals/types";
 
 const fact = (verdict: Verdict) => ({ verdict, reason: "Referenced observation", evidenceIds: ["e1"] });
 function grade(handling: Verdict = "pass"): Grade {
@@ -139,6 +139,20 @@ test("group identity survives missing validation and separates agent contexts", 
   assert.equal(first.grade!.steps[0].groupId, missing.grade!.steps[0].groupId);
   assert.equal((await store.list("groups")).length, 1);
   await assert.rejects(store.read("runs", "../secrets"), /Invalid/);
+}));
+test("summaries retain independent assertions without exposing evidence or guessing from judge verdicts", async () => withStore(async store => {
+  for (const assertion of [true, false, undefined]) {
+    const result = run(String(assertion), { status: "grading_error", assessment: { ...assessment(), taskAssertion: assertion } });
+    await store.saveRun(result);
+    const summary = await store.read<EvalRunSummary>("summaries", result.id);
+    assert.equal(summary?.taskAssertion, assertion);
+    assert.equal(summary?.status, "grading_error");
+    assert.equal(summary?.request, result.assessment?.request);
+    assert.ok(summary && !("assessment" in summary));
+  }
+  const recorded = run("recorded", { mode: "recorded", assessment: { ...assessment(), mode: "recorded", taskAssertion: true } });
+  await store.saveRun(recorded);
+  assert.equal((await store.read<EvalRunSummary>("summaries", recorded.id))?.taskAssertion, undefined);
 }));
 test("one confirmation preserves the first failure; daily batch is not duplicated", async () => withStore(async store => {
   for (const day of ["2026-09-10", "2026-09-11", "2026-09-12"]) await store.saveRun(run(day));

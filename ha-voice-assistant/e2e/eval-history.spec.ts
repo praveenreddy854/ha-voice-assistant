@@ -42,7 +42,7 @@ async function openDashboard(page: Page, initialRuns = mixedRuns) {
       await route.fulfill({ contentType: "application/javascript", body: browserScript });
     } else if (url.pathname === "/api/evals") {
       await route.fulfill({ json: {
-        runs: runs.filter(run => run.agentId === url.searchParams.get("agentId")), agents, busy, alerts: [], batches: [], calibrations: [], fidelity: [],
+        runs: runs.filter(run => !url.searchParams.get("agentId") || run.agentId === url.searchParams.get("agentId")), agents, busy, alerts: [], batches: [], calibrations: [], fidelity: [],
         baseline: { from: "2026-09-07", to: "2026-09-13" },
         timezone: "America/New_York", scheduleEnabled: true, fidelityNote: "Fixture comparison data",
       } });
@@ -74,53 +74,67 @@ async function openDashboard(page: Page, initialRuns = mixedRuns) {
     }
   });
   await page.goto("/dashboards/evals");
-  await expect(page.locator("#cards .number").first()).toHaveText(String(runs.filter(run => run.agentId === "tv").length));
+  await expect(page.locator("#agent-panel")).toHaveAttribute("aria-busy", "false");
   return { errors, postedJobs, acceptedJobs, setRuns: (next: Run[]) => { runs = next; },
     loseNextSubmissionResponse: () => { loseSubmissionResponse = true; } };
 }
 
-test("All, Simulated, and Real filter history while preserving comparisons and inspection", async ({ page }) => {
+test("overview-first source and method tabs separate results and preserve inspection", async ({ page }) => {
   const { errors } = await openDashboard(page);
   const rows = page.locator("#runs tr");
-  const all = page.getByRole("tab", { name: "All", exact: true });
-  await expect(all).toHaveAttribute("aria-selected", "true");
-  await expect(rows).toHaveCount(4);
+  await expect(page.getByRole("tab", { name: "Overview", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Recorded", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "LLM-based", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator("#agent-cards article")).toHaveCount(3);
+  await expect(page.locator("#agent-detail")).toBeHidden();
+  await expect(page.locator("#sample-note")).toContainText("2 retained recorded attempts");
+  await expect(page.locator("#agent,#mode")).toHaveCount(0);
+  await page.getByRole("tab", { name: "TVAgent", exact: true }).click();
+  await expect(rows).toHaveCount(2);
+  await expect(page.locator("#runs")).not.toContainText("simulation");
+  await expect(page.locator("#run-columns")).not.toContainText("Task eval score");
+  await page.getByRole("tab", { name: "Code-based", exact: true }).click();
+  await expect(page.locator("#run-columns")).toContainText("Task eval score");
+  await expect(page.locator("#method-explanation")).toContainText("Code-calculated, LLM-informed");
 
-  await page.getByRole("tab", { name: "Simulated", exact: true }).click();
+  await page.getByRole("tab", { name: "Synthetic", exact: true }).click();
   await expect(rows).toHaveCount(2);
   await expect(rows.nth(0)).toContainText("simulation-confirmation");
   await expect(rows.nth(1)).toContainText("simulation-scheduled");
+  await expect(page.locator("#run-columns")).toContainText("Independent assertion");
+  await expect(page.locator("#runs")).not.toContainText("real-completed");
+  await page.getByRole("tab", { name: "LLM-based", exact: true }).click();
   await expect(rows.nth(1)).toContainText("4 samples");
   await expect(rows.nth(1)).toContainText("Median 1.0s");
-  await expect(page.locator("#mode")).toHaveValue("simulated");
-  await expect(page.locator("#cards .number").first()).toHaveText("2");
-  await expect(page.getByRole("tabpanel", { name: "Simulated", exact: true })).toBeVisible();
+  await expect(page.locator("#run-columns")).toContainText("Duration");
+  await expect(rows.nth(1).locator("td").nth(9)).toHaveText("1.5s");
+  await expect(page.getByRole("tabpanel", { name: "Synthetic", exact: true })).toBeVisible();
 
-  await page.getByRole("tab", { name: "Real", exact: true }).click();
+  await page.getByRole("tab", { name: "Recorded", exact: true }).click();
   await expect(rows).toHaveCount(2);
   await expect(rows.nth(0)).toContainText("real-error");
   await expect(rows.nth(1)).toContainText("real-completed");
   await expect(rows.nth(1)).toContainText("On demand");
-  await expect(page.locator("#mode")).toHaveValue("recorded");
   await rows.nth(1).getByRole("button", { name: "Inspect" }).click();
   await expect(page.getByRole("dialog", { name: "Evaluation details" })).toBeVisible();
   await expect(page.locator("#detail-body h3").first()).toHaveText("real-completed");
   await page.locator("#close").click();
-  await expect(page.getByRole("tab", { name: "Real", exact: true })).toHaveAttribute("aria-selected", "true");
-
-  await all.click();
-  await expect(rows).toHaveCount(4);
+  await expect(page.getByRole("tab", { name: "Recorded", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("tab", { name: "Overview", exact: true }).click();
+  await expect(page.locator("#agent-cards")).toBeVisible();
+  await expect(page.locator("#agent-detail")).toBeHidden();
   expect(errors).toEqual([]);
 });
 
-test("mode changes synchronize tabs and refreshes preserve the selected mode", async ({ page }) => {
+test("source, method and agent survive refresh, polling and page reload", async ({ page }) => {
   await page.clock.install();
   const { errors, setRuns } = await openDashboard(page);
-  const real = page.getByRole("tab", { name: "Real", exact: true });
-  await page.locator("#mode").selectOption("recorded");
+  const real = page.getByRole("tab", { name: "Recorded", exact: true });
+  await page.getByRole("tab", { name: "TVAgent", exact: true }).click();
+  await page.getByRole("tab", { name: "Code-based", exact: true }).click();
   await expect(real).toHaveAttribute("aria-selected", "true");
   await expect(real).toHaveAttribute("tabindex", "0");
-  await expect(page.getByRole("tab", { name: "All", exact: true })).toHaveAttribute("tabindex", "-1");
+  await expect(page.getByRole("tab", { name: "Synthetic", exact: true })).toHaveAttribute("tabindex", "-1");
   setRuns([run("new-real-result", "recorded"), ...mixedRuns]);
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await expect(page.locator("#runs tr")).toHaveCount(3);
@@ -131,48 +145,66 @@ test("mode changes synchronize tabs and refreshes preserve the selected mode", a
   await expect(page.locator("#runs tr").first()).toContainText("another-real-result");
   await expect(page.locator("#runs tr")).toHaveCount(3);
   await expect(real).toHaveAttribute("aria-selected", "true");
-  await expect(page.locator("#cards .number").first()).toHaveText("3");
+  await expect(page.locator("#sample-note")).toContainText("3 retained recorded attempts");
+  await page.reload();
+  await expect(real).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Code-based", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "TVAgent", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator("#runs tr")).toHaveCount(3);
   expect(errors).toEqual([]);
 });
 
-test("tabs support keyboard navigation and remain usable on narrow screens", async ({ page }) => {
+test("all three tab levels support keyboard navigation on narrow screens", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const { errors } = await openDashboard(page);
-  const all = page.getByRole("tab", { name: "All", exact: true });
-  const simulated = page.getByRole("tab", { name: "Simulated", exact: true });
-  const real = page.getByRole("tab", { name: "Real", exact: true });
-  await all.focus();
+  const simulated = page.getByRole("tab", { name: "Synthetic", exact: true });
+  const real = page.getByRole("tab", { name: "Recorded", exact: true });
+  await real.focus();
   await page.keyboard.press("ArrowRight");
   await expect(simulated).toBeFocused();
   await expect(simulated).toHaveAttribute("aria-selected", "true");
-  await page.keyboard.press("End");
-  await expect(real).toBeFocused();
-  await expect(real).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("ArrowRight");
-  await expect(all).toBeFocused();
-  await page.keyboard.press("ArrowLeft");
   await expect(real).toBeFocused();
+  await page.keyboard.press("ArrowLeft");
+  await expect(simulated).toBeFocused();
   await page.keyboard.press("Home");
-  await expect(all).toBeFocused();
-  await expect(all).toHaveAttribute("aria-selected", "true");
+  await expect(real).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(simulated).toBeFocused();
+  const llm = page.getByRole("tab", { name: "LLM-based", exact: true });
+  await llm.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("tab", { name: "Code-based", exact: true })).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(llm).toBeFocused();
+  const overview = page.getByRole("tab", { name: "Overview", exact: true });
+  await overview.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("tab", { name: "TVAgent", exact: true })).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(page.getByRole("tab", { name: "Realtime Voice Agent", exact: true })).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(overview).toBeFocused();
+  await expect(overview).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("Tab");
-  await expect(page.getByRole("tabpanel", { name: "All", exact: true })).toBeFocused();
+  await expect(page.getByRole("tabpanel", { name: "Overview", exact: true })).toBeFocused();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect(errors).toEqual([]);
 });
 
 test("empty states describe the selected mode without hiding other available evaluations", async ({ page }) => {
   const { errors, setRuns } = await openDashboard(page, [run("only-simulation", "simulated")]);
-  await page.getByRole("tab", { name: "Real", exact: true }).click();
-  await expect(page.locator("#runs")).toContainText("No real evals yet.");
+  await page.getByRole("tab", { name: "TVAgent", exact: true }).click();
+  await expect(page.locator("#runs")).toContainText("No recorded evaluations for this agent yet.");
   await expect(page.locator("#runs button")).toHaveCount(0);
-  await page.getByRole("tab", { name: "All", exact: true }).click();
+  await page.getByRole("tab", { name: "Synthetic", exact: true }).click();
   await expect(page.locator("#runs")).toContainText("only-simulation");
 
   setRuns([]);
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
-  await expect(page.locator("#runs")).toContainText("No evals yet.");
-  await page.getByRole("tab", { name: "Simulated", exact: true }).click();
-  await expect(page.locator("#runs")).toContainText("No simulated evals yet.");
+  await expect(page.locator("#runs")).toContainText("No synthetic evaluations for this agent yet.");
+  await page.getByRole("tab", { name: "Recorded", exact: true }).click();
+  await expect(page.locator("#runs")).toContainText("No recorded evaluations for this agent yet.");
   expect(errors).toEqual([]);
 });
 
@@ -181,8 +213,9 @@ test("agent selection scopes suites, history and alternative-model submissions",
     run("tv-request", "simulated"), run("scheduled-request", "simulated", { agentId: "scheduled_task" }),
     run("voice-request", "recorded", { agentId: "realtime" }),
   ]);
-  await expect(page.locator("#agent option")).toHaveCount(3);
-  await page.locator("#agent").selectOption("scheduled_task");
+  await expect(page.getByRole("tablist", { name: "Agent", exact: true }).getByRole("tab")).toHaveCount(4);
+  await page.getByRole("tab", { name: "Synthetic", exact: true }).click();
+  await page.getByRole("tab", { name: "ScheduledTaskAgent", exact: true }).click();
   await expect(page.locator("#suite-description")).toContainText("12 ScheduledTaskAgent scenarios");
   await expect(page.locator("#runs tr")).toHaveCount(1);
   await expect(page.locator("#runs")).toContainText("scheduled-request");
@@ -191,7 +224,7 @@ test("agent selection scopes suites, history and alternative-model submissions",
   await page.locator("#simulate").click();
   await expect.poll(() => postedJobs.length).toBe(1);
   expect(postedJobs[0]).toEqual({ mode: "simulated", agentId: "scheduled_task", model: "candidate-deployment" });
-  await expect(page.locator("#agent")).toHaveValue("scheduled_task");
+  await expect(page.getByRole("tab", { name: "ScheduledTaskAgent", exact: true })).toHaveAttribute("aria-selected", "true");
   expect(errors).toEqual([]);
 });
 
@@ -202,14 +235,12 @@ test("Realtime judge validation is agent-specific and mode selection survives re
     run("voice-recording", "recorded", { agentId: "realtime" }),
     run("tv-request", "recorded"),
   ]);
-  await page.locator("#mode").selectOption("recorded");
-  await page.locator("#agent").selectOption("realtime");
+  await page.getByRole("tab", { name: "Realtime Voice Agent", exact: true }).click();
   await expect(page.locator("#runs tr")).toHaveCount(1);
   await expect(page.locator("#runs")).toContainText("voice-recording");
   await expect(page.locator("#suite-description")).toContainText("not audio quality");
   await page.clock.fastForward(5_000);
-  await expect(page.locator("#mode")).toHaveValue("recorded");
-  await expect(page.getByRole("tab", { name: "Real", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Recorded", exact: true })).toHaveAttribute("aria-selected", "true");
   await page.locator("#calibrate").click();
   await expect.poll(() => postedJobs.length).toBe(1);
   expect(postedJobs[0]).toEqual({ mode: "calibrate", agentId: "realtime" });
@@ -218,10 +249,11 @@ test("Realtime judge validation is agent-specific and mode selection survives re
 
 test("recorded selections persist separately by agent and cannot create a mixed batch", async ({ page }) => {
   const { errors, postedJobs } = await openDashboard(page);
+  await page.getByRole("tab", { name: "TVAgent", exact: true }).click();
   await page.locator("#recorded").click();
   await page.getByRole("checkbox", { name: "Select session tv-source", exact: true }).check();
   await page.locator("#session-close").click();
-  await page.locator("#agent").selectOption("scheduled_task");
+  await page.getByRole("tab", { name: "ScheduledTaskAgent", exact: true }).click();
   await page.locator("#recorded").click();
   await expect(page.locator("#session-selector-title")).toContainText("ScheduledTaskAgent");
   await expect(page.locator("#session-rows")).not.toContainText("tv-source");
@@ -231,7 +263,7 @@ test("recorded selections persist separately by agent and cannot create a mixed 
   expect(postedJobs[0]).toMatchObject({ mode: "recorded", agentId: "scheduled_task", sessionIds: ["scheduled_task-source"] });
   await expect(page.locator("#session-message")).toContainText("Batch accepted");
   await page.locator("#session-close").click();
-  await page.locator("#agent").selectOption("tv");
+  await page.getByRole("tab", { name: "TVAgent", exact: true }).click();
   await page.locator("#recorded").click();
   await expect(page.getByRole("checkbox", { name: "Select session tv-source", exact: true })).toBeChecked();
   await expect(page.locator("#session-run")).toBeDisabled();
@@ -241,13 +273,13 @@ test("recorded selections persist separately by agent and cannot create a mixed 
 
 test("uncertain recorded submissions retain their agent and reuse the same request identity", async ({ page }) => {
   const { errors, postedJobs, acceptedJobs, loseNextSubmissionResponse } = await openDashboard(page);
-  await page.locator("#agent").selectOption("realtime");
+  await page.getByRole("tab", { name: "Realtime Voice Agent", exact: true }).click();
   await page.locator("#recorded").click();
   await page.getByRole("checkbox", { name: "Select session realtime-source", exact: true }).check();
   loseNextSubmissionResponse();
   await page.locator("#session-run").click();
   await expect(page.locator("#session-message")).toContainText("Submission outcome is uncertain");
-  await expect(page.locator("#agent")).toBeDisabled();
+  for (const tab of await page.getByRole("tablist", { name: "Agent", exact: true }).getByRole("tab").all()) await expect(tab).toBeDisabled();
   await expect(page.locator("#session-run")).toHaveText("Retry submission (same batch)");
   await expect(page.locator("#session-run")).toBeEnabled();
   await page.locator("#session-run").click();
