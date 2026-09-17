@@ -17,6 +17,7 @@ import {
   wrapLanguageModel,
 } from "ai";
 import type {
+  LanguageModel,
   ModelMessage,
   Tool,
   ToolExecutionOptions,
@@ -195,16 +196,17 @@ interface GenerateResultShape {
     }>;
     readonly finishReason: string;
   }>;
-  readonly response: {
-    readonly messages: ReadonlyArray<ModelMessage>;
-  };
+  readonly responseMessages: ReadonlyArray<ModelMessage>;
 }
 
 // ============================================================================
 // Implementation
 // ============================================================================
 
-export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
+export function createAgentLoop(
+  config: AgentLoopConfig,
+  resolveModel: (modelId: string) => Exclude<LanguageModel, string> = azureProvider
+): AgentLoop {
   const sessions = new Map<string, AgentLoopSession>();
   const model = config.model || AI_MODEL_ADVANCED;
   const maxIterations = config.maxIterations || 20;
@@ -324,7 +326,7 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
       const toolsContext = Object.fromEntries(
         Object.keys(aiTools).map((toolName) => [toolName, sharedToolContext])
       );
-      const languageModel = azureProvider(model ?? "");
+      const languageModel = resolveModel(model ?? "");
       const result = await generateText<typeof aiTools, AgentToolContext>({
         model: config.modelMiddleware ? wrapLanguageModel({ model: languageModel, middleware: config.modelMiddleware }) : languageModel,
         tools: aiTools,
@@ -390,9 +392,9 @@ export function createAgentLoop(config: AgentLoopConfig): AgentLoop {
       session.currentIteration++;
     }
 
-    // Store the response messages so we can resume
-    const responseMessages = result.response.messages;
-    session.messages.push(...(responseMessages as ModelMessage[]));
+    // AI SDK 7's response.messages contains only the final step. Preserve every
+    // generated tool call/result so external-input continuations keep their history.
+    session.messages.push(...result.responseMessages);
 
     // Check if complete_task was called
     const allToolCalls = result.steps.flatMap((s) => s.toolCalls);
