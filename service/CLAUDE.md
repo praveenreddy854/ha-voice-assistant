@@ -74,6 +74,8 @@ npm run eval:calibrate -- --agent realtime
 
 The dashboard at `/dashboards/evals` scopes runs, selections, baselines and alerts by agent. Daily simulated suites run sequentially from 3 a.m. America/New_York under one worker. TV recorded runs also have a default-on 1 a.m. schedule and evidence-grounded 0-100 task scoring; ScheduledTask and Realtime recorded evals remain on demand and categorical. Recorded evaluation only reads terminal production traces (plus optional TV Cosmos evidence) and never replays actions. See `docs/offline-evals.md` and `docs/offline-eval-testing.md`.
 
+`telemetry.ts` captures per-trial turns, provider requests, tool calls/executions/rejections, reported tokens, and monotonic latency. TV/ScheduledTask use opt-in AI SDK observation middleware; Realtime records native response and tool events. Handled execution errors retain partial assessments without invoking the judge. Full transcripts are stored only with run details, not lightweight summaries or duplicate judge inputs. The portal exposes trial diagnostics, JSON export, and attempt-separated batch aggregates; unknown usage/pricing remains unavailable.
+
 ### Key Directories
 
 - `src/agents/core/` — Generic agent infrastructure: loop, orchestrator, registry, types

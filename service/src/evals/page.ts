@@ -147,6 +147,13 @@ dialog::backdrop{background:#060c16bd}
 .score-calculation{display:grid;grid-template-columns:minmax(120px,1fr) minmax(120px,2fr);gap:8px 16px}
 .score-calculation dt{color:var(--muted)}
 .score-calculation dd{margin:0;overflow-wrap:anywhere}
+.trial-turns,.trial-tools,.trial-tokens{min-width:90px;font-variant-numeric:tabular-nums}
+.model-call{border:1px solid var(--line);border-radius:10px;padding:12px}
+.model-response,.tool-call{margin-left:12px}
+.model-call summary,.trial-transcript{overflow-wrap:anywhere}
+.rejected{color:#f4cc7c}
+#detail-body .two>*{min-width:0}
+.token-usage caption,.batch-metrics caption{text-align:left;color:var(--muted);padding:10px 0}
 #detail-body li{margin:10px 0;overflow-wrap:anywhere}
 #detail-body p{overflow-wrap:anywhere}
 @media(max-width:1000px){
@@ -223,6 +230,7 @@ ${Object.values(evalAgents).map(agent => `<button type="button" id="agent-tab-${
 <p class="muted">Launching an evaluation makes paid model calls. Changing tabs only reads saved results; it does not run or re-run an evaluation.</p>
 </div>
 <section aria-labelledby="history-title"><div class="history-heading"><h2 id="history-title">Evaluation history</h2><p id="history-description" class="muted"></p></div>
+<p id="trial-metrics-description" class="muted" hidden>Trials show assistant turns, requested tool calls (including completion signals), agent tokens, and execution time. Inspect a trial for user turns, per-call traces, failures, stop reasons, and separate grading overhead. Older or missing telemetry stays unavailable, not zero.</p>
 <div id="runs-panel" class="scroll" role="region" aria-label="Evaluation history" tabindex="0"><table><thead id="run-columns"></thead><tbody id="runs"></tbody></table></div></section>
 <details id="batch-section" class="operational"><summary>Batch coverage and execution details</summary><p class="muted">Batches produce both code and LLM results. This list is restricted to the selected source and agent.</p><div id="batches"></div></details>
 <section id="judge-section" aria-labelledby="judge-title"><h2 id="judge-title">Judge validation</h2><p id="judge-description"></p><button id="calibrate">Validate judge</button><div id="calibrations"></div></section>

@@ -154,6 +154,18 @@ _Avoid_: Live-home test, network-free test.
 An Offline assistant eval of orchestration in a new assistant run against a Simulated assistant environment.
 _Avoid_: Synthetic eval, recorded-run eval.
 
+**Eval trial**:
+One attempt at an evaluation task. Scheduled, confirmation, and on-demand attempts retain separate outcomes and diagnostics.
+_Avoid_: Whole suite, successful retry replacing the original attempt.
+
+**Eval assistant turn**:
+One returned model response within an Eval trial, which may contain text, tool calls, or a completion signal. Fixture user turns and model request attempts are counted separately.
+_Avoid_: User message count, source evidence entry, Task step.
+
+**Trial diagnostics**:
+Per-trial counts, model/tool traces, reported token usage, latency, and stop/error information for troubleshooting. Agent execution and offline grading stay separate; missing measurements are unavailable, not zero.
+_Avoid_: Task-quality score, real-device latency estimate, inferred monetary cost.
+
 **Recorded-run eval**:
 An Offline assistant eval of a finished real assistant run's end-to-end behavior and task outcome, including unsuccessful runs, using retained evidence.
 _Avoid_: Real eval, live-device replay.

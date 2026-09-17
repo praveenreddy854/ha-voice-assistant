@@ -3,6 +3,7 @@ import path from "node:path";
 import type { AgentAdapter, Assessment, Scenario } from "../types";
 import { digest } from "../store";
 import { runOfflineAgentLoop } from "../loop";
+import { captureTrial } from "../telemetry";
 import { tvScenarios, type TvState } from "./scenarios";
 import { TvEnvironment } from "./environment";
 
@@ -29,30 +30,34 @@ export async function createTvAdapter(modelOverride?: string): Promise<AgentAdap
   return { id: "tv", version: "tv-simulator-1", scenarios: tvScenarios, model, promptVersion,
     async execute(input: Scenario, signal: AbortSignal): Promise<Assessment> {
       const scenario = input as Scenario<TvState>, environment = new TvEnvironment(scenario, skills);
-      const started = Date.now();
       const cap = constants.TV_AGENT_MAX_ITERATIONS_CAP;
       const initialMessage = `The user asked: "${scenario.request}"\n\nYou will now be provided with current state of all TVs in home assistant network.\n\nCurrent device states:\n${JSON.stringify(environment.deviceStates(), null, 2)}\n\nAvailable skills:\n${Object.entries(skills).map(([key, content]) => `${key}: ${content.split("\n").find(line => line.startsWith("# ")) || key}`).join("\n")}\n\nBegin by analyzing the goal and planning your approach.`;
-      const { finalResponse, usage, stoppedAtIterationLimit: stopped } = await runOfflineAgentLoop({
-        createLoop: createAgentLoop, systemPrompt, tools, model, maxIterations: cap, initialMessage, signal,
-        oneToolPerTurn: true,
-        record: item => environment.record(item),
-        async executeTool(name, args) {
-          const value = await environment.execute(name, args);
-          return { result: { observation: value.observation, toolSuccess: value.toolSuccess },
-            imageBase64: value.image?.split(",")[1], imageContentType: "image/png" };
-        },
-        rejectCompletion(result, steps) {
-          if (result.success === true && environment.researchRequired && steps < cap && result.completionToolCallId) {
-            return "Completion rejected: command verification failed and required device-command research is pending. Call web_search before completing.";
-          }
-          return undefined;
-        },
+      return captureTrial({
+        agentId: "tv", request: scenario.request, model, promptVersion, evidence: environment.evidence,
+        context: scenario.context, expectations: scenario.expectations,
+      }, signal, async telemetry => {
+        telemetry.virtualDeviceTimeMs = 0;
+        const { finalResponse, stoppedAtIterationLimit: stopped } = await runOfflineAgentLoop({
+          createLoop: createAgentLoop, systemPrompt, tools, model, maxIterations: cap, initialMessage, signal, telemetry,
+          oneToolPerTurn: true,
+          record: item => environment.record(item),
+          async executeTool(name, args) {
+            try {
+              const value = await environment.execute(name, args);
+              return { result: { observation: value.observation, toolSuccess: value.toolSuccess },
+                imageBase64: value.image?.split(",")[1], imageContentType: "image/png" };
+            } finally { telemetry.virtualDeviceTimeMs = environment.virtualMs; }
+          },
+          rejectCompletion(result, steps) {
+            if (result.success === true && environment.researchRequired && steps < cap && result.completionToolCallId) {
+              return "Completion rejected: command verification failed and required device-command research is pending. Call web_search before completing.";
+            }
+            return undefined;
+          },
+        });
+        environment.record({ kind: "final", text: finalResponse });
+        environment.record({ kind: "assertion", text: JSON.stringify({ actualFinalState: environment.state, taskSatisfied: environment.taskSatisfied(), virtualDeviceTimeMs: environment.virtualMs, stoppedAtIterationLimit: stopped }) });
+        return { finalResponse, taskAssertion: environment.taskSatisfied() };
       });
-      const durationMs = Date.now() - started;
-      environment.record({ kind: "final", text: finalResponse });
-      environment.record({ kind: "assertion", text: JSON.stringify({ actualFinalState: environment.state, taskSatisfied: environment.taskSatisfied(), virtualDeviceTimeMs: environment.virtualMs, stoppedAtIterationLimit: stopped }) });
-      return { agentId: "tv", mode: "simulated", request: scenario.request, finalResponse, startedAt: new Date(started).toISOString(), durationMs,
-        model, promptVersion, evidence: environment.evidence, coverage: "complete", context: scenario.context, expectations: scenario.expectations,
-        taskAssertion: environment.taskSatisfied(), usage };
     } };
 }

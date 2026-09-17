@@ -4,7 +4,7 @@ import { expect, type Page } from "@playwright/test";
 import { evalPage } from "../../service/src/evals/page";
 import type { EvalScheduleStatus } from "../../service/src/evals/scheduling";
 import type {
-  EvalAgentId, EvalAlert, EvalBatch, EvalMode, EvalRun, EvalRunSummary, Grade, RecordedSession, RecordedSessionEvaluation, RecordedSessionHistory, TaskEvalScore,
+  EvalAgentId, EvalAlert, EvalBatchSummary, EvalMode, EvalRun, EvalRunSummary, Grade, RecordedSession, RecordedSessionEvaluation, RecordedSessionHistory, TaskEvalScore,
 } from "../../service/src/evals/types";
 
 export type PortalRun = EvalRun & Pick<EvalRunSummary, "taskAssertion"> & { request: string; verdict: string };
@@ -83,7 +83,7 @@ interface FixtureState {
   sessions: RecordedSession[];
   statuses: Record<string, RecordedSessionEvaluation>;
   histories: Record<string, RecordedSessionHistory>;
-  batches: EvalBatch[];
+  batches: EvalBatchSummary[];
   jobs: import("../../service/src/evals/worker").EvalJob[];
   alerts: EvalAlert[];
   fidelity: { simulatedId: string; recordedIds: string[]; status: string }[];
@@ -99,7 +99,7 @@ interface FixtureState {
 
 export async function openPortal(page: Page, initial: Partial<FixtureState> = {}, view: {
   agentId?: EvalAgentId; mode?: EvalMode; evaluator?: "code" | "llm";
-} = {}) {
+} = {}, deploymentUrl?: string) {
   const state: FixtureState = {
     agents, runs: [], busy: false, scheduleEnabled: true, sessions: [], statuses: {}, histories: {},
     batches: [], jobs: [], alerts: [], fidelity: [], calibrations: [], ...initial,
@@ -107,22 +107,26 @@ export async function openPortal(page: Page, initial: Partial<FixtureState> = {}
   const errors: string[] = [], unexpectedRequests: string[] = [];
   const submissions: Record<string, unknown>[] = [];
   page.on("pageerror", error => errors.push(error.message));
-  const browserScript = await readFile(path.resolve("../service/dist/evals/browser.js"), "utf8");
-  // Every request is intercepted; these tests never start devices, workers, or model services.
+  const browserScript = deploymentUrl ? undefined : await readFile(path.resolve("../service/dist/evals/browser.js"), "utf8");
+  // API requests are always isolated; an optional deployment only supplies real HTML and script assets.
   await page.route("**/*", async route => {
     const url = new URL(route.request().url());
     const agentId = url.searchParams.get("agentId");
     if (url.pathname === "/dashboards/evals") {
-      await route.fulfill({ contentType: "text/html", body: evalPage });
+      if (deploymentUrl) await route.continue();
+      else await route.fulfill({ contentType: "text/html", body: evalPage });
     } else if (url.pathname === "/dashboards/evals/browser.js") {
-      await route.fulfill({ contentType: "application/javascript", body: browserScript });
+      if (deploymentUrl) await route.continue();
+      else await route.fulfill({ contentType: "application/javascript", body: browserScript });
     } else if (url.pathname === "/api/evals") {
       if (state.dashboardError) {
         await route.fulfill({ status: 503, json: { error: state.dashboardError } });
         return;
       }
       await route.fulfill({ json: {
-        agents: state.agents, runs: state.runs.filter(run => !agentId || run.agentId === agentId).map(({ assessment, ...summary }) => summary),
+        agents: state.agents, runs: state.runs.filter(run => !agentId || run.agentId === agentId).map(({ assessment, ...run }) => ({
+          ...run, metrics: assessment?.metrics, usage: assessment?.usage,
+        })),
         busy: state.busy, schedules: state.schedules, scheduleEnabled: state.scheduleEnabled,
         alerts: state.alerts.filter(alert => !agentId || (alert.agentId || alert.key.split(":")[0]) === agentId),
         batches: state.batches.filter(batch => !agentId || batch.agentId === agentId),
@@ -156,7 +160,8 @@ export async function openPortal(page: Page, initial: Partial<FixtureState> = {}
       await route.fulfill({ status: 404, body: "Unexpected fixture request" });
     }
   });
-  await page.goto(`/dashboards/evals?${new URLSearchParams(view)}`);
+  const location = `/dashboards/evals?${new URLSearchParams(view)}`;
+  await page.goto(deploymentUrl ? new URL(location, deploymentUrl).href : location);
   await expect(page.locator("#agent-panel")).toHaveAttribute("aria-busy", "false");
   if (!state.dashboardError) await expect(page.locator("#cards .number")).toHaveCount(4);
   return { state, errors, unexpectedRequests, submissions };

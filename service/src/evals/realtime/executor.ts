@@ -1,5 +1,6 @@
 import { REALTIME_TOOLS } from "../../realtimeAgent";
-import type { Usage } from "../types";
+import type { EvalModelCall, EvalToolCall, Usage } from "../types";
+import { TrialTelemetry } from "../telemetry";
 import { validateRealtimeToolArguments } from "./environment";
 
 type Event = Record<string, unknown>;
@@ -33,6 +34,7 @@ export interface RealtimeExecutionOptions {
   instructions: string;
   turns: readonly { text: string }[];
   signal: AbortSignal;
+  telemetry?: TrialTelemetry;
   beginTurn(index: number): string;
   executeTool(name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<string> | string;
   observeText?(text: string): void;
@@ -55,11 +57,15 @@ function text(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 function count(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 export function realtimeUsage(value: unknown): Usage {
   const usage = value && typeof value === "object" ? value as Event : {};
-  return { inputTokens: count(usage.input_tokens), outputTokens: count(usage.output_tokens), totalTokens: count(usage.total_tokens) };
+  const result: Usage = { inputTokens: count(usage.input_tokens), outputTokens: count(usage.output_tokens), totalTokens: count(usage.total_tokens) };
+  const input = usage.input_token_details, output = usage.output_token_details;
+  if (input && typeof input === "object" && "cached_tokens" in input) result.cacheReadTokens = count(input.cached_tokens);
+  if (output && typeof output === "object" && "reasoning_tokens" in output) result.reasoningTokens = count(output.reasoning_tokens);
+  return result;
 }
 export function realtimeDeploymentUrl(resourceName: string, apiVersion: string, deployment: string): string {
   if (!/^[a-z0-9][a-z0-9-]*$/i.test(resourceName)) throw new Error("Configure a valid AZURE_OPENAI_RESOURCE_NAME for Realtime evals");
@@ -118,6 +124,8 @@ export async function executeRealtimeSession(options: RealtimeExecutionOptions):
   const timeoutMs = bounded(options.timeoutMs, REALTIME_EVAL_LIMITS.timeoutMs);
   const maxResponses = bounded(options.maxResponses, REALTIME_EVAL_LIMITS.responses);
   const maxToolCalls = bounded(options.maxToolCalls, REALTIME_EVAL_LIMITS.toolCalls);
+  const telemetry = options.telemetry || new TrialTelemetry();
+  let activeModel: EvalModelCall | undefined;
   const socket = options.transport(options.url, {
     headers: { "api-key": options.apiKey }, handshakeTimeout: Math.min(timeoutMs, 15_000),
     followRedirects: false, maxPayload: REALTIME_EVAL_LIMITS.eventBytes,
@@ -127,7 +135,6 @@ export async function executeRealtimeSession(options: RealtimeExecutionOptions):
   let currentTexts: string[] = [];
   const turnResponses: string[] = [];
   const seenResponses = new Set<string>(), seenCalls = new Set<string>();
-  const usage: Usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
   const listeners: Array<[string, Listener]> = [];
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abort: () => void = () => {};
@@ -136,21 +143,34 @@ export async function executeRealtimeSession(options: RealtimeExecutionOptions):
       const fail = (error: unknown) => {
         if (settled) return;
         settled = true;
+        if (activeModel?.status === "running") {
+          activeModel.partialText = streamed || undefined;
+          telemetry.endModel(activeModel, error);
+        }
         reject(error instanceof Error ? error : new Error(String(error)));
       };
       abort = () => fail(options.signal.reason ?? new Error("Realtime evaluation aborted"));
       options.signal.addEventListener("abort", abort, { once: true });
-      timer = setTimeout(() => fail(new Error(`Realtime evaluation timed out after ${timeoutMs}ms`)), timeoutMs);
+      timer = setTimeout(() => {
+        if (settled) return;
+        telemetry.stop("timeout");
+        fail(new Error(`Realtime evaluation timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
       const send = (event: Event) => {
         options.signal.throwIfAborted();
         if (settled) return;
         if (socket.readyState !== 1) throw new Error("Realtime socket is not open");
+        telemetry.trace.messages.push(event);
         socket.send(JSON.stringify(event));
       };
       const requestResponse = () => {
-        if (responses >= maxResponses) throw new Error(`Realtime response limit (${maxResponses}) reached without completing all turns`);
+        if (responses >= maxResponses) {
+          telemetry.stop("response_limit");
+          throw new Error(`Realtime response limit (${maxResponses}) reached without completing all turns`);
+        }
         responsePending = true;
         streamed = "";
+        activeModel = telemetry.beginModel(url.searchParams.get("deployment") || undefined);
         send({ type: "response.create", response: {
           modalities: ["text"], max_output_tokens: REALTIME_EVAL_LIMITS.outputTokensPerResponse,
           ...(turnInstructions ? { instructions: turnInstructions } : {}),
@@ -162,6 +182,7 @@ export async function executeRealtimeSession(options: RealtimeExecutionOptions):
       const startTurn = () => {
         turnInstructions = options.beginTurn(turnIndex);
         currentTexts = [];
+        telemetry.beginUserTurn();
         send({ type: "conversation.item.create", item: {
           type: "message", role: "user", content: [{ type: "input_text", text: options.turns[turnIndex].text }],
         } });
@@ -180,6 +201,7 @@ export async function executeRealtimeSession(options: RealtimeExecutionOptions):
         if (Buffer.byteLength(encoded) > REALTIME_EVAL_LIMITS.eventBytes) throw new Error("Realtime event size limit exceeded");
         const event = object(JSON.parse(encoded), "event");
         if (event.type === "error") {
+          telemetry.trace.messages.push(event);
           const error = object(event.error ?? {}, "API error");
           throw new Error(`Realtime API error: ${text(error.message) || text(error.code) || "unknown error"}`);
         }
@@ -206,22 +228,33 @@ export async function executeRealtimeSession(options: RealtimeExecutionOptions):
         if (!id) throw new Error("Realtime response is missing its ID");
         if (seenResponses.has(id)) return;
         if (!configured || !responsePending) throw new Error("Unexpected Realtime response completion");
+        if (!activeModel) throw new Error("Realtime response has no active model request");
         seenResponses.add(id);
         responses++;
         responsePending = false;
+        telemetry.trace.messages.push(event);
         const responseUsage = realtimeUsage(response.usage);
-        for (const key of ["inputTokens", "outputTokens", "totalTokens"] as const) {
-          usage[key] = usage[key] === undefined || responseUsage[key] === undefined ? undefined : usage[key]! + responseUsage[key]!;
-        }
+        const modelResponse = telemetry.response(activeModel, {
+          responseId: id, model: text(response.model) || undefined, text: streamed,
+          finishReason: text(response.status), usage: responseUsage,
+        });
+        const responseError = response.status === "completed" ? undefined
+          : `Realtime response ended with ${text(response.status) || "unknown status"}: ${JSON.stringify(response.status_details ?? {})}`;
         const output = response.output;
         if (!Array.isArray(output)) throw new Error("Realtime response output is missing");
         const calls: RealtimeResponseEvidence["toolCalls"] = [];
+        const callTraces: EvalToolCall[] = [];
         const messageText: string[] = [];
         for (const rawItem of output) {
           const item = object(rawItem, "output item");
           if (item.type === "function_call") {
             const call = { id: text(item.call_id), name: text(item.name), arguments: text(item.arguments) };
-            if (!call.id || !call.name || !call.arguments) throw new Error("Realtime function call is incomplete");
+            const trace = telemetry.requestTool(activeModel, modelResponse.turn, call.id, call.name, call.arguments);
+            callTraces.push(trace);
+            if (!call.id || !call.name || !call.arguments) {
+              telemetry.rejectTool(trace, "Realtime function call is incomplete");
+              throw new Error("Realtime function call is incomplete");
+            }
             calls.push(call);
           } else if (item.type === "message") {
             if (!Array.isArray(item.content)) throw new Error("Realtime message content is missing");
@@ -233,29 +266,46 @@ export async function executeRealtimeSession(options: RealtimeExecutionOptions):
           } else throw new Error(`Unsupported Realtime output item: ${String(item.type)}`);
         }
         const finalText = messageText.join("\n") || streamed;
+        modelResponse.text = finalText;
+        modelResponse.content = response.output;
+        telemetry.endModel(activeModel, responseError);
+        modelResponse.responseTimeMs = activeModel.durationMs;
         if (!streamed) observeText(finalText);
         if (finalText) currentTexts.push(finalText);
         options.recordResponse?.({ responseId: id, status: text(response.status), model: text(response.model) || undefined, text: finalText, toolCalls: calls, usage: responseUsage });
-        if (response.status !== "completed") throw new Error(`Realtime response ended with ${text(response.status) || "unknown status"}: ${JSON.stringify(response.status_details ?? {})}`);
+        if (responseError) throw new Error(responseError);
         if (calls.length) {
-          if (responses >= maxResponses) throw new Error(`Realtime response limit (${maxResponses}) reached before tool follow-up`);
-          if (toolCalls + calls.length > maxToolCalls) throw new Error(`Realtime tool-call limit (${maxToolCalls}) exceeded`);
-          // Validate the entire batch before any isolated effect; replayed call IDs
-          // must not repeat a confirmation, memory write or job acceptance.
-          const batchIds = new Set<string>();
-          const parsed = calls.map(call => {
-            if (seenCalls.has(call.id) || batchIds.has(call.id)) throw new Error(`Duplicate Realtime tool call: ${call.id}`);
-            batchIds.add(call.id);
-            const args = object(JSON.parse(call.arguments), "tool arguments");
-            validateRealtimeToolArguments(call.name, args);
-            return { ...call, args };
-          });
+          const validateCalls = () => {
+            if (responses >= maxResponses) {
+              telemetry.stop("response_limit");
+              throw new Error(`Realtime response limit (${maxResponses}) reached before tool follow-up`);
+            }
+            if (toolCalls + calls.length > maxToolCalls) {
+              telemetry.stop("tool_limit");
+              throw new Error(`Realtime tool-call limit (${maxToolCalls}) exceeded`);
+            }
+            // Validate the whole batch before any isolated effect.
+            const batchIds = new Set<string>();
+            return calls.map((call, index) => {
+              if (seenCalls.has(call.id) || batchIds.has(call.id)) throw new Error(`Duplicate Realtime tool call: ${call.id}`);
+              batchIds.add(call.id);
+              const args = object(JSON.parse(call.arguments), "tool arguments");
+              validateRealtimeToolArguments(call.name, args);
+              return { ...call, args, trace: callTraces[index] };
+            });
+          };
+          let parsed: ReturnType<typeof validateCalls>;
+          try { parsed = validateCalls(); }
+          catch (error) {
+            for (const trace of callTraces) telemetry.rejectTool(trace, error instanceof Error ? error.message : String(error));
+            throw error;
+          }
           for (const call of parsed) {
             if (settled) return;
             options.signal.throwIfAborted();
             seenCalls.add(call.id);
             toolCalls++;
-            const result = await options.executeTool(call.name, call.args, options.signal);
+            const result = await telemetry.executeTool(call.trace, () => options.executeTool(call.name, call.args, options.signal));
             if (settled) return;
             send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: call.id, output: result } });
           }
@@ -270,7 +320,7 @@ export async function executeRealtimeSession(options: RealtimeExecutionOptions):
         if (turnIndex < options.turns.length) startTurn();
         else {
           settled = true;
-          resolve({ finalResponse: turnResponses[turnResponses.length - 1], turnResponses, usage, responses });
+          resolve({ finalResponse: turnResponses[turnResponses.length - 1], turnResponses, usage: telemetry.usage(), responses });
         }
       };
       const listen = (event: string, listener: Listener) => { listeners.push([event, listener]); socket.on(event, listener); };

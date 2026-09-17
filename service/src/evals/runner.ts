@@ -4,6 +4,7 @@ import type { EvalJob } from "./worker";
 import { EvalStore } from "./store";
 import { baselineFor, runVerdict } from "./analytics";
 import { RECORDED_IMPORT_VERSION } from "./types";
+import { EvalExecutionError, EvalGradingError } from "./telemetry";
 
 export class EvalRunner {
   constructor(readonly store: EvalStore, readonly judge: Judge, readonly judgeModel: string, readonly graderVersion: string) {}
@@ -13,6 +14,11 @@ export class EvalRunner {
       scenarioId: scenario?.id, scenarioVersion: scenario?.version, adapterVersion, graderVersion: this.graderVersion, judgeModel: this.judgeModel,
       scheduledDay: batch.scheduledDay, assessedAt: new Date().toISOString(), gradedAt: new Date().toISOString(), status: "execution_error",
       sourceSessionId: recorded?.sessionId, recordedAttemptId: recorded?.attempt?.id };
+    const started = performance.now();
+    const retainAssessment = (assessment: Assessment) => {
+      run.assessment = assessment; run.assessedAt = assessment.startedAt; run.durationMs = assessment.durationMs;
+      run.assessedModel = assessment.model; run.promptVersion = assessment.promptVersion;
+    };
     const startedAttempt: RecordedEvalAttempt | undefined = recorded?.attempt ? {
       ...recorded.attempt, status: "running", startedAt: new Date().toISOString(), runId: run.id,
     } : undefined;
@@ -22,11 +28,23 @@ export class EvalRunner {
       const assessment = await execute();
       if (assessment.agentId !== batch.agentId || assessment.mode !== batch.mode) throw new Error("Assessment agent or mode does not match its evaluation batch");
       if (recorded && assessment.sourceSessionId !== recorded.sessionId) throw new Error("Retained assessment does not match the selected session");
-      run.assessment = assessment; run.assessedAt = assessment.startedAt; run.durationMs = assessment.durationMs;
-      run.assessedModel = assessment.model; run.promptVersion = assessment.promptVersion; run.status = "grading_error";
-      const judged = await this.judge(assessment, (await this.store.list<StepGroup>("groups")).filter(g => g.agentId === assessment.agentId), signal);
-      run.grade = judged.grade; run.judgeUsage = judged.usage; run.status = "completed";
-    } catch (error) { run.error = error instanceof Error ? error.message : String(error); }
+      retainAssessment(assessment); run.status = "grading_error";
+      const groups = (await this.store.list<StepGroup>("groups")).filter(g => g.agentId === assessment.agentId);
+      const gradingStarted = performance.now();
+      try {
+        const judged = await this.judge(assessment, groups, signal);
+        run.grade = judged.grade; run.judgeUsage = judged.usage; run.status = "completed";
+      } finally { run.gradingDurationMs = Math.max(0, performance.now() - gradingStarted); }
+    } catch (error) {
+      run.error = error instanceof Error ? error.message : String(error);
+      if (run.status === "grading_error" && error instanceof EvalGradingError) run.judgeUsage = error.usage;
+      if (error instanceof EvalExecutionError) {
+        if (error.assessment.agentId === batch.agentId && error.assessment.mode === batch.mode) retainAssessment(error.assessment);
+        else run.error += "; partial assessment did not match its evaluation batch";
+      }
+      if (run.mode === "simulated" && run.status === "execution_error") run.durationMs ??= Math.max(0, performance.now() - started);
+    }
+    run.evaluationDurationMs = Math.max(0, performance.now() - started);
     run.gradedAt = new Date().toISOString();
     await this.store.saveRun(run); batch.runIds.push(run.id); await this.store.write("batches", batch);
     if (startedAttempt) await this.store.write<RecordedEvalAttempt>("attempts", {

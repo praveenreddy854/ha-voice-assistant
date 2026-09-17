@@ -12,7 +12,7 @@
     expectedScore?: number | null; actualScore?: number | null; expectedProgress?: string; actualProgress?: string;
     expectedSeverities?: string[]; actualSeverities?: string[];
     expectedBlockingComponents?: string[]; actualBlockingComponents?: string[] };
-  type Snapshot = { runs: Run[]; batches: import("./types").EvalBatch[]; alerts: import("./types").EvalAlert[]; busy: boolean;
+  type Snapshot = { runs: Run[]; batches: import("./types").EvalBatchSummary[]; alerts: import("./types").EvalAlert[]; busy: boolean;
     agents: { id: string; name: string; description: string; scenarioCount: number; referenceCount: number }[];
     baseline: { from: string; to: string }; timezone: string; scheduleEnabled: boolean; schedules?: Schedules; fidelityNote: string;
     fidelity: { simulatedId: string; recordedIds: string[]; status: string }[];
@@ -41,6 +41,7 @@
   let displayed: Session[] = [];
   let pendingSubmission: { agentId: string; requestId: string; sessionIds: string[] } | undefined;
   let detailVersion = 0, historySession: string | undefined, returnToSelection = false;
+  let detailDownloadUrl: string | undefined;
   let historyLoading = false, historyMarkup: string | undefined;
   const selector = element<HTMLDialogElement>("session-selector");
   const detail = element<HTMLDialogElement>("detail");
@@ -63,6 +64,21 @@
     return ["year", "month", "day"].map(type => parts.find(part => part.type === type)!.value).join("-");
   };
   const duration = (value?: number) => value == null ? "Unknown" : `${(value / 1000).toFixed(1)}s`;
+  const metricNumber = (value?: number) => value == null || !Number.isFinite(value) || value < 0 ? "Unavailable" : value.toLocaleString("en-US");
+  const latency = (value?: number) => value == null || !Number.isFinite(value) || value < 0 ? "Unavailable"
+    : value < 1000 ? `${value.toFixed(0)} ms` : `${(value / 1000).toFixed(2)} s`;
+  const runMetrics = (run: Run) => run.assessment?.metrics || run.metrics;
+  const agentUsage = (run: Run) => run.assessment?.usage || run.usage;
+  function metricCells(run: Run) {
+    const metrics = runMetrics(run), usage = agentUsage(run);
+    return `<td class="trial-turns">${metricNumber(metrics?.assistantTurns)}${metrics ? `<br><small>${metricNumber(metrics.userTurns)} user turns</small>` : ""}</td><td class="trial-tools">${metricNumber(metrics?.toolCalls)}${metrics ? `<br><small>${metricNumber(metrics.toolExecutions)} executed<br>${metricNumber(metrics.toolErrors)} failed / ${metricNumber(metrics.rejectedToolCalls)} rejected</small>` : ""}</td><td class="trial-tokens">${metricNumber(usage?.totalTokens)}${usage ? `<br><small>In ${metricNumber(usage.inputTokens)} / out ${metricNumber(usage.outputTokens)}</small>` : ""}</td>`;
+  }
+  function batchHtml(batch: import("./types").EvalBatchSummary) {
+    const heading = `${esc(batch.scheduledDay || date(batch.startedAt))} · ${esc(batch.mode === "simulated" ? "synthetic" : "recorded")} · ${batch.attempt === "scheduled" ? "Scheduled" : "On demand"} · ${badge(batch.status)} · ${batch.runIds.length} attempts ${esc(batch.error || "")}`;
+    if (batch.mode !== "simulated") return `<p>${heading}</p>`;
+    const metrics = batch.metricsByAttempt;
+    return `<details class="batch-metrics" data-result-id="${esc(batch.id)}"><summary data-focus-key="${esc(batch.id)}">${heading}</summary>${batch.missingRunSummaries ? `<p class="error" role="alert">${metricNumber(batch.missingRunSummaries)} run summaries unavailable. Totals below cover only retained summaries, not the entire batch.</p>` : ""}${metrics?.length ? `<div class="scroll"><table><caption>Retained simulated trial metrics</caption><thead><tr><th>Attempt</th><th>Telemetry coverage</th><th>Assistant turns</th><th>Tool calls / failures</th><th>Agent tokens</th><th>Judge tokens</th><th>Agent latency p50 / p95</th><th>Execution / grading errors</th></tr></thead><tbody>${metrics.map(item => `<tr><td>${esc(item.attempt)}</td><td>${metricNumber(item.measuredRuns)} / ${metricNumber(item.runCount)} trials</td><td>${metricNumber(item.assistantTurns)}</td><td>${metricNumber(item.toolCalls)} / ${metricNumber(item.toolErrors)}</td><td>${metricNumber(item.usage.totalTokens)}</td><td>${metricNumber(item.judgeUsage.totalTokens)}</td><td>${latency(item.p50DurationMs)} / ${latency(item.p95DurationMs)}<br><small>${metricNumber(item.latencySamples)} samples</small></td><td>${metricNumber(item.executionErrors)} / ${metricNumber(item.gradingErrors)}</td></tr>`).join("")}</tbody></table></div><p class="muted">Scheduled, confirmation, and on-demand attempts stay separate. Latencies include unsuccessful attempts; p95 uses the nearest-rank sample. Missing token contributions make the total unavailable.</p>` : '<p class="muted">Trial metrics unavailable for this batch.</p>'}</details>`;
+  }
   const modeLabel = () => mode === "recorded" ? "Recorded" : "Synthetic";
   const methodLabel = () => evaluator === "code" ? "Code-based" : "LLM-based";
   const progressLabels: Record<import("./types").TaskScoringAssessment["progress"]["level"], string> = {
@@ -241,17 +257,21 @@
   }
   function renderHistory(runs: Run[]) {
     const code = evaluator === "code";
+    const showMetrics = mode === "simulated";
     const columns = code ? mode === "recorded"
       ? ["Task eval score", "Progress", "Deductions", "Reporting ceiling"]
       : ["Independent assertion", "Check scope", "LLM grading", "Duration"]
       : mode === "recorded" ? ["Task fulfillment", "Handling", "Reporting", "Recovery"]
         : ["Handling", "Reporting", "Recovery", "Evidence gaps"];
-    element("run-columns").innerHTML = `<tr>${["Assessed / graded", "Task / scenario", "Attempt", ...columns, "Evaluation status", mode === "simulated" && !code ? "Prior week / provenance" : "Provenance", ...(!code ? ["Duration"] : []), "Evidence"].map(label => `<th scope="col">${esc(label)}</th>`).join("")}</tr>`;
-    element("history-description").textContent = `${modeLabel()} / ${methodLabel()} only. ${code ? mode === "recorded" ? "TV score calculations use LLM-assessed evidence. Inspect the saved rubric, arithmetic and citations." : "Independent code assertions, including results retained before an LLM grading error. No LLM verdict is substituted for a missing assertion." : mode === "simulated" ? "LLM handling, reporting and recovery judgments. Switch to Code-based for the actual simulator outcome. Timing comparisons use model wall time with virtual device waits, not real-device speed." : "Evidence-backed task, handling, reporting and recovery judgments. Switch to Code-based for TV score calculations."}`;
+    const headings = ["Assessed / graded", "Task / scenario", "Attempt", ...columns, "Evaluation status", mode === "simulated" && !code ? "Prior week / provenance" : "Provenance", ...(!code ? ["Duration"] : []), ...(showMetrics ? ["Assistant turns", "Tool calls", "Agent tokens"] : []), "Evidence"];
+    element("run-columns").innerHTML = `<tr>${headings.map(label => `<th scope="col">${esc(label)}</th>`).join("")}</tr>`;
+    element("trial-metrics-description").hidden = !showMetrics;
+    element("history-description").textContent = `${modeLabel()} / ${methodLabel()} only. ${code ? mode === "recorded" ? "TV score calculations use LLM-assessed evidence. Inspect the saved rubric, arithmetic and citations." : "Independent code assertions, including results retained before an LLM grading error. No LLM verdict is substituted for a missing assertion." : mode === "simulated" ? "LLM handling, reporting and recovery judgments. Switch to Code-based for the actual simulator outcome. Timing measures agent wall time, excluding virtual device waits and offline grading; it is not real-device speed." : "Evidence-backed task, handling, reporting and recovery judgments. Switch to Code-based for TV score calculations."}`;
     const html = runs.map(run => {
       const grade = run.status === "completed" ? run.grade : undefined;
       const score = run.agentId === "tv" && run.mode === "recorded" ? grade?.score : undefined;
       const status = run.status === "completed" ? badge("completed") : `${badge("error")}<br><small>${esc(run.error || run.status.replace(/_/g, " "))}</small>`;
+      const elapsed = `${duration(run.durationMs)}${showMetrics && runMetrics(run) ? `<br><small>${esc(runMetrics(run)!.stopReason.replace(/_/g, " "))}</small>` : ""}`;
       let cells: string[];
       if (!code) {
         cells = (mode === "recorded" ? ["task", "handling", "reporting", "recovery"] as const : ["handling", "reporting", "recovery"] as const)
@@ -263,10 +283,10 @@
           score?.status === "scored" ? score.reportingCeiling == null ? "Not applied" : `${score.reportingCeiling}/100` : "—"];
       } else {
         cells = [run.taskAssertion == null ? '<span class="unknown">Assertion unavailable</span><br><small>No assertion retained in this summary. Inspect the saved run.</small>' : badge(run.taskAssertion ? "pass" : "fail"),
-          "Whole request / final simulator state", run.status === "grading_error" ? "Grading failed; any saved code result is retained" : run.status === "completed" ? "Completed separately" : "Did not finish", duration(run.durationMs)];
+          "Whole request / final simulator state", run.status === "grading_error" ? "Grading failed; any saved code result is retained" : run.status === "completed" ? "Completed separately" : "Did not finish", elapsed];
       }
-      return `<tr data-run-id="${esc(run.id)}"><td>${esc(date(run.assessedAt))}<br><small>Graded ${esc(date(run.gradedAt))}</small></td><td>${esc(run.request || run.scenarioId || run.id)}<br><small>${esc(run.assessedModel || "Model unknown")}</small></td><td>${esc(run.attempt.replace(/_/g, " "))}</td>${cells.map(cell => `<td>${cell}</td>`).join("")}<td>${status}</td><td>${provenance(run)}</td>${!code ? `<td>${duration(run.durationMs)}</td>` : ""}<td><button data-focus-key="${esc(run.id)}" data-run="${esc(run.id)}">Inspect</button></td></tr>`;
-    }).join("") || `<tr><td colspan="${code ? 10 : 11}" class="empty-state"><strong>No ${modeLabel().toLowerCase()} evaluations for this agent yet.</strong>${mode === "recorded" ? "Select completed sessions above to evaluate retained evidence." : "Run a synthetic suite above to evaluate controlled scenarios."} Results from the other source stay in their own tab.</td></tr>`;
+      return `<tr data-run-id="${esc(run.id)}"><td>${esc(date(run.assessedAt))}<br><small>Graded ${esc(date(run.gradedAt))}</small></td><td>${esc(run.request || run.scenarioId || run.id)}<br><small>${esc(run.assessedModel || "Model unknown")}</small></td><td>${esc(run.attempt.replace(/_/g, " "))}</td>${cells.map(cell => `<td>${cell}</td>`).join("")}<td>${status}</td><td>${provenance(run)}</td>${!code ? `<td>${elapsed}</td>` : ""}${showMetrics ? metricCells(run) : ""}<td><button data-focus-key="${esc(run.id)}" data-run="${esc(run.id)}">Inspect</button></td></tr>`;
+    }).join("") || `<tr><td colspan="${headings.length}" class="empty-state"><strong>No ${modeLabel().toLowerCase()} evaluations for this agent yet.</strong>${mode === "recorded" ? "Select completed sessions above to evaluate retained evidence." : "Run a synthetic suite above to evaluate controlled scenarios."} Results from the other source stay in their own tab.</td></tr>`;
     setResultHtml(element("runs"), html);
   }
   function renderAlerts() {
@@ -331,7 +351,7 @@
     const fidelity = snapshot.fidelity.filter(pair => agentRuns.some(run => run.id === pair.simulatedId));
     const pairs = fidelity.filter(pair => pair.recordedIds.length);
     element("fidelity").innerHTML = pairs.map(pair => `<p>${esc(agentRuns.find(run => run.id === pair.simulatedId)?.scenarioId)} · ${pair.recordedIds.length} comparable recorded runs <button data-pair="${esc(pair.simulatedId)}:${esc(pair.recordedIds[0])}">Compare steps</button></p>`).join("") || `No comparison data yet. ${fidelity.length} synthetic runs currently unmatched.`;
-    element("batches").innerHTML = snapshot.batches.filter(batch => batch.agentId === agentId && batch.mode === mode).map(batch => `<p>${esc(batch.scheduledDay || date(batch.startedAt))} · ${esc(batch.mode === "simulated" ? "synthetic" : "recorded")} · ${batch.attempt === "scheduled" ? "Scheduled" : "On demand"} · ${badge(batch.status)} · ${batch.runIds.length} attempts ${esc(batch.error || "")}</p>`).join("") || `No ${modeLabel().toLowerCase()} batches for this agent.`;
+    setResultHtml(element("batches"), snapshot.batches.filter(batch => batch.agentId === agentId && batch.mode === mode).map(batchHtml).join("") || `No ${modeLabel().toLowerCase()} batches for this agent.`);
     setResultHtml(element("calibrations"), snapshot.calibrations.filter(calibration => (calibration.agentId || "tv") === agentId).map(calibration => `<details data-result-id="${esc(calibration.id)}"><summary data-focus-key="${esc(calibration.id)}">${esc(calibration.judgeModel)} · ${badge(calibration.passed ? "pass" : "fail")} · ${esc(date(calibration.createdAt))}</summary>${calibration.results.map(result => calibrationHtml(result, agentId)).join("")}${calibration.limitation ? `<p class="muted">${esc(calibration.limitation)}</p>` : ""}</details>`).join("") || "<p class=muted>The judge has not been validated against the reference cases yet.</p>");
     updateControls();
   }
@@ -576,6 +596,31 @@
   function evidenceHtml(run: Run, ids?: string[]) {
     return (run.assessment?.evidence || []).filter(e => !ids || ids.includes(e.id)).map(e => `<details${ids ? "" : ` id="evidence-${esc(encodeURIComponent(e.id))}"`}><summary>${esc(e.id)} · ${esc(e.toolName || e.kind)} · ${e.durationMs == null ? "" : duration(e.durationMs)}</summary><pre>${esc(JSON.stringify({ ...e, image: undefined }, null, 2))}</pre>${e.image?.startsWith("data:image/") ? `<img alt="Evidence ${esc(e.id)}" src="${esc(e.image)}">` : ""}</details>`).join("");
   }
+  function diagnosticsHtml(run: Run) {
+    const metrics = runMetrics(run);
+    const counts: Array<[string, number | undefined]> = [
+      ["User turns", metrics?.userTurns], ["Assistant turns", metrics?.assistantTurns],
+      ["Model requests", metrics?.modelRequests], ["Model errors", metrics?.modelErrors],
+      ["Tool calls", metrics?.toolCalls], ["Tool executions", metrics?.toolExecutions],
+      ["Tool failures", metrics?.toolErrors], ["Rejected tool calls", metrics?.rejectedToolCalls],
+      ["Unexecuted tool calls", metrics?.unexecutedToolCalls], ["Completion signals", metrics?.completionCalls],
+    ];
+    const timings: Array<[string, number | undefined]> = [
+      ["Agent wall time", run.durationMs], ["Model request time", metrics?.modelTimeMs],
+      ["Simulated tool time", metrics?.toolTimeMs], ["First complete response", metrics?.timeToFirstResponseMs],
+      ["Offline grading time", run.gradingDurationMs], ["Evaluation time", run.evaluationDurationMs],
+    ];
+    if (metrics?.virtualDeviceTimeMs !== undefined) timings.push(["Virtual device waits", metrics.virtualDeviceTimeMs]);
+    const usages: Array<[string, import("./types").Usage | undefined]> = [
+      ["Assessed agent", agentUsage(run)], ["Offline judge", run.judgeUsage],
+    ];
+    return `<section aria-label="Trial diagnostics"><h3>Trial diagnostics</h3>${metrics ? `<p><strong>Stop reason:</strong> ${esc(metrics.stopReason.replace(/_/g, " "))} · Metrics v${esc(metrics.version)}${run.status === "execution_error" ? " · Partial trace retained; execution did not finish." : ""}</p>` : '<p class="unknown">Trial metrics unavailable for this evaluation. Older and recorded evaluations are not backfilled.</p>'}<div class="two"><dl class="score-calculation">${counts.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${metricNumber(value)}</dd>`).join("")}</dl><dl class="score-calculation">${timings.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${latency(value)}</dd>`).join("")}</dl></div><div class="scroll"><table class="token-usage"><caption>Token usage by role</caption><thead><tr><th>Role</th><th>Input</th><th>Output</th><th>Total</th><th>Cache read</th><th>Reasoning</th></tr></thead><tbody>${usages.map(([label, usage]) => `<tr><th scope="row">${esc(label)}</th>${(["inputTokens", "outputTokens", "totalTokens", "cacheReadTokens", "reasoningTokens"] as const).map(key => `<td>${metricNumber(usage?.[key])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>${metrics ? `<p>Token usage reported for ${metricNumber(metrics.usageReportedResponses)} / ${metricNumber(metrics.assistantTurns)} returned responses. Requests without a reported response also make total usage unavailable.</p>` : ""}<p class="muted">An assistant turn is a model response, not a user message. Tool calls include completion signals and rejected requests; only tool executions reached a simulator. Cache-read and reasoning tokens are subsets of input and output, not additional tokens. Missing usage is unavailable, not zero. Cost is unavailable because deployment pricing is not configured.</p><p class="muted">Agent wall time excludes offline grading. Model time covers provider requests; tool time is simulator wall time, not live device latency. First complete response is not time to first token. Virtual waits are not added to measured wall time. Efficiency metrics do not change task-quality judgments.</p><a id="trial-download" download="${esc(run.id)}.json">Download trial JSON</a></section>`;
+  }
+  function traceHtml(run: Run) {
+    const trace = run.assessment?.trace;
+    if (!trace) return '<h3>Model and tool trace</h3><p class="muted">Structured trace unavailable for this evaluation. Inspect the retained source evidence below.</p>';
+    return `<section aria-label="Model and tool trace"><h3>Model and tool trace</h3><p class="muted">Requests are ordered within this trial. Offsets start at trial execution; response IDs identify provider calls. Repeated calls remain visible, including rejections and incomplete execution.</p>${trace.modelCalls.map(call => `<details class="model-call"${call.status === "error" ? " open" : ""}><summary>${esc(call.id)} · User turn ${metricNumber(call.userTurn)} · ${esc(call.model || "Model unavailable")} · ${latency(call.durationMs)} · ${badge(call.status)}</summary><p>Started at +${latency(call.offsetMs)}${call.error ? `<br><span class="error">${esc(call.error)}</span>` : ""}</p>${call.responses.map(response => `<details class="model-response"><summary>Assistant turn ${metricNumber(response.turn)} · ${esc(response.responseId || "Response ID unavailable")} · ${esc(response.finishReason || "Finish reason unavailable")} · ${metricNumber(response.usage?.totalTokens)} tokens</summary><pre>${esc(JSON.stringify(response, null, 2))}</pre></details>`).join("") || "<p>No complete model response was retained.</p>"}${call.partialText ? `<p>Partial streamed text:</p><pre>${esc(call.partialText)}</pre>` : ""}${trace.toolCalls.filter(tool => tool.modelCallId === call.id).map(tool => `<details class="tool-call"${tool.status === "error" || tool.status === "rejected" ? " open" : ""}><summary>${esc(tool.name)} · ${esc(tool.toolCallId)} · ${badge(tool.status)} · ${tool.executed ? latency(tool.durationMs) : "Not executed"}</summary><p>Assistant turn ${metricNumber(tool.turn)} · +${latency(tool.offsetMs)}${tool.error ? `<br><span class="error">${esc(tool.error)}</span>` : ""}</p><pre>${esc(JSON.stringify({ arguments: tool.arguments, result: tool.result }, null, 2))}</pre></details>`).join("")}</details>`).join("") || "<p>No model requests started.</p>"}<details class="trial-transcript"><summary>Full retained transcript</summary><pre>${esc(JSON.stringify({ systemMessages: trace.systemMessages, messages: trace.messages }, null, 2))}</pre></details></section>`;
+  }
   function citations(ids: string[]) {
     return ids.length ? `<small>Evidence: ${ids.map(id => `<a href="#evidence-${esc(encodeURIComponent(id))}" data-evidence="${esc(id)}">${esc(id)}</a>`).join(", ")}</small>` : "<small>No evidence cited.</small>";
   }
@@ -607,6 +652,7 @@
     return `<section aria-label="LLM-based judgments"><h3>LLM-based judgments</h3>${run.mode === "simulated" ? '<p class="muted">The simulator assertion fixes task fulfillment when retained; the LLM assesses handling, reporting and recovery.</p>' : ""}<div class="two">${(["task", "handling", "reporting", "recovery"] as const).map(kind => `<div><h4>${labels[kind]} ${badge(grade[kind].verdict)}</h4><p>${esc(grade[kind].reason)}<br>${citations(grade[kind].evidenceIds)}</p></div>`).join("")}</div></section>`;
   }
   function openDetail(title: string) {
+    clearDetailDownload();
     detailVersion++;
     historySession = undefined; historyMarkup = undefined;
     element("detail-title").textContent = title;
@@ -614,6 +660,10 @@
     if (selector.open) { returnToSelection = true; selector.close(); }
     if (!detail.open) detail.showModal();
     return detailVersion;
+  }
+  function clearDetailDownload() {
+    if (detailDownloadUrl) URL.revokeObjectURL(detailDownloadUrl);
+    detailDownloadUrl = undefined;
   }
   function historyLink(id?: string) {
     return id ? `<p><button data-session-history="${esc(id)}">Back to session attempt history</button></p>` : "";
@@ -624,7 +674,9 @@
       const run = await request<Run>(`/api/evals/runs/${encodeURIComponent(id)}`);
       if (version !== detailVersion || !detail.open) return;
       const sourceSessionId = sessionId || run.sourceSessionId || run.assessment?.sourceSessionId;
-      element("detail-body").innerHTML = `${historyLink(sourceSessionId)}<h3>${esc(run.assessment?.request || run.id)}</h3><p>${esc(run.assessment?.finalResponse || "")}</p><p class="muted">${esc(run.mode === "recorded" ? "Recorded" : "Synthetic")} · ${esc(run.agentId)} · ${esc(run.status.replace(/_/g, " "))}</p>${run.error ? `<p class="error" role="alert">${esc(run.error)}</p>` : ""}${assertionDetails(run)}<section aria-label="Task eval score breakdown">${scoreDetails(run)}</section>${judgmentDetails(run)}<details><summary>Run metadata and model usage</summary><pre>${esc(JSON.stringify({ agentId: run.agentId, status: run.status, assessedAt: run.assessedAt, gradedAt: run.gradedAt, durationMs: run.durationMs, sourceSessionId, coverage: run.assessment?.coverage, model: run.assessedModel, promptVersion: run.promptVersion, judge: run.judgeModel, graderVersion: run.graderVersion, usage: run.assessment?.usage, judgeUsage: run.judgeUsage }, null, 2))}</pre></details><details><summary>Full judgments and scoring data</summary><pre>${esc(JSON.stringify(run.grade, null, 2))}</pre></details><h3>Source evidence</h3>${evidenceHtml(run)}`;
+      element("detail-body").innerHTML = `${historyLink(sourceSessionId)}<h3>${esc(run.assessment?.request || run.id)}</h3><p>${esc(run.assessment?.finalResponse || "")}</p><p class="muted">${esc(run.mode === "recorded" ? "Recorded" : "Synthetic")} · ${esc(run.agentId)} · ${esc(run.status.replace(/_/g, " "))}</p>${run.error ? `<p class="error" role="alert">${esc(run.error)}</p>` : ""}${diagnosticsHtml(run)}${assertionDetails(run)}<section aria-label="Task eval score breakdown">${scoreDetails(run)}</section>${judgmentDetails(run)}<details><summary>Run metadata and model usage</summary><pre>${esc(JSON.stringify({ agentId: run.agentId, status: run.status, assessedAt: run.assessedAt, gradedAt: run.gradedAt, durationMs: run.durationMs, sourceSessionId, coverage: run.assessment?.coverage, model: run.assessedModel, promptVersion: run.promptVersion, judge: run.judgeModel, graderVersion: run.graderVersion, usage: run.assessment?.usage, judgeUsage: run.judgeUsage }, null, 2))}</pre></details>${traceHtml(run)}<details><summary>Full judgments and scoring data</summary><pre>${esc(JSON.stringify(run.grade, null, 2))}</pre></details><h3>Source evidence</h3>${evidenceHtml(run)}`;
+      detailDownloadUrl = URL.createObjectURL(new Blob([JSON.stringify(run, null, 2)], { type: "application/json" }));
+      element<HTMLAnchorElement>("trial-download").href = detailDownloadUrl;
     } catch (error) {
       if (version === detailVersion && detail.open) element("detail-body").innerHTML = `${historyLink(sessionId)}<p class="error" role="alert">Could not load this evaluation: ${esc(String(error))}</p><button data-run="${esc(id)}"${sessionId ? ` data-history-session="${esc(sessionId)}"` : ""}>Retry inspection</button>`;
     }
@@ -742,6 +794,7 @@
   document.querySelector<HTMLAnchorElement>('.guide-link')!.onclick = () => { element<HTMLDetailsElement>("scoring-guide").open = true; };
   element("close").onclick = () => detail.close();
   detail.addEventListener("close", () => {
+    clearDetailDownload();
     detailVersion++; historySession = undefined; historyMarkup = undefined; historyLoading = false;
     if (returnToSelection) { returnToSelection = false; selector.showModal(); renderSessions(); }
   });

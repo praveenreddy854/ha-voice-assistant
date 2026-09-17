@@ -82,6 +82,20 @@ Click **Inspect** on a row. Read the request and final response, then the separa
 
 The LLM's explanation must point to evidence that actually supports it. A screenshot proves only what is visible; an accepted command does not prove completion. The simulated final-state assertion checks the actual fixture outcome independently of the agent's success claim.
 
+### Inspect trial diagnostics
+
+Under **Synthetic**, select an agent to see **Assistant turns**, **Tool calls**, **Agent tokens**, and **Duration** in Evaluation history. These diagnostics are available in both Code-based and LLM-based views without changing their separate grading results. **Inspect → Trial diagnostics** separates fixture user turns from model responses, requested tools from executed/failed/rejected tools, and agent latency/usage from offline grading. A `complete_task` signal counts as a tool call but not a simulator execution. Realtime follow-up fixtures can have multiple user turns, with several model responses per turn.
+
+Expand **Model and tool trace** to inspect ordered requests, provider response IDs, offsets, response usage, arguments, results, and errors. **Full retained transcript** includes the conversation; screenshots remain under Source evidence. **Download trial JSON** saves the inspected attempt for troubleshooting without launching another evaluation.
+
+A handled model/tool error or cancellation should retain partial diagnostics while remaining an execution error, without a judge result. An invalid judge response should retain the completed agent trace and any reported judge tokens while remaining a grading error. Neither error is a task-quality pass.
+
+Inspect the distinction between **Unavailable** and `0`: a missing usage field or legacy metric must not be shown as zero; actual reported zero tokens remain zero. Cache-read/reasoning counts are included within input/output, not added again. Pricing is not configured, so cost is unavailable. Model retry attempts remain visible even if their usage was not reported.
+
+Expand **Batch coverage and execution details**, then a simulated batch, for totals and p50/p95 agent latency, with sample counts and execution/grading errors. Scheduled and confirmation attempts have separate rows; a successful confirmation must not erase the original trial. Missing counters or run summaries are explicitly identified. These latency summaries include failed attempts and do not measure real-device wait time or audio quality.
+
+See [metric definitions and Anthropic guidance](./offline-evals.md#simulated-trial-telemetry) for the exact counting and timing boundaries.
+
 ## 4. Grade an existing real run on demand
 
 Select **Recorded** and an agent tab. Under **Evaluate recorded sessions**, click **Select sessions**. The dialog lists finished sessions for the selected agent, including assistant runs that ended in error. TVAgent uses retained telemetry and configured Cosmos records; ScheduledTaskAgent and Realtime use telemetry only. Duplicate session IDs appear once with their sources. Applicable source failures remain visible with a retry action. Realtime turns predating retained lifecycle traces are not available for backfilling.
@@ -155,7 +169,7 @@ npm run eval:recorded -- --agent scheduled_task COMPLETED_SCHEDULED_SESSION_ID
 npm run eval:recorded -- --agent realtime COMPLETED_REALTIME_SESSION_ID
 
 # Verify framework behavior without live model/device calls
-node --import tsx --test tests/offlineEvals.test.ts tests/offlineMultiAgentEvals.test.ts tests/offlineWorker.test.ts tests/offlineTvAdapter.test.ts tests/offlineScheduledTaskAdapter.test.ts tests/offlineScheduledTaskEnvironment.test.ts tests/offlineRealtimeAdapter.test.ts tests/realtimeTrace.test.ts tests/recordedSessionDiscovery.test.ts tests/recordedEvalLifecycle.test.ts tests/taskScoring.test.ts tests/recordedEvalScheduling.test.ts
+node --import tsx --test tests/offlineEvals.test.ts tests/offlineTelemetry.test.ts tests/offlineMultiAgentEvals.test.ts tests/offlineWorker.test.ts tests/offlineTvAdapter.test.ts tests/offlineScheduledTaskAdapter.test.ts tests/offlineScheduledTaskEnvironment.test.ts tests/offlineRealtimeAdapter.test.ts tests/realtimeTrace.test.ts tests/recordedSessionDiscovery.test.ts tests/recordedEvalLifecycle.test.ts tests/taskScoring.test.ts tests/recordedEvalScheduling.test.ts
 ```
 
 Omitting `--agent` preserves the existing TV default. `OFFLINE_EVAL_JUDGE_MODEL` selects the judge deployment independently of the assessed agent; `AI_MODEL_ADVANCED` supplies TV/scheduling defaults and `AI_MODEL_REALTIME` supplies the native Realtime default. Recorded grading does not construct or execute that agent. `OFFLINE_EVAL_ENABLED=false` disables all automatic schedules; `OFFLINE_RECORDED_EVAL_ENABLED=false` disables only the TV recorded schedule. Both switches retain manual runs. The persisted enrollment cutoff survives restart and disable/re-enable. Alerts remain agent-scoped in the dashboard.
@@ -164,5 +178,5 @@ The dashboard browser checks use mocked API responses and do not start the backe
 
 ```sh
 cd service && npx tsc
-cd ../ha-voice-assistant && npm run test:e2e -- e2e/eval-dashboard.spec.ts e2e/eval-history.spec.ts e2e/eval-scoring.spec.ts e2e/eval-schedules.spec.ts
+cd ../ha-voice-assistant && npm run test:e2e -- e2e/eval-dashboard.spec.ts e2e/eval-history.spec.ts e2e/eval-metrics.spec.ts e2e/eval-scoring.spec.ts e2e/eval-schedules.spec.ts
 ```

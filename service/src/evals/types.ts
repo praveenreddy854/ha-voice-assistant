@@ -70,7 +70,75 @@ export interface Grade {
   scoringAssessment?: TaskScoringAssessment;
   score?: TaskEvalScore;
 }
-export interface Usage { inputTokens?: number; outputTokens?: number; totalTokens?: number }
+export interface Usage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cacheReadTokens?: number;
+  reasoningTokens?: number;
+}
+export type EvalStopReason = "completed" | "iteration_limit" | "response_limit" | "tool_limit" | "error" | "aborted" | "timeout";
+export interface EvalModelResponse {
+  turn: number;
+  responseId?: string;
+  model?: string;
+  finishReason?: string;
+  text: string;
+  usage?: Usage;
+  responseTimeMs?: number;
+  content?: unknown;
+}
+export interface EvalModelCall {
+  id: string;
+  userTurn: number;
+  offsetMs: number;
+  durationMs?: number;
+  model?: string;
+  status: "running" | "completed" | "error";
+  responses: EvalModelResponse[];
+  partialText?: string;
+  error?: string;
+}
+export interface EvalToolCall {
+  id: string;
+  modelCallId: string;
+  turn: number;
+  userTurn: number;
+  toolCallId: string;
+  name: string;
+  arguments: unknown;
+  offsetMs: number;
+  durationMs?: number;
+  executed: boolean;
+  status: "not_executed" | "completed" | "error" | "rejected";
+  result?: unknown;
+  error?: string;
+}
+export interface EvalTrace {
+  modelCalls: EvalModelCall[];
+  toolCalls: EvalToolCall[];
+  systemMessages?: string[];
+  messages: unknown[];
+}
+export interface EvalMetrics {
+  version: 1;
+  userTurns: number;
+  assistantTurns: number;
+  modelRequests: number;
+  toolCalls: number;
+  toolExecutions: number;
+  toolErrors: number;
+  rejectedToolCalls: number;
+  unexecutedToolCalls: number;
+  completionCalls: number;
+  modelErrors: number;
+  modelTimeMs: number;
+  toolTimeMs: number;
+  timeToFirstResponseMs?: number;
+  usageReportedResponses: number;
+  stopReason: EvalStopReason;
+  virtualDeviceTimeMs?: number;
+}
 export interface Assessment {
   agentId: string;
   mode: EvalMode;
@@ -87,6 +155,8 @@ export interface Assessment {
   taskAssertion?: boolean;
   sourceSessionId?: string;
   usage?: Usage;
+  metrics?: EvalMetrics;
+  trace?: EvalTrace;
 }
 export interface Scenario<T = unknown> {
   id: string;
@@ -123,6 +193,8 @@ export interface EvalRun {
   status: "completed" | "execution_error" | "grading_error";
   error?: string;
   durationMs?: number;
+  gradingDurationMs?: number;
+  evaluationDurationMs?: number;
   assessment?: Assessment;
   grade?: Grade;
   judgeUsage?: Usage;
@@ -160,7 +232,27 @@ export type Judge = (assessment: Assessment, groups: StepGroup[], signal: AbortS
 export interface EvalRunSummary extends Omit<EvalRun, "assessment"> {
   request?: string;
   usage?: Usage;
+  metrics?: EvalMetrics;
   taskAssertion?: boolean;
+}
+export interface EvalAttemptMetrics {
+  attempt: Attempt;
+  runCount: number;
+  measuredRuns: number;
+  assistantTurns?: number;
+  toolCalls?: number;
+  toolErrors?: number;
+  executionErrors: number;
+  gradingErrors: number;
+  usage: Usage;
+  judgeUsage: Usage;
+  latencySamples: number;
+  p50DurationMs?: number;
+  p95DurationMs?: number;
+}
+export interface EvalBatchSummary extends EvalBatch {
+  metricsByAttempt?: EvalAttemptMetrics[];
+  missingRunSummaries?: number;
 }
 export interface RecordedEvalAttempt {
   id: string;

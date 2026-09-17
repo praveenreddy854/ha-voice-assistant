@@ -67,8 +67,11 @@ export class EvalStore {
     await this.write("runs", run);
     // Summary reads never load screenshots or complete source traces in the backend.
     const { assessment, ...summary } = run;
-    await this.write("summaries", { ...summary, request: assessment?.request, sourceSessionId: run.sourceSessionId || assessment?.sourceSessionId,
-      usage: assessment?.usage, ...(run.mode === "simulated" && assessment?.taskAssertion != null ? { taskAssertion: assessment.taskAssertion } : {}) });
+    await this.write("summaries", {
+      ...summary, request: assessment?.request, sourceSessionId: run.sourceSessionId || assessment?.sourceSessionId,
+      usage: assessment?.usage, metrics: assessment?.metrics,
+      ...(run.mode === "simulated" && assessment?.taskAssertion != null ? { taskAssertion: assessment.taskAssertion } : {}),
+    });
   }
   async workerIsActive(): Promise<boolean> {
     return this.lockIsActive("worker.lock");

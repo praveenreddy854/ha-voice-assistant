@@ -18,7 +18,8 @@ import { EvalRunner } from "../src/evals/runner";
 import { EvalStore } from "../src/evals/store";
 import { EvalSupervisor } from "../src/evals/supervisor";
 import { parseEvalArguments, type EvalJob } from "../src/evals/worker";
-import { EVAL_AGENT_IDS, type Assessment, type EvalAlert, type EvalBatch, type EvalRun, type Grade, type RecordedEvalAttempt, type RecordedSessionsResponse } from "../src/evals/types";
+import { EVAL_AGENT_IDS, type Assessment, type EvalAlert, type EvalBatch, type EvalBatchSummary, type EvalRun, type EvalRunSummary, type Grade, type RecordedEvalAttempt, type RecordedSessionsResponse } from "../src/evals/types";
+import { TrialTelemetry } from "../src/evals/telemetry";
 import type { AgentTrace } from "../src/tracing/agentTraceStore";
 
 const context = { task: "request", target: "fixture", app: "none", startingState: "initial" };
@@ -247,9 +248,14 @@ test("judge calibration runs only the selected agent's reference set and persist
 test("API scopes runs, alerts, jobs, calibrations and discovery, and rejects unknown agents", () => withStore(async store => {
   const supervisor = new EvalSupervisor(store, () => new ChildProcess());
   for (const agentId of EVAL_AGENT_IDS) {
-    await store.saveRun(run(agentId));
+    const telemetry = new TrialTelemetry();
+    telemetry.beginUserTurn();
+    const call = telemetry.beginModel("model");
+    telemetry.response(call, { text: "Done", usage: { inputTokens: 20, outputTokens: 10, totalTokens: 30 } });
+    telemetry.endModel(call);
+    await store.saveRun(run(agentId, `${agentId}-run`, { assessment: { ...assessment(agentId), ...telemetry.finish() } }));
     await store.write<EvalBatch>("batches", { id: `${agentId}-batch`, agentId, mode: "simulated", attempt: "scheduled",
-      startedAt: "2026-09-14T12:00:00Z", status: "completed", runIds: [`${agentId}-run`] });
+      startedAt: "2026-09-14T12:00:00Z", status: "completed", runIds: [`${agentId}-run`, ...(agentId === "tv" ? ["missing-summary"] : [])] });
     await store.write("alerts", { id: `${agentId}-alert`, key: `${agentId}:incomplete`, message: agentId });
     await store.write("jobs", { id: `${agentId}-job`, agentId, status: "completed", mode: "simulated" });
     await store.write("calibrations", { id: `${agentId}-calibration`, agentId, results: [] });
@@ -272,12 +278,22 @@ test("API scopes runs, alerts, jobs, calibrations and discovery, and rejects unk
     for (const agentId of EVAL_AGENT_IDS) {
       const response = await fetch(`${base}/api/evals?agentId=${agentId}`);
       assert.equal(response.status, 200);
-      const data = await response.json() as Record<string, Array<{ agentId?: string; id: string; referenceCount?: number }>>;
+      const data = await response.json() as Record<string, Array<{ agentId?: string; id: string; referenceCount?: number }>> &
+        { runs: EvalRunSummary[]; batches: EvalBatchSummary[] };
       assert.deepEqual(data.agents.map(agent => ({ id: agent.id, count: agent.referenceCount })), [
         { id: "tv", count: 15 }, { id: "scheduled_task", count: 6 }, { id: "realtime", count: 6 },
       ]);
       assert.equal(data.runs.length, 1);
       assert.equal(data.runs[0].agentId, agentId);
+      assert.equal(data.runs[0].metrics?.assistantTurns, 1);
+      assert.equal(data.runs[0].usage?.totalTokens, 30);
+      assert.equal("assessment" in data.runs[0], false);
+      assert.equal("trace" in data.runs[0], false);
+      assert.equal(data.batches[0].metricsByAttempt?.[0].assistantTurns, 1);
+      assert.equal(data.batches[0].metricsByAttempt?.[0].usage.totalTokens, 30);
+      assert.equal(data.batches[0].missingRunSummaries, agentId === "tv" ? 1 : 0);
+      const detail = await (await fetch(`${base}/api/evals/runs/${agentId}-run`)).json() as EvalRun;
+      assert.equal(detail.assessment?.trace?.modelCalls.length, 1);
       for (const key of ["batches", "alerts", "jobs"]) assert.equal(data[key].length, 1);
       assert.ok(data.groups.every(group => group.agentId === agentId));
       assert.equal(data.calibrations.length, agentId === "tv" ? 2 : 1);

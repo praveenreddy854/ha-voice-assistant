@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Assessment, ComparisonContext, Grade, Judge, StepGroup, Usage } from "./types";
 import { digest } from "./store";
 import { computeTaskScore, SCORING_RUBRIC, scoringAssessmentSchema, supportsTaskScoring } from "./scoring";
+import { EvalGradingError, reportedModelUsage, sumUsage } from "./telemetry";
 
 const verdict = z.enum(["pass", "fail", "unknown", "not_applicable"]);
 const judgment = z.object({ verdict, reason: z.string().min(1), evidenceIds: z.array(z.string()) });
@@ -77,13 +78,15 @@ export type GenerateJudge = (system: string, assessment: Assessment, groups: Ste
 export function makeJudge(generate: GenerateJudge): Judge {
   return async (assessment, groups, signal) => {
     const result = await generate(supportsTaskScoring(assessment) ? RECORDED_JUDGE_PROMPT : JUDGE_PROMPT, assessment, groups, signal);
-    return { grade: validateGrade(result.output, assessment), usage: result.usage };
+    try { return { grade: validateGrade(result.output, assessment), usage: result.usage }; }
+    catch (error) { throw new EvalGradingError(error, result.usage); }
   };
 }
 export async function createLlmJudge(model: string, knownContexts: ComparisonContext[] = []): Promise<Judge> {
   const [{ generateText }, { azureProvider }] = await Promise.all([import("ai"), import("../ai")]);
   return makeJudge(async (system, assessment, groups, signal) => {
-    const packet = { ...assessment, evidence: assessment.evidence.map(({ image, ...item }) => ({ ...item, hasImage: Boolean(image) })) };
+    const { metrics: _metrics, trace: _trace, ...gradingAssessment } = assessment;
+    const packet = { ...gradingAssessment, evidence: assessment.evidence.map(({ image, ...item }) => ({ ...item, hasImage: Boolean(image) })) };
     const content: Array<{ type: "text"; text: string } | { type: "image"; image: string }> = [
       { type: "text", text: JSON.stringify({
         schema: (supportsTaskScoring(assessment) ? recordedGradeSchema : gradeSchema).toJSONSchema(),
@@ -95,6 +98,9 @@ export async function createLlmJudge(model: string, knownContexts: ComparisonCon
     }
     const result = await generateText({ model: azureProvider(model), system, messages: [{ role: "user", content }], abortSignal: signal, maxRetries: 0 });
     const text = result.text.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
-    return { output: JSON.parse(text), usage: { inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens, totalTokens: result.usage.totalTokens } };
+    // SDK aggregate usage drops the raw provider details needed to distinguish absent counts from zero.
+    const usage = sumUsage(result.steps.map(step => reportedModelUsage(step.usage, step.usage.raw)));
+    try { return { output: JSON.parse(text), usage }; }
+    catch (error) { throw new EvalGradingError(error, usage); }
   });
 }

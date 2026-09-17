@@ -1,5 +1,6 @@
 import type { AgentAdapter, Assessment, Scenario } from "../types";
 import { digest } from "../store";
+import { captureTrial } from "../telemetry";
 import { buildRealtimeInstructions, buildRealtimeTurnInstructions, REALTIME_TOOLS } from "../../realtimeAgent";
 import { RealtimeEnvironment } from "./environment";
 import { executeRealtimeSession, realtimeDeploymentUrl, REALTIME_EVAL_LIMITS } from "./executor";
@@ -34,31 +35,28 @@ export function createRealtimeAdapterWithTransport(config: RealtimeAdapterConfig
     id: "realtime", version: "realtime-simulator-1", scenarios: realtimeScenarios,
     model: config.model, promptVersion,
     async execute(input: Scenario, signal: AbortSignal): Promise<Assessment> {
-      signal.throwIfAborted();
       const scenario = input as Scenario<RealtimeState>;
-      const started = Date.now();
       const environment = new RealtimeEnvironment(scenario);
-      const result = await executeRealtimeSession({
-        transport, url, apiKey: config.apiKey, instructions: environment.instructions,
-        turns: environment.state.turns, signal,
-        beginTurn: index => environment.beginTurn(index),
-        executeTool: (name, args, abort) => { abort.throwIfAborted(); return environment.execute(name, args); },
-        observeText: text => environment.observeAssistantText(text),
-        recordResponse: response => environment.record({ kind: "context", text: JSON.stringify({ nativeRealtimeResponse: response }) }),
-        finishTurn: (_index, text) => environment.finishTurn(text),
+      return captureTrial({
+        agentId: "realtime", request: scenario.request, model: config.model, promptVersion,
+        evidence: environment.evidence, context: scenario.context, expectations: scenario.expectations,
+      }, signal, async telemetry => {
+        const result = await executeRealtimeSession({
+          transport, url, apiKey: config.apiKey, instructions: environment.instructions,
+          turns: environment.state.turns, signal, telemetry,
+          beginTurn: index => environment.beginTurn(index),
+          executeTool: (name, args, abort) => { abort.throwIfAborted(); return environment.execute(name, args); },
+          observeText: text => environment.observeAssistantText(text),
+          recordResponse: response => environment.record({ kind: "context", text: JSON.stringify({ nativeRealtimeResponse: response }) }),
+          finishTurn: (_index, text) => environment.finishTurn(text),
+        });
+        environment.record({ kind: "assertion", text: JSON.stringify({
+          taskSatisfied: environment.taskSatisfied(), violations: environment.violations,
+          acceptedEffects: environment.effects, finalFixtureState: environment.state,
+          turnResponses: result.turnResponses, nativeRealtimeResponses: result.responses, scope: REALTIME_EVAL_SCOPE,
+        }) });
+        return { finalResponse: result.finalResponse, taskAssertion: environment.taskSatisfied() };
       });
-      environment.record({ kind: "assertion", text: JSON.stringify({
-        taskSatisfied: environment.taskSatisfied(), violations: environment.violations,
-        acceptedEffects: environment.effects, finalFixtureState: environment.state,
-        turnResponses: result.turnResponses, nativeRealtimeResponses: result.responses, scope: REALTIME_EVAL_SCOPE,
-      }) });
-      return {
-        agentId: "realtime", mode: "simulated", request: scenario.request, finalResponse: result.finalResponse,
-        startedAt: new Date(started).toISOString(), durationMs: Date.now() - started,
-        model: config.model, promptVersion, evidence: environment.evidence,
-        coverage: "complete", context: scenario.context, expectations: scenario.expectations,
-        taskAssertion: environment.taskSatisfied(), usage: result.usage,
-      };
     },
   };
 }

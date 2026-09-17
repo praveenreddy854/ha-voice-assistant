@@ -38,7 +38,7 @@ function toolHistory(messages: ReadonlyArray<{ content: unknown }>): string[] {
   );
 }
 
-test("keeps all automatic tool history exactly once through two screenshot continuations", async () => {
+for (const observe of [false, true]) test(`keeps all automatic tool history exactly once through two screenshot continuations (${observe ? "with" : "without"} middleware)`, async () => {
   const { createAgentLoop } = await import("../src/agents/core/agentLoop");
   const model = new MockLanguageModelV4({
     doGenerate: [
@@ -71,8 +71,18 @@ test("keeps all automatic tool history exactly once through two screenshot conti
       parameters: { type: "object", properties: {} },
     },
   });
+  let observedCalls = 0;
   const loop = createAgentLoop(
-    { systemPrompt: "Test tool history.", model: "history-test", tools, maxIterations: 8 },
+    {
+      systemPrompt: "Test tool history.", model: "history-test", tools, maxIterations: 8,
+      modelMiddleware: observe ? {
+        specificationVersion: "v4",
+        async wrapGenerate({ doGenerate }) {
+          observedCalls++;
+          return doGenerate();
+        },
+      } : undefined,
+    },
     () => model
   );
   const session = loop.createSession("Open the app home screen.");
@@ -131,6 +141,7 @@ test("keeps all automatic tool history exactly once through two screenshot conti
     ]);
     assert.deepEqual(executed, ["load_skill", "get_device_state", "navigate"]);
     assert.equal(model.doGenerateCalls.length, 6);
+    assert.equal(observedCalls, observe ? 6 : 0);
     assert.equal(
       loop.getMessages(session.id).filter((message) =>
         Array.isArray(message.content) && message.content.some((part) => part.type === "image")

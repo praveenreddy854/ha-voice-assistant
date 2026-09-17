@@ -40,7 +40,7 @@ test("both New York schedules, persisted cutoff, and scheduled recorded provenan
   await expect(recorded).toContainText("Batch completed");
   await expect(recorded).toContainText("2026-09-15 · 1 sessions selected");
   const rows = page.locator("#runs tr");
-  const comparison = rows.filter({ hasText: "scheduled-recorded" }).locator("td").nth(8);
+  const comparison = rows.filter({ hasText: "scheduled-recorded" }).getByRole("cell").filter({ hasText: "Not part of the synthetic baseline" });
   await expect(comparison).toContainText("Scheduled");
   await expect(comparison).toContainText("2026-09-15");
   await expect(comparison).toContainText("Not part of the synthetic baseline");
