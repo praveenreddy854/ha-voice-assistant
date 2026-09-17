@@ -233,6 +233,7 @@ export interface EvalRunSummary extends Omit<EvalRun, "assessment"> {
   request?: string;
   usage?: Usage;
   metrics?: EvalMetrics;
+  taskAssertion?: boolean;
 }
 export interface EvalAttemptMetrics {
   attempt: Attempt;

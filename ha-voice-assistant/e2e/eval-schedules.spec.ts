@@ -1,6 +1,9 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import type { RecordedDailyOutcome } from "../../service/src/evals/scheduling";
-import { agents, enabledSchedules, makeRun, makeSession, openPortal, unsafeReason } from "./evalPortalFixture";
+import { agents, enabledSchedules, makeRun, makeSession, openPortal as openDashboard, unsafeReason } from "./evalPortalFixture";
+
+const openPortal = (page: Page, initial: Parameters<typeof openDashboard>[1] = {}) =>
+  openDashboard(page, initial, { agentId: "tv" });
 
 const outcome = (overrides: Partial<RecordedDailyOutcome> = {}): RecordedDailyOutcome => ({
   id: "recorded-2026-09-15", mode: "recorded", day: "2026-09-15", status: "queued",
@@ -27,9 +30,9 @@ test("both New York schedules, persisted cutoff, and scheduled recorded provenan
   });
   const recorded = page.locator("#recorded-schedule"), simulated = page.locator("#simulated-schedule");
   await expect(recorded).toContainText("Daily at 1 a.m. · America/New_York");
-  await expect(simulated).toContainText("Daily at 3 a.m. · America/New_York");
+  await expect(recorded).toBeVisible();
+  await expect(simulated).toBeHidden();
   await expect(recorded).toContainText("Enabled");
-  await expect(simulated).toContainText("Enabled");
   await expect(recorded).toContainText("Initial eligibility cutoff");
   await expect(recorded).toContainText("9/14/2026");
   await expect(recorded).toContainText("6:00:00 AM EDT");
@@ -37,14 +40,24 @@ test("both New York schedules, persisted cutoff, and scheduled recorded provenan
   await expect(recorded).toContainText("Batch completed");
   await expect(recorded).toContainText("2026-09-15 · 1 sessions selected");
   const rows = page.locator("#runs tr");
-  const comparison = rows.filter({ hasText: "scheduled-recorded" }).getByRole("cell").filter({ hasText: "Not part of the simulated baseline" });
+  const comparison = rows.filter({ hasText: "scheduled-recorded" }).getByRole("cell").filter({ hasText: "Not part of the synthetic baseline" });
   await expect(comparison).toContainText("Scheduled");
   await expect(comparison).toContainText("2026-09-15");
-  await expect(comparison).toContainText("Not part of the simulated baseline");
+  await expect(comparison).toContainText("Not part of the synthetic baseline");
   await expect(comparison).not.toContainText("On demand");
   await expect(rows.filter({ hasText: "manual-recorded" })).toContainText("On demand");
-  await expect(rows.filter({ hasText: "scheduled-simulated" })).toContainText("4 samples");
+  await expect(rows).toHaveCount(2);
+  await expect(page.locator("#runs")).not.toContainText("scheduled-simulated");
+  await page.locator("#batch-section > summary").click();
   await expect(page.locator("#batches")).toContainText("recorded · Scheduled");
+  await page.getByRole("tab", { name: "Synthetic", exact: true }).click();
+  await expect(simulated).toBeVisible();
+  await expect(recorded).toBeHidden();
+  await expect(simulated).toContainText("Daily at 3 a.m. · America/New_York");
+  await expect(simulated).toContainText("Enabled");
+  await expect(rows).toHaveCount(1);
+  await expect(rows.filter({ hasText: "scheduled-simulated" })).toContainText("4 samples");
+  await expect(page.locator("#batches")).not.toContainText("nightly-recorded");
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpectedRequests).toEqual([]);
 });
@@ -58,16 +71,19 @@ test("the recorded schedule is TV-only while simulated schedules cover every reg
   });
   const recorded = page.locator("#recorded-schedule"), simulated = page.locator("#simulated-schedule");
   for (const agent of agents) {
-    await page.locator("#agent").selectOption(agent.id);
+    await page.locator(`#agent-tab-${agent.id}`).click();
+    await page.getByRole("tab", { name: "Synthetic", exact: true }).click();
     await expect(page.locator("#suite-description")).toContainText(agent.name);
+    await expect(simulated.getByRole("heading")).toHaveText("Synthetic suites · All registered agents");
+    await expect(simulated).toContainText("Daily at 3 a.m.");
+    for (const registered of agents) await expect(simulated).toContainText(registered.name);
+    await expect(page.locator("#simulate")).toBeEnabled();
+    await page.getByRole("tab", { name: "Recorded", exact: true }).click();
     await expect(recorded.getByRole("heading")).toHaveText("Recorded runs · TV only");
     await expect(recorded).toContainText("Automatic recorded grading covers TVAgent only");
     await expect(recorded).toContainText("Other agents remain available for manual recorded evaluation");
     await expect(recorded).toContainText("Daily at 1 a.m.");
-    await expect(simulated.getByRole("heading")).toHaveText("Simulated suites · All registered agents");
-    await expect(simulated).toContainText("Daily at 3 a.m.");
-    for (const registered of agents) await expect(simulated).toContainText(registered.name);
-    await expect(page.locator("#simulate")).toBeEnabled();
+    await expect(simulated).toBeHidden();
     await expect(page.locator("#calibrate")).toBeEnabled();
   }
   await page.locator("#recorded").click();
@@ -89,8 +105,10 @@ test("disabled schedules do not disable explicit manual evaluation and worker av
     schedules, busy: true, sessions: [makeSession("manual-session", fresh)], statuses: { "manual-session": fresh },
   });
   await expect(page.locator("#recorded-schedule")).toContainText("Disabled");
+  await page.getByRole("tab", { name: "Synthetic", exact: true }).click();
   await expect(page.locator("#simulated-schedule")).toContainText("Disabled");
   await expect(page.locator("#simulate")).toBeDisabled();
+  await page.getByRole("tab", { name: "Recorded", exact: true }).click();
   await expect(page.locator("#calibrate")).toBeDisabled();
   await page.getByRole("button", { name: "Select sessions", exact: true }).click();
   await page.getByRole("checkbox", { name: "Select session manual-session", exact: true }).check();
@@ -116,6 +134,7 @@ test("legacy snapshots never invent recorded scheduling enablement", async ({ pa
   await expect(page.locator("#recorded-schedule")).toContainText("Schedule status unavailable");
   await expect(page.locator("#recorded-schedule")).not.toContainText("Enabled");
   await expect(page.locator("#recorded-schedule")).not.toContainText("Initial eligibility cutoff");
+  await page.getByRole("tab", { name: "Synthetic", exact: true }).click();
   await expect(page.locator("#simulated-schedule")).toContainText("Disabled (legacy schedule status)");
   await expect(page.locator("#simulate")).toBeEnabled();
   fixture.state.scheduleEnabled = true;

@@ -46,23 +46,28 @@ test("all synthetic agents expose summary metrics without loading their full tra
   const detailsRequested: string[] = [];
   page.on("request", request => { if (request.url().includes("/api/evals/runs/")) detailsRequested.push(request.url()); });
   const runs = (["tv", "scheduled_task", "realtime"] as const).map(agentId => trial(`${agentId}-trial`, agentId));
-  const { errors, unexpectedRequests } = await openPortal(page, { runs });
+  const { errors, unexpectedRequests } = await openPortal(page, { runs }, { mode: "simulated", agentId: "tv" });
   for (const agentId of ["tv", "scheduled_task", "realtime"] as const) {
-    await page.locator("#agent").selectOption(agentId);
+    await page.locator(`#agent-tab-${agentId}`).click();
     const row = page.locator("#runs tr").filter({ hasText: `${agentId}-trial` });
     await expect(row.locator(".trial-turns")).toHaveText(agentId === "realtime" ? "42 user turns" : "21 user turns");
     await expect(row.locator(".trial-tools")).toContainText("21 executed");
     await expect(row.locator(".trial-tokens")).toContainText("240");
     await expect(row.locator(".trial-tokens")).toContainText("In 200 / out 40");
     await expect(row).toContainText("1.5s");
+    await page.getByRole("tab", { name: "Code-based", exact: true }).click();
+    await expect(row.locator(".trial-tokens")).toContainText("240");
+    await page.getByRole("tab", { name: "LLM-based", exact: true }).click();
   }
+  await page.getByRole("tab", { name: "Recorded", exact: true }).click();
+  await expect(page.getByRole("columnheader", { name: "Agent tokens", exact: true })).toHaveCount(0);
   expect(detailsRequested).toEqual([]);
   expect(errors).toEqual([]);
   expect(unexpectedRequests).toEqual([]);
 });
 
 test("inspection separates agent usage and latency from grading and exposes a downloadable trace", async ({ page }, testInfo) => {
-  const { errors, unexpectedRequests } = await openPortal(page, { runs: [trial("measured-trial")] });
+  const { errors, unexpectedRequests } = await openPortal(page, { runs: [trial("measured-trial")] }, { mode: "simulated", agentId: "tv" });
   await page.getByRole("button", { name: "Inspect", exact: true }).click();
   const diagnostics = page.getByRole("region", { name: "Trial diagnostics", exact: true });
   await expect(diagnostics).toBeVisible();
@@ -111,7 +116,7 @@ test("legacy, partial and explicitly zero metrics stay distinct in history and i
   partial.assessment!.usage = { inputTokens: 200 };
   partial.assessment!.metrics!.usageReportedResponses = 1;
   const legacy = makeRun("legacy-trial", { mode: "simulated" });
-  const { errors } = await openPortal(page, { runs: [legacy, zero, partial] });
+  const { errors } = await openPortal(page, { runs: [legacy, zero, partial] }, { mode: "simulated", agentId: "tv" });
   await expect(page.locator("#runs tr").filter({ hasText: "legacy-trial" }).locator(".trial-turns")).toHaveText("Unavailable");
   await expect(page.locator("#runs tr").filter({ hasText: "legacy-trial" }).locator(".trial-tokens")).toHaveText("Unavailable");
   await expect(page.locator("#runs tr").filter({ hasText: "zero-usage" }).locator(".trial-tokens")).toHaveText("0In 0 / out 0");
@@ -146,7 +151,7 @@ test("failed trials keep partial traces and safely render errors on a narrow scr
     ...trace().toolCalls[0], status: "error", error: unsafeReason,
     result: { toolSuccess: false, observation: unsafeReason },
   }];
-  const { errors, unexpectedRequests } = await openPortal(page, { runs: [failed] });
+  const { errors, unexpectedRequests } = await openPortal(page, { runs: [failed] }, { mode: "simulated", agentId: "tv" });
   await page.getByRole("button", { name: "Inspect", exact: true }).click();
   await expect(page.getByRole("region", { name: "Trial diagnostics" })).toContainText("Partial trace retained");
   await expect(page.locator(".model-call").last()).toHaveAttribute("open", "");
@@ -177,7 +182,8 @@ test("batch latency and token totals keep scheduled and confirmation attempts se
           latencySamples: 0, executionErrors: 1, gradingErrors: 0 },
       ],
     }],
-  });
+  }, { mode: "simulated", agentId: "tv" });
+  await page.locator("#batch-section > summary").click();
   await page.locator("#batches summary").click();
   await expect(page.locator("#batches")).toContainText("1 run summaries unavailable");
   const table = page.locator("#batches table");
@@ -186,5 +192,9 @@ test("batch latency and token totals keep scheduled and confirmation attempts se
   await expect(table.getByRole("row", { name: /^scheduled/ })).toContainText("1.50 s / 1.50 s");
   await expect(table.getByRole("row", { name: /^confirmation/ })).toContainText("0 / 1 trials");
   await expect(table.getByRole("row", { name: /^confirmation/ })).toContainText("Unavailable");
+  await page.locator("#refresh").click();
+  await expect(page.locator("#agent-panel")).toHaveAttribute("aria-busy", "false");
+  await expect(page.locator("#batches .batch-metrics")).toHaveAttribute("open", "");
+  await expect(table).toBeVisible();
   expect(errors).toEqual([]);
 });

@@ -1,7 +1,7 @@
 (() => {
   const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
   const esc = (value: unknown) => String(value ?? "—").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
-  type Run = import("./types").EvalRunSummary & { assessment?: import("./types").Assessment; verdict: string };
+  type Run = import("./types").EvalRunSummary & { assessment?: import("./types").Assessment; verdict?: string };
   type Session = import("./types").RecordedSession;
   type Evaluation = import("./types").RecordedSessionEvaluation;
   type History = import("./types").RecordedSessionHistory;
@@ -16,6 +16,7 @@
     agents: { id: string; name: string; description: string; scenarioCount: number; referenceCount: number }[];
     baseline: { from: string; to: string }; timezone: string; scheduleEnabled: boolean; schedules?: Schedules; fidelityNote: string;
     fidelity: { simulatedId: string; recordedIds: string[]; status: string }[];
+    jobs?: import("./worker").EvalJob[];
     calibrations: { id: string; agentId?: string; judgeModel: string; createdAt: string; passed: boolean; limitation?: string; results: CalibrationResult[] }[] };
   let snapshot: Snapshot | undefined;
   let busy: boolean | undefined;
@@ -31,7 +32,10 @@
   const sessionCache = new Map<string, Session>();
   let selected = new Set<string>();
   const selectionsByAgent = new Map<string, Set<string>>([["tv", selected]]);
-  const currentAgentId = () => element<HTMLSelectElement>("agent").value;
+  let agentId = "overview";
+  let mode: import("./types").EvalMode = "recorded";
+  let evaluator: "llm" | "code" = "llm";
+  const currentAgentId = () => agentId;
   const rows = new Map<string, HTMLTableRowElement>();
   let page = 1, reviewSelected = false, deferredRows = false;
   let displayed: Session[] = [];
@@ -41,7 +45,9 @@
   let historyLoading = false, historyMarkup: string | undefined;
   const selector = element<HTMLDialogElement>("session-selector");
   const detail = element<HTMLDialogElement>("detail");
-  const runModes = ["all", "simulated", "recorded"] as const;
+  const runModes = ["recorded", "simulated"] as const;
+  const evaluators = ["llm", "code"] as const;
+  const agentIds = ["overview", ...Array.from(document.querySelectorAll<HTMLElement>("#agent-tabs [data-agent-id]"), tab => tab.dataset.agentId!)];
   const PAGE_SIZE = 25, MAX_SELECTION = 100;
   const timezone = "America/New_York";
   const lifecycleLabels: Record<Evaluation["status"], string> = {
@@ -68,14 +74,20 @@
     return `<td class="trial-turns">${metricNumber(metrics?.assistantTurns)}${metrics ? `<br><small>${metricNumber(metrics.userTurns)} user turns</small>` : ""}</td><td class="trial-tools">${metricNumber(metrics?.toolCalls)}${metrics ? `<br><small>${metricNumber(metrics.toolExecutions)} executed<br>${metricNumber(metrics.toolErrors)} failed / ${metricNumber(metrics.rejectedToolCalls)} rejected</small>` : ""}</td><td class="trial-tokens">${metricNumber(usage?.totalTokens)}${usage ? `<br><small>In ${metricNumber(usage.inputTokens)} / out ${metricNumber(usage.outputTokens)}</small>` : ""}</td>`;
   }
   function batchHtml(batch: import("./types").EvalBatchSummary) {
-    const heading = `${esc(batch.scheduledDay || date(batch.startedAt))} · ${esc(batch.mode)} · ${batch.attempt === "scheduled" ? "Scheduled" : "On demand"} · ${badge(batch.status)} · ${batch.runIds.length} attempts ${esc(batch.error || "")}`;
+    const heading = `${esc(batch.scheduledDay || date(batch.startedAt))} · ${esc(batch.mode === "simulated" ? "synthetic" : "recorded")} · ${batch.attempt === "scheduled" ? "Scheduled" : "On demand"} · ${badge(batch.status)} · ${batch.runIds.length} attempts ${esc(batch.error || "")}`;
     if (batch.mode !== "simulated") return `<p>${heading}</p>`;
     const metrics = batch.metricsByAttempt;
-    return `<details class="batch-metrics"><summary>${heading}</summary>${batch.missingRunSummaries ? `<p class="error" role="alert">${metricNumber(batch.missingRunSummaries)} run summaries unavailable. Totals below cover only retained summaries, not the entire batch.</p>` : ""}${metrics?.length ? `<div class="scroll"><table><caption>Retained simulated trial metrics</caption><thead><tr><th>Attempt</th><th>Telemetry coverage</th><th>Assistant turns</th><th>Tool calls / failures</th><th>Agent tokens</th><th>Judge tokens</th><th>Agent latency p50 / p95</th><th>Execution / grading errors</th></tr></thead><tbody>${metrics.map(item => `<tr><td>${esc(item.attempt)}</td><td>${metricNumber(item.measuredRuns)} / ${metricNumber(item.runCount)} trials</td><td>${metricNumber(item.assistantTurns)}</td><td>${metricNumber(item.toolCalls)} / ${metricNumber(item.toolErrors)}</td><td>${metricNumber(item.usage.totalTokens)}</td><td>${metricNumber(item.judgeUsage.totalTokens)}</td><td>${latency(item.p50DurationMs)} / ${latency(item.p95DurationMs)}<br><small>${metricNumber(item.latencySamples)} samples</small></td><td>${metricNumber(item.executionErrors)} / ${metricNumber(item.gradingErrors)}</td></tr>`).join("")}</tbody></table></div><p class="muted">Scheduled, confirmation, and on-demand attempts stay separate. Latencies include unsuccessful attempts; p95 uses the nearest-rank sample. Missing token contributions make the total unavailable.</p>` : '<p class="muted">Trial metrics unavailable for this batch.</p>'}</details>`;
+    return `<details class="batch-metrics" data-result-id="${esc(batch.id)}"><summary data-focus-key="${esc(batch.id)}">${heading}</summary>${batch.missingRunSummaries ? `<p class="error" role="alert">${metricNumber(batch.missingRunSummaries)} run summaries unavailable. Totals below cover only retained summaries, not the entire batch.</p>` : ""}${metrics?.length ? `<div class="scroll"><table><caption>Retained simulated trial metrics</caption><thead><tr><th>Attempt</th><th>Telemetry coverage</th><th>Assistant turns</th><th>Tool calls / failures</th><th>Agent tokens</th><th>Judge tokens</th><th>Agent latency p50 / p95</th><th>Execution / grading errors</th></tr></thead><tbody>${metrics.map(item => `<tr><td>${esc(item.attempt)}</td><td>${metricNumber(item.measuredRuns)} / ${metricNumber(item.runCount)} trials</td><td>${metricNumber(item.assistantTurns)}</td><td>${metricNumber(item.toolCalls)} / ${metricNumber(item.toolErrors)}</td><td>${metricNumber(item.usage.totalTokens)}</td><td>${metricNumber(item.judgeUsage.totalTokens)}</td><td>${latency(item.p50DurationMs)} / ${latency(item.p95DurationMs)}<br><small>${metricNumber(item.latencySamples)} samples</small></td><td>${metricNumber(item.executionErrors)} / ${metricNumber(item.gradingErrors)}</td></tr>`).join("")}</tbody></table></div><p class="muted">Scheduled, confirmation, and on-demand attempts stay separate. Latencies include unsuccessful attempts; p95 uses the nearest-rank sample. Missing token contributions make the total unavailable.</p>` : '<p class="muted">Trial metrics unavailable for this batch.</p>'}</details>`;
   }
+  const modeLabel = () => mode === "recorded" ? "Recorded" : "Synthetic";
+  const methodLabel = () => evaluator === "code" ? "Code-based" : "LLM-based";
+  const progressLabels: Record<import("./types").TaskScoringAssessment["progress"]["level"], string> = {
+    none: "No useful progress", prerequisites: "Prerequisites only", partial: "Partial meaningful progress",
+    nearly_complete: "Nearly complete", complete: "Verified full fulfillment", unknown: "Unknown progress",
+  };
   function scoreHtml(run: RunSummary) {
     if (run.agentId !== "tv") return '<span class="task-score muted">Task eval score: N/A for this agent</span>';
-    if (run.mode !== "recorded") return '<span class="task-score muted">Task eval score: N/A — simulated evaluation</span>';
+    if (run.mode !== "recorded") return '<span class="task-score muted">Task eval score: N/A — synthetic evaluation</span>';
     if (run.status !== "completed") return '<span class="task-score muted">No completed task eval score — evaluation did not finish</span>';
     const score = run.grade?.score;
     if (!score) return '<span class="task-score muted">Scoring unavailable for this evaluation</span>';
@@ -94,6 +106,9 @@
       incomplete_discovery: "No eligible sessions in available sources — discovery incomplete",
     };
     element("schedules").innerHTML = `<div id="recorded-schedule" class="schedule-card"><h3>Recorded runs · TV only</h3><p>Daily at 1 a.m. · ${zone}<br><strong>${recorded ? recorded.enabled ? "Enabled" : "Disabled" : "Schedule status unavailable"}</strong></p><p class="muted">Automatic recorded grading covers TVAgent only. Other agents remain available for manual recorded evaluation.</p>${recorded?.enabledAt ? `<p>Initial eligibility cutoff: ${esc(nyDate(recorded.enabledAt))}<br><small>Only TV runs started at or after this persisted cutoff are eligible for automatic selection. Older runs remain available manually.</small></p>` : ""}${latest ? `<p>Latest daily outcome: <strong>${esc(outcomeLabels[latest.status] || latest.status.replace(/_/g, " "))}</strong><br>${esc(latest.day)} · ${esc(latest.selectedCount)} sessions selected</p>${latest.warnings.length ? `<div class="session-warning" role="status"><strong>Incomplete recorded-run discovery / scheduling warnings</strong><ul>${latest.warnings.map(warning => `<li>${esc(warning)}</li>`).join("")}</ul></div>` : ""}${latest.error ? `<p class="error" role="alert">${esc(latest.error)}</p>` : ""}` : "<p class=muted>No recorded daily outcome is available.</p>"}</div><div id="simulated-schedule" class="schedule-card"><h3>Simulated suites · All registered agents</h3><p>Daily at 3 a.m. · ${zone}<br><strong>${simulated ? simulated.enabled ? "Enabled" : "Disabled" : typeof snapshot.scheduleEnabled === "boolean" ? snapshot.scheduleEnabled ? "Enabled (legacy schedule status)" : "Disabled (legacy schedule status)" : "Schedule status unavailable"}</strong></p><p>${snapshot.agents.map(agent => esc(agent.name)).join(", ")} run sequentially under the shared worker.</p><p class="muted">Manual launches remain available independently of either schedule when the shared worker is free.</p></div>`;
+    element("recorded-schedule").hidden = mode !== "recorded";
+    element("simulated-schedule").hidden = mode !== "simulated";
+    element("simulated-schedule").querySelector("h3")!.textContent = "Synthetic suites · All registered agents";
   }
   function calibrationHtml(result: CalibrationResult, agentId: string) {
     const verdicts = (values: string[]) => values.map(value => value === "not_checked" ? "Not checked" : value).join(" / ");
@@ -133,58 +148,235 @@
       return JSON.parse(text) as T;
     } finally { clearTimeout(timeout); }
   }
-  function render() {
-    const mode = element<HTMLSelectElement>("mode").value;
-    for (const value of runModes) {
-      const tab = element<HTMLButtonElement>(`runs-tab-${value}`);
-      tab.setAttribute("aria-selected", String(value === mode));
-      tab.tabIndex = value === mode ? 0 : -1;
+  type JudgmentKind = "task" | "handling" | "reporting" | "recovery";
+  function rate(runs: Run[], kind: JudgmentKind | "assertion") {
+    const verdicts = runs.map(run => kind === "assertion"
+      ? run.taskAssertion === true ? "pass" : run.taskAssertion === false ? "fail" : "unknown"
+      : run.status === "completed" ? run.grade?.[kind].verdict : undefined);
+    const passed = verdicts.filter(value => value === "pass").length;
+    const failed = verdicts.filter(value => value === "fail").length;
+    const known = passed + failed;
+    return { passed, failed, known, missing: runs.length - known, value: known ? `${Math.round(passed / known * 100)}%` : "—" };
+  }
+  const rateNote = (result: ReturnType<typeof rate>) => `${result.passed} passed / ${result.known} known · ${result.missing} excluded`;
+  const evalErrors = (runs: Run[]) => runs.filter(run => run.status !== "completed").length;
+  const numericScores = (runs: Run[]) => runs.flatMap(run => {
+    const score = run.grade?.score;
+    return run.agentId === "tv" && run.mode === "recorded" && run.status === "completed" && score?.status === "scored" ? [score.value] : [];
+  });
+  const meanScore = (scores: number[]) => scores.length ? `${Math.round(scores.reduce((sum, value) => sum + value, 0) / scores.length * 10) / 10}` : "—";
+  const unscoredCount = (runs: Run[]) => runs.filter(run => run.agentId === "tv" && run.status === "completed" && run.grade?.score?.status === "unscored").length;
+  const metric = (label: string, value: string | number, note: string) => `<div class="card"><div class="metric-label">${esc(label)}</div><div class="number">${esc(value)}</div><p class="metric-detail">${esc(note)}</p></div>`;
+  function outcomeBar(result: ReturnType<typeof rate>) {
+    const total = result.known + result.missing;
+    return `<div class="outcome-bar" role="img" aria-label="${result.passed} passed, ${result.failed} failed, ${result.missing} excluded">${total ? `<span class="passed" style="width:${result.passed / total * 100}%"></span><span class="failed" style="width:${result.failed / total * 100}%"></span><span class="missing" style="width:${result.missing / total * 100}%"></span>` : ""}</div>`;
+  }
+  function renderMetrics(runs: Run[]) {
+    const errors = evalErrors(runs);
+    if (evaluator === "llm") {
+      const kinds: JudgmentKind[] = mode === "recorded" ? ["task", "handling", "reporting"] : ["handling", "reporting", "recovery"];
+      const labels = { task: "Task fulfillment", handling: "Handling pass rate", reporting: "Reporting pass rate", recovery: "Recovery pass rate" };
+      element("cards").innerHTML = kinds.map(kind => metric(labels[kind], rate(runs, kind).value, rateNote(rate(runs, kind)))).join("")
+        + metric("Eval errors", errors, "Evaluation did not finish; not a task verdict.");
+    } else if (mode === "simulated") {
+      const checks = rate(runs, "assertion");
+      element("cards").innerHTML = metric("Assertion pass rate", checks.value, rateNote(checks))
+        + metric("Assertions passed", checks.passed, "The final state satisfied the whole request.")
+        + metric("Assertions failed", checks.failed, "Outcome not achieved; handling may still pass.")
+        + metric("Assertion unavailable", checks.missing, "No saved assertion. Not counted as a failure.");
+    } else {
+      const scores = numericScores(runs);
+      element("cards").innerHTML = metric("Mean TV task score", meanScore(scores), `${scores.length} numeric scores · out of 100 · TV only`)
+        + metric("Scored TV runs", scores.length, "Includes zero. Excludes unscored and unavailable.")
+        + metric("Unscored TV runs", unscoredCount(runs), "Required evidence missing. Not a zero or eval error.")
+        + metric("Eval errors", errors, "No completed score for these attempts.");
     }
-    element("runs-panel").setAttribute("aria-labelledby", `runs-tab-${mode}`);
+    element("sample-note").textContent = `${runs.length} retained ${modeLabel().toLowerCase()} attempts · ${runs.length - errors} completed · ${errors} eval errors. All retained dates; re-evaluations${mode === "simulated" ? ", scheduled, on-demand and confirmation attempts" : ""} count individually. These are not just today's results.`;
+  }
+  function renderAgentCards() {
     if (!snapshot) return;
-    const agentId = currentAgentId(), agent = snapshot.agents.find(candidate => candidate.id === agentId);
+    const html = snapshot.agents.map(agent => {
+      const runs = snapshot!.runs.filter(run => run.agentId === agent.id && run.mode === mode);
+      const errors = evalErrors(runs), primary = rate(runs, evaluator === "code" ? "assertion" : mode === "recorded" ? "task" : "handling");
+      const kinds: JudgmentKind[] = mode === "recorded" ? ["task", "handling", "reporting"] : ["handling", "reporting", "recovery"];
+      const failed = evaluator === "code" ? primary.failed > 0 : kinds.some(kind => rate(runs, kind).failed > 0);
+      const incomplete = evaluator === "code" ? primary.missing > 0
+        : runs.some(run => run.status === "completed" && (!run.grade || kinds.some(kind => run.grade?.[kind].verdict === "unknown")));
+      let label = evaluator === "code" ? "Independent assertion pass rate" : mode === "recorded" ? "Task fulfillment" : "Handling pass rate";
+      let value = primary.value, note = rateNote(primary), bar = outcomeBar(primary);
+      let health = !runs.length ? "No evaluations" : errors ? `${errors} eval error${errors === 1 ? "" : "s"}`
+        : failed ? "Failures to review" : incomplete ? "Incomplete evidence" : !primary.known ? "No applicable judgments" : "Known checks pass";
+      let healthClass = !runs.length ? "" : errors || failed ? "fail" : incomplete || !primary.known ? "unknown" : "pass";
+      let facts = evaluator === "llm"
+        ? `<div>Reporting<strong>${esc(rate(runs, "reporting").value)}</strong></div><div>${mode === "recorded" ? "Handling" : "Recovery"}<strong>${esc(rate(runs, mode === "recorded" ? "handling" : "recovery").value)}</strong></div>`
+        : `<div>Passed / failed<strong>${primary.passed} / ${primary.failed}</strong></div><div>Unavailable<strong>${primary.missing}</strong></div>`;
+      const unsupported = evaluator === "code" && mode === "recorded" && agent.id !== "tv";
+      if (evaluator === "code" && mode === "recorded") {
+        const scores = numericScores(runs), unscored = unscoredCount(runs);
+        label = unsupported ? "No numeric rubric" : "Mean task score / 100";
+        value = meanScore(scores);
+        note = unsupported ? "Recorded code scoring is TV-only. Use LLM-based results for this agent."
+          : `${scores.length} scored · ${unscored} unscored · ${runs.length - scores.length - unscored} unavailable / unfinished`;
+        bar = "";
+        health = unsupported ? "Not applicable" : !runs.length ? "No evaluations" : errors ? `${errors} eval error${errors === 1 ? "" : "s"}`
+          : unscored ? "Evidence gaps" : scores.length ? "LLM-informed rubric" : "Scoring unavailable";
+        healthClass = unsupported ? "" : errors ? "fail" : unscored ? "unknown" : "";
+        facts = `<div>Numeric scores<strong>${scores.length}</strong></div><div>Unscored<strong>${unscored}</strong></div>`;
+      }
+      return `<article class="agent-card" data-agent-card="${esc(agent.id)}"><span class="health ${healthClass}">${esc(health)}</span><h3>${esc(agent.name)}</h3><div class="metric-label">${esc(label)}</div><div class="number">${esc(value)}</div>${bar}<p class="metric-detail">${esc(note)}</p><div class="agent-facts">${facts}<div>Attempts<strong>${runs.length}</strong></div></div><p class="muted agent-description">${esc(agent.description)}</p><button class="agent-link secondary" data-focus-key="${esc(agent.id)}" data-open-agent="${esc(agent.id)}"${unsupported ? ' data-open-evaluator="llm"' : ""}>${unsupported ? "View LLM-based results" : "View agent results"}</button></article>`;
+    }).join("");
+    setResultHtml(element("agent-cards"), html);
+  }
+  function renderExplanation() {
+    element("llm-rules").hidden = evaluator !== "llm";
+    element("recorded-code-rules").hidden = evaluator !== "code" || mode !== "recorded";
+    element("synthetic-code-rules").hidden = evaluator !== "code" || mode !== "simulated";
+    const definitions = evaluator === "llm"
+      ? [[mode === "recorded" ? "Task fulfillment" : "Handling", mode === "recorded" ? "Was the whole request achieved? Kept separate from good behavior and honest reporting." : "Did the agent act and recover reasonably? Code-based results show the actual scenario outcome."],
+        ["Pass rates, not scores", "Passes divided by known passes + failures. Unknown, not applicable and unfinished results are excluded."],
+        ["Missing evidence is not failure", "Unknown means evidence cannot settle a judgment. Eval error means execution or grading did not finish."]]
+      : mode === "recorded"
+        ? [["Code-calculated, LLM-informed", "An LLM assesses progress, mistakes and evidence. Code applies the fixed TV rubric; it does not independently observe the device."],
+          ["Outcome first · 0–100", "100 means full fulfillment without deductions. Zero is a real score. Good handling alone does not earn fulfillment credit."],
+          ["TV-only, evidence-dependent", "Other agents have LLM judgments, not numeric scores. Unscored means a required evidence component is missing."]]
+        : [["Independent final-state check", "Code checks the simulator's actual outcome, not the assistant's success claim or an LLM's opinion."],
+          ["Pass / fail, no partial score", "An impossible scenario may fail the outcome check while passing LLM-based handling and truthful reporting."],
+          ["Unavailable is not a failure", "Only retained assertions enter the pass rate. A later LLM grading error does not erase a saved code result."]];
+    setHtml(element("method-explanation"), `<div class="definition-grid">${definitions.map(([title, explanation]) => `<div><strong>${esc(title)}</strong><p>${esc(explanation)}</p></div>`).join("")}</div>`);
+  }
+  function provenance(run: Run) {
+    if (mode === "simulated" && evaluator === "llm" && run.comparison) {
+      const comparison = run.comparison;
+      return comparison.baselineCount >= 3
+        ? `${comparison.baselineCount} samples<br>Median ${duration(comparison.medianMs)}<br>${esc(comparison.signal || "No alert threshold crossed")} ${esc(comparison.confirmation || "")}`
+        : `Collecting baseline (${comparison.baselineCount}/3)`;
+    }
+    return run.attempt === "scheduled"
+      ? `Scheduled${run.scheduledDay ? `<br>${esc(run.scheduledDay)}` : ""}${mode === "recorded" ? "<br><small>Not part of the synthetic baseline</small>" : ""}`
+      : run.attempt === "confirmation" ? "Confirmation" : "On demand";
+  }
+  function renderHistory(runs: Run[]) {
+    const code = evaluator === "code";
+    const showMetrics = mode === "simulated";
+    const columns = code ? mode === "recorded"
+      ? ["Task eval score", "Progress", "Deductions", "Reporting ceiling"]
+      : ["Independent assertion", "Check scope", "LLM grading", "Duration"]
+      : mode === "recorded" ? ["Task fulfillment", "Handling", "Reporting", "Recovery"]
+        : ["Handling", "Reporting", "Recovery", "Evidence gaps"];
+    const headings = ["Assessed / graded", "Task / scenario", "Attempt", ...columns, "Evaluation status", mode === "simulated" && !code ? "Prior week / provenance" : "Provenance", ...(!code ? ["Duration"] : []), ...(showMetrics ? ["Assistant turns", "Tool calls", "Agent tokens"] : []), "Evidence"];
+    element("run-columns").innerHTML = `<tr>${headings.map(label => `<th scope="col">${esc(label)}</th>`).join("")}</tr>`;
+    element("trial-metrics-description").hidden = !showMetrics;
+    element("history-description").textContent = `${modeLabel()} / ${methodLabel()} only. ${code ? mode === "recorded" ? "TV score calculations use LLM-assessed evidence. Inspect the saved rubric, arithmetic and citations." : "Independent code assertions, including results retained before an LLM grading error. No LLM verdict is substituted for a missing assertion." : mode === "simulated" ? "LLM handling, reporting and recovery judgments. Switch to Code-based for the actual simulator outcome. Timing measures agent wall time, excluding virtual device waits and offline grading; it is not real-device speed." : "Evidence-backed task, handling, reporting and recovery judgments. Switch to Code-based for TV score calculations."}`;
+    const html = runs.map(run => {
+      const grade = run.status === "completed" ? run.grade : undefined;
+      const score = run.agentId === "tv" && run.mode === "recorded" ? grade?.score : undefined;
+      const status = run.status === "completed" ? badge("completed") : `${badge("error")}<br><small>${esc(run.error || run.status.replace(/_/g, " "))}</small>`;
+      const elapsed = `${duration(run.durationMs)}${showMetrics && runMetrics(run) ? `<br><small>${esc(runMetrics(run)!.stopReason.replace(/_/g, " "))}</small>` : ""}`;
+      let cells: string[];
+      if (!code) {
+        cells = (mode === "recorded" ? ["task", "handling", "reporting", "recovery"] as const : ["handling", "reporting", "recovery"] as const)
+          .map(kind => grade ? badge(grade[kind].verdict) : '<span class="muted">Unavailable</span>');
+        if (mode === "simulated") cells.push(grade ? esc(grade.gaps.join("; ") || "None reported") : "Unavailable");
+      } else if (mode === "recorded") {
+        cells = [scoreHtml(run), run.agentId !== "tv" ? "Not applicable" : grade?.scoringAssessment ? esc(progressLabels[grade.scoringAssessment.progress.level]) : "Unavailable",
+          score?.status === "scored" ? `${score.totalDeductions} points` : "—",
+          score?.status === "scored" ? score.reportingCeiling == null ? "Not applied" : `${score.reportingCeiling}/100` : "—"];
+      } else {
+        cells = [run.taskAssertion == null ? '<span class="unknown">Assertion unavailable</span><br><small>No assertion retained in this summary. Inspect the saved run.</small>' : badge(run.taskAssertion ? "pass" : "fail"),
+          "Whole request / final simulator state", run.status === "grading_error" ? "Grading failed; any saved code result is retained" : run.status === "completed" ? "Completed separately" : "Did not finish", elapsed];
+      }
+      return `<tr data-run-id="${esc(run.id)}"><td>${esc(date(run.assessedAt))}<br><small>Graded ${esc(date(run.gradedAt))}</small></td><td>${esc(run.request || run.scenarioId || run.id)}<br><small>${esc(run.assessedModel || "Model unknown")}</small></td><td>${esc(run.attempt.replace(/_/g, " "))}</td>${cells.map(cell => `<td>${cell}</td>`).join("")}<td>${status}</td><td>${provenance(run)}</td>${!code ? `<td>${elapsed}</td>` : ""}${showMetrics ? metricCells(run) : ""}<td><button data-focus-key="${esc(run.id)}" data-run="${esc(run.id)}">Inspect</button></td></tr>`;
+    }).join("") || `<tr><td colspan="${headings.length}" class="empty-state"><strong>No ${modeLabel().toLowerCase()} evaluations for this agent yet.</strong>${mode === "recorded" ? "Select completed sessions above to evaluate retained evidence." : "Run a synthetic suite above to evaluate controlled scenarios."} Results from the other source stay in their own tab.</td></tr>`;
+    setResultHtml(element("runs"), html);
+  }
+  function renderAlerts() {
+    if (!snapshot) return;
+    const alerts = snapshot.alerts.filter(alert => !alert.resolvedAt && (agentId === "overview" || (alert.agentId || alert.key.split(":")[0]) === agentId));
+    const source = (alert: Snapshot["alerts"][number]) => snapshot!.batches.find(batch => batch.id === alert.batchId)?.mode
+      || snapshot!.runs.find(run => alert.runIds.includes(run.id))?.mode
+      || snapshot!.jobs?.find(job => job.id === alert.batchId || job.batchId === alert.batchId)?.mode;
+    const markup = (alert: Snapshot["alerts"][number]) => `<div class="alert">${esc(alert.message)} <small>${esc(date(alert.createdAt))}</small></div>`;
+    const unscoped = alerts.filter(alert => !source(alert));
+    const validation = alerts.filter(alert => source(alert) === "calibrate");
+    setResultHtml(element("alerts"), (alerts.filter(alert => source(alert) === mode).map(markup).join("") || `No active ${modeLabel().toLowerCase()} alerts.`)
+      + (validation.length ? `<h3>Judge validation alerts · Shared across sources</h3>${validation.map(markup).join("")}` : "")
+      + (unscoped.length ? `<details data-result-id="unscoped-alerts"><summary data-focus-key="unscoped-alerts">${unscoped.length} additional alerts with unavailable source metadata</summary><p class="muted">These legacy alerts cannot be attributed to Recorded or Synthetic and are not included above.</p>${unscoped.map(markup).join("")}</details>` : ""));
+  }
+  function render() {
+    for (const [prefix, values, selectedValue, panel] of [
+      ["source", runModes, mode, "source-panel"], ["evaluator", evaluators, evaluator, "evaluator-panel"], ["agent", agentIds, agentId, "agent-panel"],
+    ] as const) {
+      for (const value of values) {
+        const tab = element<HTMLButtonElement>(`${prefix}-tab-${value}`);
+        tab.setAttribute("aria-selected", String(value === selectedValue));
+        tab.tabIndex = value === selectedValue ? 0 : -1;
+      }
+      element(panel).setAttribute("aria-labelledby", `${prefix}-tab-${selectedValue}`);
+    }
+    const overview = agentId === "overview";
+    element("overview").hidden = !overview;
+    element("totals-heading").hidden = !overview;
+    element("agent-detail").hidden = overview;
+    element("simulated-actions").hidden = mode !== "simulated";
+    element("recorded-actions").hidden = mode !== "recorded";
+    element("judge-section").hidden = evaluator !== "llm";
+    element("alerts-section").hidden = evaluator !== "llm";
+    element("fidelity-section").hidden = evaluator !== "llm" || mode !== "simulated";
+    element("source-description").textContent = mode === "recorded"
+      ? "Recorded evaluates completed real sessions from retained evidence. No device actions are replayed. Scores never mix with Synthetic."
+      : "Synthetic runs agents in controlled scenarios with simulated tools. No live devices are controlled. Results never mix with Recorded.";
+    element("scope-label").textContent = `${modeLabel()} / ${methodLabel()}`;
+    renderExplanation();
+    if (!snapshot) return;
+    const agent = snapshot.agents.find(candidate => candidate.id === agentId);
+    element("dashboard-title").textContent = overview ? "Agent overview" : agent?.name || agentId;
+    element("dashboard-description").textContent = evaluator === "llm"
+      ? mode === "recorded" ? "See task outcomes, action quality and truthful reporting without blending them into one score." : "See how agents handle scenarios, recover and report results. The independent outcome checks live in Code-based."
+      : mode === "recorded" ? "TV task scores computed by code from LLM-assessed evidence. Other agents do not have a recorded numeric rubric." : "See which requests reached the expected simulator state, independently of LLM grading.";
     if (agent) {
       element("suite-description").textContent = `Run ${agent.scenarioCount} ${agent.name} scenarios with the current configuration or an alternative deployment. ${agent.description} On-demand results stay outside the daily baseline.`;
-      element("judge-description").textContent = `Check ${agent.referenceCount} ${agentId === "tv" ? "reviewed" : "starter"} reference cases for ${agent.name}. ${agentId === "tv" ? "Inspect score, progress, mistake-severity, and evidence-gap agreement alongside categorical labels where available." : "These check categorical judgments; numeric task eval scoring is not applicable for this agent."} This is an initial agreement check, not a measured general accuracy claim.`;
-      element("recorded-description").textContent = `Select finished ${agent.name} sessions, including assistant errors. ${agentId === "tv" ? "TV runs can supplement retained telemetry with Cosmos evidence and support numeric task eval scores." : "This agent uses retained telemetry for manual, categorical evaluation; numeric task eval scoring and the 1 a.m. recorded schedule are TV-only."} Re-evaluations preserve previous attempts.`;
+      element("judge-description").textContent = `Check ${agent.referenceCount} ${agentId === "tv" ? "reviewed" : "starter"} reference cases for ${agent.name}. ${agentId === "tv" ? "Inspect score, progress, mistake-severity, and evidence-gap agreement alongside categorical labels where available." : "These check categorical judgments; numeric task eval scoring is not applicable for this agent."} Validation is shared across this agent's sources, not a new evaluation of its runs. This is an initial agreement check, not a measured general accuracy claim.`;
+      element("recorded-description").textContent = `Select finished ${agent.name} sessions, including assistant errors. ${agentId === "tv" ? "TV runs can supplement retained telemetry with Cosmos evidence. Each evaluation produces LLM judgments and a code-calculated task score when evidence is sufficient." : "This agent uses retained telemetry for manual, categorical evaluation; numeric task eval scoring and the 1 a.m. recorded schedule are TV-only."} Re-evaluations preserve previous attempts.`;
       element("session-selector-title").textContent = `Select recorded ${agent.name} sessions`;
     }
-    const agentRuns = snapshot.runs.filter(r => r.agentId === agentId);
-    const runs = agentRuns.filter(r => mode === "all" || r.mode === mode);
-    element("window").textContent = `Baseline ${snapshot.baseline.from} – ${snapshot.baseline.to} · ${snapshot.timezone}`;
-    renderSchedules();
-    element("cards").innerHTML = [["Evaluated runs", runs.length], ["Tasks fulfilled", runs.filter(r => r.grade?.task.verdict === "pass").length], ["Handling passed", runs.filter(r => r.verdict === "pass").length], ["Unknown / incomplete", runs.filter(r => ["unknown", "error"].includes(r.verdict)).length]].map(([label, count]) => `<div class="card"><div class="muted">${label}</div><div class="number">${count}</div></div>`).join("");
-    element("alerts").innerHTML = snapshot.alerts.filter(a => !a.resolvedAt && (a.agentId || a.key.split(":")[0]) === agentId).map(a => `<div class="alert">${esc(a.message)} <small>${esc(date(a.createdAt))}</small></div>`).join("") || "No active regression alerts.";
-    const emptyRuns = mode === "simulated" ? "No simulated evals yet. Run a simulation above."
-      : mode === "recorded" ? "No real evals yet. Select completed real sessions above."
-      : "No evals yet. Run a simulation or select completed real sessions above.";
-    element("runs").innerHTML = runs.map(r => `<tr><td>${esc(date(r.assessedAt))}<br><small>Graded ${esc(date(r.gradedAt))}</small></td><td>${esc(r.request || r.scenarioId || r.id)}<br><small>${esc(r.assessedModel || "Model unknown")}</small></td><td>${badge(r.mode)}<br><small>${esc(r.attempt)}</small></td><td>${scoreHtml(r)}</td><td>${badge(r.grade?.task.verdict)}</td><td>${badge(r.grade?.handling.verdict || (r.status !== "completed" ? "error" : "unknown"))}</td><td>${badge(r.grade?.reporting.verdict)}</td>${metricCells(r)}<td>${duration(r.durationMs)}${runMetrics(r) ? `<br><small>${esc(runMetrics(r)!.stopReason.replace(/_/g, " "))}</small>` : ""}</td><td>${r.comparison ? r.comparison.baselineCount >= 3 ? `${r.comparison.baselineCount} samples<br>Median ${duration(r.comparison.medianMs)}<br>${esc(r.comparison.signal || "No alert threshold crossed")} ${esc(r.comparison.confirmation || "")}` : `Collecting baseline (${r.comparison.baselineCount}/3)` : r.attempt === "scheduled" ? `Scheduled${r.scheduledDay ? `<br>${esc(r.scheduledDay)}` : ""}${r.mode === "recorded" ? "<br><small>Not part of the simulated baseline</small>" : ""}` : r.attempt === "confirmation" ? "Confirmation" : "On demand"}</td><td><button data-run="${esc(r.id)}">Inspect</button></td></tr>`).join("") || `<tr><td colspan="13">${emptyRuns}</td></tr>`;
+    const agentRuns = snapshot.runs.filter(run => overview || run.agentId === agentId);
+    renderMetrics(agentRuns.filter(run => run.mode === mode));
+    if (overview) renderAgentCards();
+    else renderHistory(agentRuns.filter(run => run.mode === mode));
+    element("window").textContent = mode === "simulated" && evaluator === "llm"
+      ? `Weekly comparison baseline: ${snapshot.baseline.from} – ${snapshot.baseline.to} · ${snapshot.timezone}. Only comparable scheduled synthetic runs enter that baseline. Dashboard cards include all retained attempts.`
+      : `Schedule timezone: ${snapshot.timezone}. Dashboard cards include all retained attempts for this source; they are not a weekly regression baseline.`;
+    renderSchedules(); renderAlerts();
     element("fidelity-note").textContent = snapshot.fidelityNote;
-    const fidelity = snapshot.fidelity.filter(p => agentRuns.some(run => run.id === p.simulatedId));
-    const pairs = fidelity.filter(p => p.recordedIds.length);
-    element("fidelity").innerHTML = pairs.map(p => `<p>${esc(agentRuns.find(r => r.id === p.simulatedId)?.scenarioId)} · ${p.recordedIds.length} comparable recorded runs <button data-pair="${esc(p.simulatedId)}:${esc(p.recordedIds[0])}">Compare steps</button></p>`).join("") || `No comparison data yet. ${fidelity.length} simulated runs currently unmatched.`;
-    element("batches").innerHTML = snapshot.batches.filter(b => b.agentId === agentId).map(batchHtml).join("") || "No batches recorded.";
-    element("calibrations").innerHTML = snapshot.calibrations.filter(c => (c.agentId || "tv") === agentId).map(c => `<details><summary>${esc(c.judgeModel)} · ${badge(c.passed ? "pass" : "fail")} · ${esc(date(c.createdAt))}</summary>${c.results.map(result => calibrationHtml(result, agentId)).join("")}${c.limitation ? `<p class="muted">${esc(c.limitation)}</p>` : ""}</details>`).join("") || "<p class=muted>The judge has not been validated against the reference cases yet.</p>";
+    const fidelity = snapshot.fidelity.filter(pair => agentRuns.some(run => run.id === pair.simulatedId));
+    const pairs = fidelity.filter(pair => pair.recordedIds.length);
+    element("fidelity").innerHTML = pairs.map(pair => `<p>${esc(agentRuns.find(run => run.id === pair.simulatedId)?.scenarioId)} · ${pair.recordedIds.length} comparable recorded runs <button data-pair="${esc(pair.simulatedId)}:${esc(pair.recordedIds[0])}">Compare steps</button></p>`).join("") || `No comparison data yet. ${fidelity.length} synthetic runs currently unmatched.`;
+    setResultHtml(element("batches"), snapshot.batches.filter(batch => batch.agentId === agentId && batch.mode === mode).map(batchHtml).join("") || `No ${modeLabel().toLowerCase()} batches for this agent.`);
+    setResultHtml(element("calibrations"), snapshot.calibrations.filter(calibration => (calibration.agentId || "tv") === agentId).map(calibration => `<details data-result-id="${esc(calibration.id)}"><summary data-focus-key="${esc(calibration.id)}">${esc(calibration.judgeModel)} · ${badge(calibration.passed ? "pass" : "fail")} · ${esc(date(calibration.createdAt))}</summary>${calibration.results.map(result => calibrationHtml(result, agentId)).join("")}${calibration.limitation ? `<p class="muted">${esc(calibration.limitation)}</p>` : ""}</details>`).join("") || "<p class=muted>The judge has not been validated against the reference cases yet.</p>");
+    updateControls();
   }
   function refresh(options: { sessions?: boolean; sources?: boolean } = {}): Promise<void> {
     reloadSessions ||= Boolean(options.sessions);
     retrySources ||= Boolean(options.sources);
     if (refreshing) { refreshAgain = true; return refreshing; }
+    element("agent-panel").setAttribute("aria-busy", "true");
     refreshing = (async () => {
       do {
         refreshAgain = false;
         const loadSessions = reloadSessions, forceSources = retrySources, version = mutationVersion;
         reloadSessions = false; retrySources = false;
         try {
-          const next = await request<Snapshot>(`/api/evals?agentId=${encodeURIComponent(element<HTMLSelectElement>("agent").value)}`);
+          const next = await request<Snapshot>("/api/evals");
           if (version === mutationVersion) {
             snapshot = next;
             if (!sessionsInitialized) busy = next.busy;
+            if (element("status").textContent?.startsWith("Dashboard refresh failed:")) element("status").textContent = "";
             render();
           }
         } catch (error) {
           if (version === mutationVersion) {
-            element("status").textContent = `Dashboard refresh failed: ${String(error)}`;
+            element("status").textContent = `Dashboard refresh failed: ${String(error)}. ${snapshot ? "Showing the last loaded results; they may be out of date." : "No evaluation data loaded. Refresh to retry."}`;
+            if (!snapshot) element("dashboard-description").textContent = "Evaluation data unavailable. Refresh to retry; missing data is not a zero or a pass.";
             if (!sessionsInitialized) busy = undefined;
           }
         }
@@ -222,7 +414,7 @@
         updateControls();
         if (historySession && detail.open) await loadHistory(historySession, detailVersion, true);
       } while (refreshAgain || reloadSessions || retrySources);
-    })().finally(() => { refreshing = undefined; updateControls(); });
+    })().finally(() => { refreshing = undefined; element("agent-panel").setAttribute("aria-busy", "false"); updateControls(); });
     return refreshing;
   }
   async function launch(body: unknown) {
@@ -245,7 +437,16 @@
   function available(id: string) { return availableIds.has(id); }
   function eligible(id: string) { return metadataKnown && statusesKnown && available(id) && sessionCache.get(id)?.agentId === currentAgentId() && !active(id); }
   function setHtml(target: HTMLElement, html: string) { if (target.innerHTML !== html) target.innerHTML = html; }
+  function setResultHtml(target: HTMLElement, html: string) {
+    const focused = document.activeElement;
+    const focusKey = focused instanceof HTMLElement && target.contains(focused) ? focused.dataset.focusKey : undefined;
+    const expanded = new Set(Array.from(target.querySelectorAll<HTMLElement>("details[data-result-id][open]"), item => item.dataset.resultId));
+    setHtml(target, html);
+    target.querySelectorAll<HTMLDetailsElement>("details[data-result-id]").forEach(item => { item.open = expanded.has(item.dataset.resultId); });
+    if (focusKey) Array.from(target.querySelectorAll<HTMLElement>("[data-focus-key]")).find(item => item.dataset.focusKey === focusKey)?.focus({ preventScroll: true });
+  }
   function judgments(run: RunSummary) {
+    if (run.status !== "completed") return `${scoreHtml(run)}<br><span class="muted">LLM judgments unavailable — evaluation did not finish.</span>`;
     return `${scoreHtml(run)}<br>Task ${badge(run.grade?.task.verdict)} · Handling ${badge(run.grade?.handling.verdict)} · Reporting ${badge(run.grade?.reporting.verdict)}`;
   }
   function evaluationHtml(id: string) {
@@ -321,11 +522,16 @@
     selectionSummary(); updateControls();
   }
   function updateControls() {
-    element<HTMLSelectElement>("agent").disabled = submitting || Boolean(pendingSubmission);
-    element<HTMLButtonElement>("simulate").disabled = submitting || busy !== false || Boolean(pendingSubmission);
-    element<HTMLButtonElement>("calibrate").disabled = submitting || busy !== false || Boolean(pendingSubmission);
-    element("global-busy").textContent = busy === true ? "An offline eval worker is busy. New submissions are disabled until it finishes." : busy === undefined ? "Checking worker availability. New submissions are disabled until its state is known." : "";
     const frozen = submitting || Boolean(pendingSubmission);
+    for (const id of agentIds) element<HTMLButtonElement>(`agent-tab-${id}`).disabled = frozen;
+    document.querySelectorAll<HTMLButtonElement>("[data-open-agent]").forEach(button => { button.disabled = frozen; });
+    element<HTMLButtonElement>("simulate").disabled = agentId === "overview" || frozen || busy !== false;
+    element<HTMLButtonElement>("calibrate").disabled = agentId === "overview" || frozen || busy !== false;
+    element<HTMLButtonElement>("recorded").disabled = agentId === "overview" || submitting;
+    element("global-busy").textContent = pendingSubmission
+      ? "A recorded submission is uncertain. Agent selection is locked to prevent duplicate paid grading. Open Recorded → Select sessions to confirm the same batch."
+      : busy === true ? "An offline eval worker is busy. You can browse results and select sessions; new submissions are disabled until it finishes."
+        : busy === undefined ? "Checking worker availability. New submissions are disabled until its state is known." : "";
     const candidates = displayed.filter(session => eligible(session.sessionId));
     const pageSelect = element<HTMLInputElement>("session-page-select");
     const chosen = candidates.filter(session => selected.has(session.sessionId)).length;
@@ -421,14 +627,10 @@
   function scoreDetails(run: Run) {
     if (run.agentId !== "tv") return `<h3>Task eval score calculation</h3><p>${scoreHtml(run)}</p>`;
     const score = run.grade?.score, assessment = run.grade?.scoringAssessment;
-    const intro = '<h3>Task eval score calculation</h3><p class="muted">Outcome-first task fulfillment, not a probability or confidence estimate. Handling, reporting, elapsed time, and model cost remain separate.</p>';
+    const intro = '<h3>Code-calculated task eval score</h3><p class="muted">Code applies a fixed rubric to LLM-assessed progress, mistakes and evidence. This is not an independent device check. It measures outcome-first task fulfillment, not a probability or confidence estimate. Handling, reporting, elapsed time, and model cost remain separate.</p>';
     if (run.mode !== "recorded" || run.status !== "completed" || !score) return `${intro}<p>${scoreHtml(run)}</p>`;
-    const levels: Record<import("./types").TaskScoringAssessment["progress"]["level"], string> = {
-      none: "No useful progress", prerequisites: "Prerequisites only", partial: "Partial meaningful progress",
-      nearly_complete: "Nearly complete", complete: "Verified full fulfillment", unknown: "Unknown progress",
-    };
     const components: import("./types").ScoringComponent[] = ["progress", "execution", "reporting"];
-    const assessmentHtml = assessment ? `<h4>Progress assessment</h4><p><strong>${esc(levels[assessment.progress.level] || assessment.progress.level)}</strong>: ${esc(assessment.progress.reason)}<br>${citations(assessment.progress.evidenceIds)}</p><h4>Evidence sufficiency</h4><ul>${components.map(component => {
+    const assessmentHtml = assessment ? `<h4>Progress assessment</h4><p><strong>${esc(progressLabels[assessment.progress.level])}</strong>: ${esc(assessment.progress.reason)}<br>${citations(assessment.progress.evidenceIds)}</p><h4>Evidence sufficiency</h4><ul>${components.map(component => {
       const evidence = assessment.evidence[component];
       return `<li><strong>${esc(component)}: ${evidence.sufficient ? "Sufficient" : "Blocking gap"}</strong> — ${esc(evidence.reason)}<br>${citations(evidence.evidenceIds)}</li>`;
     }).join("")}</ul>` : "<p>Detailed scoring assessment unavailable for this evaluation.</p>";
@@ -437,6 +639,17 @@
       return `${intro}<p>${scoreHtml(run)}</p><p>Rubric version: <code>${esc(score.rubricVersion)}</code></p><p><strong>Blocking components:</strong> ${esc(score.blockingComponents.join(", "))}. No numeric score was assigned.</p>${assessmentHtml}${gaps}`;
     }
     return `${intro}<p>${scoreHtml(run)}</p><p>Rubric version: <code>${esc(score.rubricVersion)}</code></p><dl class="score-calculation"><dt>Starting score</dt><dd>${esc(score.baseScore)}</dd><dt>Mistake deductions</dt><dd>${esc(score.totalDeductions)} points</dd><dt>Before task band</dt><dd>${esc(score.baseScore)} − ${esc(score.totalDeductions)} = ${esc(score.baseScore - score.totalDeductions)}</dd><dt>Task fulfillment band</dt><dd>${esc(score.band.min)}–${esc(score.band.max)}</dd><dt>After band limits</dt><dd>${esc(score.bandAdjustedScore)}</dd><dt>Reporting ceiling</dt><dd>${score.reportingCeiling == null ? "Not applied" : `${esc(score.reportingCeiling)}/100 — final score cannot exceed this ceiling`}</dd><dt>Final task eval score</dt><dd>${esc(score.value)}/100</dd></dl><h4>Distinct mistake episodes</h4>${score.deductions.length ? `<ul>${score.deductions.map(mistake => `<li><strong>${esc(mistake.id)} · ${esc(mistake.severity)} · −${esc(mistake.points)} points</strong><br>${esc(mistake.reason)}<br>${citations(mistake.evidenceIds)}</li>`).join("")}</ul>` : "<p>No assessed mistake deductions.</p>"}${score.reportingCeiling == null ? "" : `<h4>Reporting ceiling reason</h4><p>${esc(run.grade?.reporting.reason)}<br>${citations(run.grade?.reporting.evidenceIds || [])}</p>`}${assessmentHtml}${gaps}`;
+  }
+  function assertionDetails(run: Run) {
+    if (run.mode !== "simulated") return "";
+    const assertion = run.assessment?.taskAssertion;
+    return `<section aria-label="Independent code assertion"><h3>Independent code assertion</h3><p>Checks the complete request against the simulator's final state. The LLM does not decide this result.</p><p>${assertion == null ? "No independent assertion was retained for this run." : `${badge(assertion ? "pass" : "fail")} ${citations((run.assessment?.evidence || []).filter(item => item.kind === "assertion").map(item => item.id))}`}</p>${run.status === "grading_error" ? "<p>LLM grading failed. Any saved code assertion above is still the independent outcome.</p>" : ""}</section>`;
+  }
+  function judgmentDetails(run: Run) {
+    const grade = run.status === "completed" ? run.grade : undefined;
+    if (!grade) return '<section aria-label="LLM-based judgments"><h3>LLM-based judgments</h3><p>No completed LLM judgments are available for this evaluation.</p></section>';
+    const labels = { task: run.mode === "simulated" ? "Task outcome (code-constrained)" : "Task fulfillment", handling: "Handling", reporting: "Reporting", recovery: "Recovery" };
+    return `<section aria-label="LLM-based judgments"><h3>LLM-based judgments</h3>${run.mode === "simulated" ? '<p class="muted">The simulator assertion fixes task fulfillment when retained; the LLM assesses handling, reporting and recovery.</p>' : ""}<div class="two">${(["task", "handling", "reporting", "recovery"] as const).map(kind => `<div><h4>${labels[kind]} ${badge(grade[kind].verdict)}</h4><p>${esc(grade[kind].reason)}<br>${citations(grade[kind].evidenceIds)}</p></div>`).join("")}</div></section>`;
   }
   function openDetail(title: string) {
     clearDetailDownload();
@@ -461,7 +674,7 @@
       const run = await request<Run>(`/api/evals/runs/${encodeURIComponent(id)}`);
       if (version !== detailVersion || !detail.open) return;
       const sourceSessionId = sessionId || run.sourceSessionId || run.assessment?.sourceSessionId;
-      element("detail-body").innerHTML = `${historyLink(sourceSessionId)}<h3>${esc(run.assessment?.request || run.id)}</h3><p>${esc(run.assessment?.finalResponse || "")}</p>${run.error ? `<p class="error" role="alert">${esc(run.error)}</p>` : ""}<p>${judgments(run)}</p>${diagnosticsHtml(run)}<section aria-label="Task eval score breakdown">${scoreDetails(run)}</section><pre>${esc(JSON.stringify({ agentId: run.agentId, status: run.status, assessedAt: run.assessedAt, gradedAt: run.gradedAt, sourceSessionId, coverage: run.assessment?.coverage, model: run.assessedModel, promptVersion: run.promptVersion, judge: run.judgeModel, graderVersion: run.graderVersion }, null, 2))}</pre>${traceHtml(run)}<h3>Task and step judgments</h3><pre>${esc(JSON.stringify(run.grade, null, 2))}</pre><h3>Source evidence</h3>${evidenceHtml(run)}`;
+      element("detail-body").innerHTML = `${historyLink(sourceSessionId)}<h3>${esc(run.assessment?.request || run.id)}</h3><p>${esc(run.assessment?.finalResponse || "")}</p><p class="muted">${esc(run.mode === "recorded" ? "Recorded" : "Synthetic")} · ${esc(run.agentId)} · ${esc(run.status.replace(/_/g, " "))}</p>${run.error ? `<p class="error" role="alert">${esc(run.error)}</p>` : ""}${diagnosticsHtml(run)}${assertionDetails(run)}<section aria-label="Task eval score breakdown">${scoreDetails(run)}</section>${judgmentDetails(run)}<details><summary>Run metadata and model usage</summary><pre>${esc(JSON.stringify({ agentId: run.agentId, status: run.status, assessedAt: run.assessedAt, gradedAt: run.gradedAt, durationMs: run.durationMs, sourceSessionId, coverage: run.assessment?.coverage, model: run.assessedModel, promptVersion: run.promptVersion, judge: run.judgeModel, graderVersion: run.graderVersion, usage: run.assessment?.usage, judgeUsage: run.judgeUsage }, null, 2))}</pre></details>${traceHtml(run)}<details><summary>Full judgments and scoring data</summary><pre>${esc(JSON.stringify(run.grade, null, 2))}</pre></details><h3>Source evidence</h3>${evidenceHtml(run)}`;
       detailDownloadUrl = URL.createObjectURL(new Blob([JSON.stringify(run, null, 2)], { type: "application/json" }));
       element<HTMLAnchorElement>("trial-download").href = detailDownloadUrl;
     } catch (error) {
@@ -507,7 +720,7 @@
     } finally { if (version === detailVersion) historyLoading = false; }
   }
   async function pair(ids: string[]) {
-    const version = openDetail("Simulated and recorded comparison");
+    const version = openDetail("Synthetic and recorded comparison");
     let runs: Run[];
     try { runs = await Promise.all(ids.map(id => request<Run>(`/api/evals/runs/${encodeURIComponent(id)}`))); }
     catch (error) {
@@ -517,7 +730,7 @@
     if (version !== detailVersion || !detail.open) return;
     const [a, b] = runs;
     const groups = new Set([...(a.grade?.steps || []), ...(b.grade?.steps || [])].map(s => s.groupId));
-    element("detail-body").innerHTML = `<h2>Simulated ↔ recorded task comparison</h2><div class="two"><div><h3>Simulated</h3>${esc(a.assessment?.request)}<p>${esc(a.assessment?.finalResponse)}</p>${badge(a.grade?.task.verdict)}</div><div><h3>Recorded</h3>${esc(b.assessment?.request)}<p>${esc(b.assessment?.finalResponse)}</p>${badge(b.grade?.task.verdict)}</div></div>` + [...groups].map(id => {
+    element("detail-body").innerHTML = `<h2>Synthetic ↔ recorded task comparison</h2><div class="two"><div><h3>Synthetic</h3>${esc(a.assessment?.request)}<p>${esc(a.assessment?.finalResponse)}</p>${badge(a.grade?.task.verdict)}</div><div><h3>Recorded</h3>${esc(b.assessment?.request)}<p>${esc(b.assessment?.finalResponse)}</p>${badge(b.grade?.task.verdict)}</div></div>` + [...groups].map(id => {
       const left = a.grade?.steps.find(s => s.groupId === id), right = b.grade?.steps.find(s => s.groupId === id);
       return `<h3>${esc(left?.objective || right?.objective)}</h3><div class="two">${[[a, left], [b, right]].map(([run, step]) => {
         const s = step as import("./types").StepGrade | undefined;
@@ -533,34 +746,52 @@
   };
   element("calibrate").onclick = () => { void launch({ mode: "calibrate", agentId: currentAgentId() }); };
   element("refresh").onclick = () => { void refresh({ sessions: sessionsInitialized }); };
-  element("mode").onchange = render;
-  element("agent").onchange = () => {
+  function updateLocation() {
+    const url = new URL(location.href);
+    url.searchParams.set("mode", mode);
+    url.searchParams.set("evaluator", evaluator);
+    if (agentId === "overview") url.searchParams.delete("agentId");
+    else url.searchParams.set("agentId", agentId);
+    url.searchParams.delete("sessionId");
+    history.replaceState(null, "", url);
+  }
+  function changeAgent(next: string) {
+    if (next === agentId || !agentIds.includes(next) || submitting || pendingSubmission) return;
     mutationVersion++;
+    agentId = next;
     selected = selectionsByAgent.get(currentAgentId()) || new Set<string>();
     selectionsByAgent.set(currentAgentId(), selected);
     page = 1; reviewSelected = false; sessions = []; availableIds.clear(); metadataKnown = false; metadataError = "";
+    if (next === "overview") sessionsInitialized = false;
     element("session-warning").hidden = true; element("session-source-retry").hidden = true;
     element("session-message").textContent = "";
-    render(); renderSessions();
+    updateLocation(); render(); renderSessions();
     void refresh({ sessions: sessionsInitialized });
-  };
-  runModes.forEach((mode, index) => {
-    const tab = element<HTMLButtonElement>(`runs-tab-${mode}`);
-    tab.onclick = () => { element<HTMLSelectElement>("mode").value = mode; render(); };
-    tab.onkeydown = event => {
-      let next: number;
-      switch (event.key) {
-        case "ArrowRight": next = (index + 1) % runModes.length; break;
-        case "ArrowLeft": next = (index + runModes.length - 1) % runModes.length; break;
-        case "Home": next = 0; break;
-        case "End": next = runModes.length - 1; break;
-        default: return;
-      }
-      event.preventDefault();
-      const target = element<HTMLButtonElement>(`runs-tab-${runModes[next]}`);
-      target.focus(); target.click();
-    };
-  });
+  }
+  function bindTabs<T extends string>(prefix: string, values: readonly T[], onSelect: (value: T) => void) {
+    values.forEach(value => {
+      const tab = element<HTMLButtonElement>(`${prefix}-tab-${value}`);
+      tab.onclick = () => { onSelect(value); };
+      tab.onkeydown = event => {
+        const tabs = values.map(id => element<HTMLButtonElement>(`${prefix}-tab-${id}`)).filter(button => !button.disabled);
+        const index = tabs.indexOf(tab);
+        let next: number;
+        switch (event.key) {
+          case "ArrowRight": next = (index + 1) % tabs.length; break;
+          case "ArrowLeft": next = (index + tabs.length - 1) % tabs.length; break;
+          case "Home": next = 0; break;
+          case "End": next = tabs.length - 1; break;
+          default: return;
+        }
+        event.preventDefault();
+        tabs[next]?.focus(); tabs[next]?.click();
+      };
+    });
+  }
+  bindTabs("source", runModes, next => { mode = next; updateLocation(); render(); });
+  bindTabs("evaluator", evaluators, next => { evaluator = next; updateLocation(); render(); });
+  bindTabs("agent", agentIds, changeAgent);
+  document.querySelector<HTMLAnchorElement>('.guide-link')!.onclick = () => { element<HTMLDetailsElement>("scoring-guide").open = true; };
   element("close").onclick = () => detail.close();
   detail.addEventListener("close", () => {
     clearDetailDownload();
@@ -612,6 +843,14 @@
   });
   document.addEventListener("click", event => {
     if (!(event.target instanceof Element)) return;
+    const agentButton = event.target.closest<HTMLButtonElement>("button[data-open-agent]");
+    if (agentButton) {
+      if (agentButton.disabled) return;
+      if (agentButton.dataset.openEvaluator === "llm") evaluator = "llm";
+      changeAgent(agentButton.dataset.openAgent!);
+      element("agent-panel").focus();
+      return;
+    }
     const citation = event.target.closest<HTMLAnchorElement>("a[data-evidence]");
     if (citation) {
       event.preventDefault();
@@ -628,17 +867,20 @@
       : button.dataset.run ? inspect(button.dataset.run, button.dataset.historySession) : pair(button.dataset.pair!.split(":")));
   });
   const params = new URLSearchParams(location.search);
-  const requestedAgent = params.get("agentId");
-  if (requestedAgent && [...element<HTMLSelectElement>("agent").options].some(option => option.value === requestedAgent)) {
-    element<HTMLSelectElement>("agent").value = requestedAgent;
+  const requestedAgent = params.get("agentId") || (params.has("sessionId") ? "tv" : undefined);
+  if (requestedAgent && agentIds.includes(requestedAgent)) {
+    agentId = requestedAgent;
     selected = selectionsByAgent.get(requestedAgent) || new Set<string>();
     selectionsByAgent.set(requestedAgent, selected);
   }
+  if (params.get("mode") === "simulated") mode = "simulated";
+  if (params.get("evaluator") === "code") evaluator = "code";
   if (params.has("sessionId")) {
+    mode = "recorded";
     sessionsInitialized = true;
     void openHistory(params.get("sessionId") || "");
   }
-  updateControls(); void refresh();
+  render(); updateControls(); void refresh();
   setInterval(() => { if (!document.hidden && !refreshing) void refresh(); }, 5_000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) void refresh(); });
 })();

@@ -1,9 +1,12 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import {
-  agents, evidenceId, evaluation, grade, makeRun, makeSession, openPortal, rubricVersion, scored, unsafeReason,
+  agents, evidenceId, evaluation, grade, makeRun, makeSession, openPortal as openDashboard, rubricVersion, scored, unsafeReason,
 } from "./evalPortalFixture";
+
+const openPortal = (page: Page, initial: Parameters<typeof openDashboard>[1] = {}) =>
+  openDashboard(page, initial, { agentId: "tv", evaluator: "code" });
 
 function scoringRuns() {
   const zeroGrade = grade(scored(0));
@@ -50,24 +53,28 @@ test("recorded scores preserve zero, partial credit, unscored, legacy, and indep
   const score = (id: string) => rows.filter({ hasText: id }).locator("td").nth(3);
   await expect(score("verified-success")).toHaveText("Task eval score: 100/100");
   await expect(score("honest-zero")).toHaveText("Task eval score: 0/100");
-  const zero = rows.filter({ hasText: "honest-zero" }).locator("td");
-  await expect(zero.nth(4)).toHaveText("fail");
-  await expect(zero.nth(5)).toHaveText("pass");
-  await expect(zero.nth(6)).toHaveText("pass");
+  await expect(rows.filter({ hasText: "honest-zero" }).locator("td").nth(4)).toHaveText("No useful progress");
   await expect(score("partial-progress")).toHaveText("Task eval score: 45/100");
   await expect(score("report-capped")).toHaveText("Task eval score: 20/100");
-  await expect(rows.filter({ hasText: "report-capped" }).locator("td").nth(6)).toHaveText("fail");
+  await expect(rows.filter({ hasText: "report-capped" }).locator("td").nth(6)).toHaveText("20/100");
   await expect(score("missing-evidence")).toContainText("Unscored — insufficient evidence");
   await expect(score("missing-evidence")).toContainText(unsafeReason);
-  await expect(rows.filter({ hasText: "missing-evidence" }).locator("td").nth(4)).toHaveText("pass");
   await expect(score("legacy-evaluation")).toHaveText("Scoring unavailable for this evaluation");
-  await expect(score("simulated-result")).toHaveText("Task eval score: N/A — simulated evaluation");
+  await expect(page.locator("#runs")).not.toContainText("simulated-result");
   await expect(score("grading-error")).toContainText("No completed task eval score");
   await expect(score("execution-error")).toContainText("No completed task eval score");
   await expect(page.locator("#runs img")).toHaveCount(0);
   await expect(page.locator("#runs")).not.toContainText("NaN");
-  await page.getByRole("tab", { name: "Real", exact: true }).click();
   await expect(rows).toHaveCount(9);
+  await expect(page.locator("#cards .number").first()).toHaveText("36");
+  await page.getByRole("tab", { name: "LLM-based", exact: true }).click();
+  const zero = rows.filter({ hasText: "honest-zero" }).locator("td");
+  await expect(zero.nth(3)).toHaveText("fail");
+  await expect(zero.nth(4)).toHaveText("pass");
+  await expect(zero.nth(5)).toHaveText("pass");
+  await expect(rows.filter({ hasText: "missing-evidence" }).locator("td").nth(3)).toHaveText("pass");
+  await expect(rows.filter({ hasText: "report-capped" }).locator("td").nth(5)).toHaveText("fail");
+  await expect(page.locator("#run-columns")).not.toContainText("Task eval score");
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpectedRequests).toEqual([]);
 });
@@ -90,6 +97,7 @@ test("inspection shows deterministic arithmetic, reporting ceiling, evidence cit
   await expect(breakdown).toContainText("execution: Sufficient");
   await expect(breakdown).toContainText("not a probability or confidence");
   await expect(page.locator("#detail-body img")).toHaveCount(0);
+  await page.getByText("Full judgments and scoring data", { exact: true }).click();
   await expect(page.locator("#detail-body pre").filter({ hasText: '"rubricVersion": "recorded-task-v1"' })).toBeVisible();
   const citation = breakdown.getByRole("link", { name: evidenceId }).first();
   await citation.focus();
@@ -125,9 +133,10 @@ test("unscored gaps and historical absence remain distinct in inspection on a na
 
   for (const [id, expected] of [
     ["legacy-evaluation", "Scoring unavailable for this evaluation"],
-    ["simulated-result", "N/A — simulated evaluation"],
+    ["simulated-result", "N/A — synthetic evaluation"],
     ["grading-error", "No completed task eval score"],
   ]) {
+    await page.getByRole("tab", { name: id === "simulated-result" ? "Synthetic" : "Recorded", exact: true }).click();
     await page.locator("#runs tr").filter({ hasText: id }).getByRole("button", { name: "Inspect" }).click();
     await expect(breakdown).toContainText(expected);
     await expect(breakdown).not.toContainText("Unscored");
@@ -160,16 +169,17 @@ for (const agentId of ["scheduled_task", "realtime"] as const) {
         },
       ] } },
     });
-    await page.locator("#agent").selectOption(agentId);
+    await page.locator(`#agent-tab-${agentId}`).click();
     const rows = page.locator("#runs tr");
-    await expect(rows).toHaveCount(3);
+    await expect(rows).toHaveCount(2);
     await expect(page.locator("#runs")).not.toContainText("tv-scored");
     for (const row of await rows.all()) {
       await expect(row.locator("td").nth(3)).toHaveText("Task eval score: N/A for this agent");
     }
-    await expect(rows.first().locator("td").nth(4)).toHaveText("pass");
     await expect(page.locator("#runs")).not.toContainText("Scoring unavailable");
     await expect(page.locator("#runs")).not.toContainText("Unscored");
+    await page.getByRole("tab", { name: "LLM-based", exact: true }).click();
+    await expect(rows.first().locator("td").nth(3)).toHaveText("pass");
     await rows.first().getByRole("button", { name: "Inspect" }).click();
     const breakdown = page.getByRole("region", { name: "Task eval score breakdown" });
     await expect(breakdown).toContainText("N/A for this agent");
@@ -190,7 +200,8 @@ for (const agentId of ["scheduled_task", "realtime"] as const) {
     await expect(page.locator("#detail-body")).not.toContainText("Scoring unavailable");
 
     await page.goto(`/dashboards/evals?agentId=${agentId}&sessionId=${sessionId}`);
-    await expect(page.locator("#agent")).toHaveValue(agentId);
+    await expect(page.locator(`#agent-tab-${agentId}`)).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("tab", { name: "Recorded", exact: true })).toHaveAttribute("aria-selected", "true");
     await expect(page.getByRole("dialog", { name: "Session evaluation history" })).toBeVisible();
     await expect(attempts.nth(1)).toContainText("Previous evaluation · Evaluated");
     expect(fixture.errors).toEqual([]);
@@ -338,6 +349,7 @@ test("calibration distinguishes score and progress mismatches from matching cate
       { id: "legacy-categorical", passed: true, expected, actual: expected },
     ],
   }] });
+  await page.getByRole("tab", { name: "LLM-based", exact: true }).click();
   await page.locator("#calibrations summary").click();
   const result = (id: string) => page.locator("#calibrations p").filter({ hasText: id });
   await expect(result("zero-reference")).toContainText("Task eval score: expected 0/100; actual 0/100");
@@ -374,11 +386,12 @@ test("agent-specific calibration retains categorical limitations without inherit
       })),
     ],
   });
+  await page.getByRole("tab", { name: "LLM-based", exact: true }).click();
   await expect(page.locator("#calibrations")).toContainText("tv-judge");
   await page.locator("#calibrations summary").click();
   await expect(page.locator("#calibrations")).toContainText("Task eval score: expected 100/100; actual 100/100");
   for (const agent of catalog.filter(agent => agent.id !== "tv")) {
-    await page.locator("#agent").selectOption(agent.id);
+    await page.locator(`#agent-tab-${agent.id}`).click();
     await expect(page.locator("#calibrations summary")).toContainText(`${agent.id}-judge`);
     await expect(page.locator("#calibrations summary")).toHaveCount(1);
     await page.locator("#calibrations summary").click();
