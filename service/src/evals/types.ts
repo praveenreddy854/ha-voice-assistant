@@ -160,6 +160,7 @@ export type Judge = (assessment: Assessment, groups: StepGroup[], signal: AbortS
 export interface EvalRunSummary extends Omit<EvalRun, "assessment"> {
   request?: string;
   usage?: Usage;
+  taskAssertion?: boolean;
 }
 export interface RecordedEvalAttempt {
   id: string;

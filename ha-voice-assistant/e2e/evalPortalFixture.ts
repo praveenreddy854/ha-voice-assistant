@@ -4,10 +4,10 @@ import { expect, type Page } from "@playwright/test";
 import { evalPage } from "../../service/src/evals/page";
 import type { EvalScheduleStatus } from "../../service/src/evals/scheduling";
 import type {
-  EvalAgentId, EvalAlert, EvalBatch, EvalRun, Grade, RecordedSession, RecordedSessionEvaluation, RecordedSessionHistory, TaskEvalScore,
+  EvalAgentId, EvalAlert, EvalBatch, EvalMode, EvalRun, EvalRunSummary, Grade, RecordedSession, RecordedSessionEvaluation, RecordedSessionHistory, TaskEvalScore,
 } from "../../service/src/evals/types";
 
-export type PortalRun = EvalRun & { request: string; verdict: string };
+export type PortalRun = EvalRun & Pick<EvalRunSummary, "taskAssertion"> & { request: string; verdict: string };
 export const agents = [
   { id: "tv", name: "TVAgent", description: "TV and playback state.", scenarioCount: 12, referenceCount: 6 },
   { id: "scheduled_task", name: "ScheduledTaskAgent", description: "Dates and isolated task storage.", scenarioCount: 12, referenceCount: 6 },
@@ -43,12 +43,13 @@ export const makeRun = (id: string, overrides: Partial<PortalRun> = {}): PortalR
   adapterVersion: "adapter", graderVersion: "grader", judgeModel: "judge",
   assessedAt: "2026-09-15T02:00:00Z", gradedAt: "2026-09-15T05:00:00Z",
   status: "completed", verdict: "pass", durationMs: 1500,
-  grade: overrides.agentId && overrides.agentId !== "tv"
+  grade: overrides.mode === "simulated" || (overrides.agentId && overrides.agentId !== "tv")
     ? grade(undefined, { scoringAssessment: undefined }) : grade(scored(100)),
   assessment: {
     agentId: overrides.agentId || "tv", mode: overrides.mode || "recorded", request: id, finalResponse: "Requested music is playing.",
     startedAt: "2026-09-15T02:00:00Z", coverage: "partial",
     evidence: [{ id: evidenceId, kind: "tool", toolName: "get_device_state", text: unsafeReason }],
+    taskAssertion: overrides.taskAssertion,
   },
   ...overrides,
 });
@@ -83,6 +84,7 @@ interface FixtureState {
   statuses: Record<string, RecordedSessionEvaluation>;
   histories: Record<string, RecordedSessionHistory>;
   batches: EvalBatch[];
+  jobs: import("../../service/src/evals/worker").EvalJob[];
   alerts: EvalAlert[];
   fidelity: { simulatedId: string; recordedIds: string[]; status: string }[];
   calibrations: { id: string; agentId?: string; judgeModel: string; createdAt: string; passed: boolean; limitation?: string; results: {
@@ -92,12 +94,15 @@ interface FixtureState {
     expectedBlockingComponents?: string[]; actualBlockingComponents?: string[];
   }[] }[];
   statusesError?: string;
+  dashboardError?: string;
 }
 
-export async function openPortal(page: Page, initial: Partial<FixtureState> = {}) {
+export async function openPortal(page: Page, initial: Partial<FixtureState> = {}, view: {
+  agentId?: EvalAgentId; mode?: EvalMode; evaluator?: "code" | "llm";
+} = {}) {
   const state: FixtureState = {
     agents, runs: [], busy: false, scheduleEnabled: true, sessions: [], statuses: {}, histories: {},
-    batches: [], alerts: [], fidelity: [], calibrations: [], ...initial,
+    batches: [], jobs: [], alerts: [], fidelity: [], calibrations: [], ...initial,
   };
   const errors: string[] = [], unexpectedRequests: string[] = [];
   const submissions: Record<string, unknown>[] = [];
@@ -112,11 +117,16 @@ export async function openPortal(page: Page, initial: Partial<FixtureState> = {}
     } else if (url.pathname === "/dashboards/evals/browser.js") {
       await route.fulfill({ contentType: "application/javascript", body: browserScript });
     } else if (url.pathname === "/api/evals") {
+      if (state.dashboardError) {
+        await route.fulfill({ status: 503, json: { error: state.dashboardError } });
+        return;
+      }
       await route.fulfill({ json: {
-        agents: state.agents, runs: state.runs.filter(run => !agentId || run.agentId === agentId),
+        agents: state.agents, runs: state.runs.filter(run => !agentId || run.agentId === agentId).map(({ assessment, ...summary }) => summary),
         busy: state.busy, schedules: state.schedules, scheduleEnabled: state.scheduleEnabled,
         alerts: state.alerts.filter(alert => !agentId || (alert.agentId || alert.key.split(":")[0]) === agentId),
         batches: state.batches.filter(batch => !agentId || batch.agentId === agentId),
+        jobs: state.jobs.filter(job => !agentId || (job.agentId || "tv") === agentId),
         calibrations: state.calibrations.filter(calibration => !agentId || (calibration.agentId || "tv") === agentId),
         fidelity: state.fidelity.filter(pair => !agentId || state.runs.some(run => run.id === pair.simulatedId && run.agentId === agentId)),
         baseline: { from: "2026-09-07", to: "2026-09-13" },
@@ -146,7 +156,8 @@ export async function openPortal(page: Page, initial: Partial<FixtureState> = {}
       await route.fulfill({ status: 404, body: "Unexpected fixture request" });
     }
   });
-  await page.goto("/dashboards/evals");
-  await expect(page.locator("#cards .number").first()).toHaveText(String(state.runs.filter(run => run.agentId === "tv").length));
+  await page.goto(`/dashboards/evals?${new URLSearchParams(view)}`);
+  await expect(page.locator("#agent-panel")).toHaveAttribute("aria-busy", "false");
+  if (!state.dashboardError) await expect(page.locator("#cards .number")).toHaveCount(4);
   return { state, errors, unexpectedRequests, submissions };
 }
