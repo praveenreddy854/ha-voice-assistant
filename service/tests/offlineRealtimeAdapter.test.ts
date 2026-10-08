@@ -61,13 +61,13 @@ function options(transport: RealtimeTransport, extra: Partial<RealtimeExecutionO
 const scenario = (id: string) => realtimeScenarios.find(item => item.id === id)!;
 const environment = (id: string) => { const env = new RealtimeEnvironment(scenario(id)); env.beginTurn(0); return env; };
 
-test("extracted production prompt and tool declarations are byte-identical to their original contracts", () => {
+test("shared production voice prompt and tool schemas match the GPT Live migration contract", () => {
   const source = fs.readFileSync(path.join(__dirname, "../src/realtimeAgent.ts"), "utf8");
   const tools = source.slice(source.indexOf("export const REALTIME_TOOLS ="), source.indexOf("\n\nexport function buildRealtimeInstructions")).replace(/^export /, "").trim();
   const prompt = source.slice(source.indexOf("const REALTIME_INSTRUCTIONS ="), source.indexOf("\n  return REALTIME_INSTRUCTIONS;")).trim();
   const hash = (text: string) => createHash("sha256").update(text).digest("hex");
   assert.equal(hash(tools), "012b2525f8bb65da4df830ef23a74da88b217d3108a9067d8a2a9bbe49c6f09d");
-  assert.equal(hash(prompt), "3d5f9b1b512f32421d539aac4ad1ad894261aacd31bdfb7c72ccd57d0b364c58");
+  assert.equal(hash(prompt), "fbf4724bab07dc139b629f45e59b39014c22e04f1f9ef4b847606a47c1e386db");
   assert.equal(REALTIME_TOOLS.length, 11);
   assert.doesNotMatch(buildRealtimeInstructions(), /Known smart-home devices|user's address/);
   assert.match(buildRealtimeInstructions({ devices: ["fixture-device"], address: "Seattle" }), /Known smart-home devices fixture-device\./);
@@ -80,8 +80,9 @@ test("extracted production prompt and tool declarations are byte-identical to th
   const production = fs.readFileSync(path.join(__dirname, "../src/realtimeChat.ts"), "utf8");
   assert.match(production, /from "\.\/realtimeAgent"/);
   assert.doesNotMatch(production, /const REALTIME_TOOLS =|turn_detection:/);
-  assert.match(production, /modalities: \["text", "audio"\]/);
-  assert.match(production, /model: AI_MODEL_TRANSCRIBE/);
+  assert.match(production, /model: AI_MODEL_LIVE/);
+  assert.match(production, /delegation: \{ type: "client" \}/);
+  assert.match(production, /runLiveVoiceAgent/);
 });
 
 test("default factory reports AI_MODEL_REALTIME, never an advanced chat model", async () => {

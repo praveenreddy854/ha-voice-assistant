@@ -1,9 +1,12 @@
-// Azure OpenAI Realtime API v2 — frontend WebSocket client with PCM16 audio playback
-// Keeps a persistent WebSocket so the same Azure session (and voice) is reused.
+// GPT Live backend proxy client with continuous 24 kHz PCM16 audio playback.
 
 let activeWs: WebSocket | null = null;
 let activeAudioCtx: AudioContext | null = null;
 let nextPlayTime = 0;
+let audioTimelineOrigin: number | null = null;
+const playbackSources = new Set<AudioBufferSourceNode>();
+const playbackWaits = new Set<() => void>();
+let playbackVersion = 0;
 let activeMicStream: MediaStream | null = null;
 let activeMicCtx: AudioContext | null = null;
 let activeProcessor: ScriptProcessorNode | null = null;
@@ -72,20 +75,29 @@ export function setCommandCancelledHandler(
 }
 
 function stopAndResetAudioPlayback(): void {
-  if (activeAudioCtx) {
-    activeAudioCtx.close().catch(() => {});
-    activeAudioCtx = null;
+  playbackVersion++;
+  for (const source of playbackSources) {
+    source.onended = null;
+    source.stop();
+    source.disconnect();
   }
+  playbackSources.clear();
+  for (const finish of playbackWaits) finish();
   nextPlayTime = 0;
+  audioTimelineOrigin = null;
   audioChunksInResponse = 0;
   loggedAudioDeltaForResponse = false;
 }
 let currentResolve: (() => void) | null = null;
 let currentMode: "text" | "voice" | null = null;
 let voiceTurnResolved = false;
+let listeningWindowExpired = false;
+let assistantResponsePending = false;
+let responseActivityVersion = 0;
+const pendingAssistantWork = new Set<string>();
+const activeAgentJobs = new Set<string>();
 let audioChunksInResponse = 0;
 let loggedAudioDeltaForResponse = false;
-let assistantInterrupted = false;
 let listeningWindowTimer: ReturnType<typeof setTimeout> | null = null;
 let listeningWindowInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -94,6 +106,8 @@ const LISTENING_WINDOW_MS = 30000;
 
 interface RealtimeVoiceTurnOptions {
   onListeningWindowChange?: (remainingSeconds: number | null) => void;
+  /** A command captured together with the browser wake phrase. */
+  initialText?: string;
 }
 
 function resolvePendingConnections(ws: WebSocket): void {
@@ -141,6 +155,7 @@ function resolveCurrentTurn(): void {
 }
 
 function failCurrentTurn(message: string): void {
+  stopAndResetAudioPlayback();
   currentOnError?.(message);
   resolveCurrentTurn();
   if (assistantSpeakingOutsideTurn) {
@@ -148,6 +163,11 @@ function failCurrentTurn(message: string): void {
     assistantSpeakingOutsideTurnFollowup = false;
     globalOnAsyncAssistantSpeechEnd?.({ followupExpected: false });
   }
+}
+
+function resolveExpiredTurnWhenFinished(): void {
+  if (currentMode === "voice" && listeningWindowExpired && !assistantResponsePending &&
+      pendingAssistantWork.size === 0 && activeAgentJobs.size === 0) resolveCurrentTurn();
 }
 
 function startListeningWindow(durationMs: number): void {
@@ -163,7 +183,11 @@ function startListeningWindow(durationMs: number): void {
 
   listeningWindowTimer = setTimeout(() => {
     console.log("[RealtimeChat] Follow-up window expired");
-    resolveCurrentTurn();
+    listeningWindowExpired = true;
+    clearListeningWindow();
+    stopMicStreaming();
+    // The microphone cap does not end reasoning, streaming, or playback.
+    resolveExpiredTurnWhenFinished();
   }, durationMs);
 }
 
@@ -182,7 +206,7 @@ function pcm16Base64ToFloat32(base64: string): Float32Array {
   return samples;
 }
 
-function playPcm16Chunk(samples: Float32Array): void {
+function playPcm16Chunk(samples: Float32Array, startMs?: number, endMs?: number): void {
   if (!activeAudioCtx) return;
 
   // Keep the mic open during playback so the user can barge in with the wake
@@ -205,10 +229,19 @@ function playPcm16Chunk(samples: Float32Array): void {
   const source = activeAudioCtx.createBufferSource();
   source.buffer = buffer;
   source.connect(activeAudioCtx.destination);
+  playbackSources.add(source);
+  source.onended = () => {
+    playbackSources.delete(source);
+    source.disconnect();
+  };
 
   const now = activeAudioCtx.currentTime;
   if (nextPlayTime < now) {
     nextPlayTime = now + 0.05; // small lead to avoid underrun
+  }
+  if (typeof startMs === "number") {
+    if (audioTimelineOrigin === null) audioTimelineOrigin = nextPlayTime - startMs / 1000;
+    nextPlayTime = Math.max(nextPlayTime, audioTimelineOrigin + startMs / 1000);
   }
   source.start(nextPlayTime);
   nextPlayTime += buffer.duration;
@@ -230,31 +263,36 @@ async function waitForQueuedAudio(): Promise<void> {
     Math.ceil((nextPlayTime - activeAudioCtx.currentTime) * 1000)
   );
   if (remainingMs > 0) {
-    await new Promise((resolve) => setTimeout(resolve, remainingMs + 100));
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        clearTimeout(timer);
+        playbackWaits.delete(finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, remainingMs + 100);
+      playbackWaits.add(finish);
+    });
   }
 }
 
 async function finishResponse(fullText: string, followupExpected: boolean): Promise<void> {
   const lifecycleVersion = turnLifecycleVersion;
-  const isVoiceTurn = currentMode === "voice";
-  const wasInterrupted = assistantInterrupted;
-  assistantInterrupted = false;
+  const responsePlaybackVersion = playbackVersion;
+  const activityVersion = responseActivityVersion;
 
-  // On interrupt the mic was never closed — it's already streaming the user's
-  // follow-up audio. Closing and reopening here would drop ~300ms of warmup.
-  if (isVoiceTurn && !wasInterrupted) {
-    stopMicStreaming();
-  }
-
+  // response_done means generation ended, not playback. Keep capturing speech
+  // while queued audio drains, and discard this completion if interrupted.
   await waitForQueuedAudio();
-  if (lifecycleVersion !== turnLifecycleVersion) return;
-  if (audioChunksInResponse === 0 && fullText.trim() && !wasInterrupted) {
+  if (lifecycleVersion !== turnLifecycleVersion || responsePlaybackVersion !== playbackVersion ||
+      activityVersion !== responseActivityVersion) return;
+  if (audioChunksInResponse === 0 && fullText.trim()) {
     console.warn("[RealtimeChat] Response completed without audio deltas");
   }
 
   currentOnDone?.(fullText);
   audioChunksInResponse = 0;
   loggedAudioDeltaForResponse = false;
+  assistantResponsePending = false;
 
   if (currentMode !== "voice" || voiceTurnResolved) {
     if (currentMode === "text") {
@@ -273,27 +311,18 @@ async function finishResponse(fullText: string, followupExpected: boolean): Prom
     return;
   }
 
-  // Reopen the mic so the user can keep talking, but DO NOT restart the
+  // Keep the mic available, but DO NOT restart the
   // listening window — it was started once when the turn was activated and
   // is a hard 30s cap. Otherwise stray TV/ambient responses would keep
   // resetting the timer and the session would never close.
   void followupExpected;
 
-  // If the hard cap already expired during the response, the turn was
-  // already resolved by the listening-window timer; nothing more to do.
-  if (voiceTurnResolved) return;
-
-  // Mic still streaming from the interruption — skip the reopen.
-  if (wasInterrupted) return;
-
-  try {
-    await startMicStreaming();
-  } catch (error) {
-    if (lifecycleVersion !== turnLifecycleVersion) return;
-    const message = error instanceof Error ? error.message : String(error);
-    currentOnError?.(message);
-    resolveCurrentTurn();
+  if (listeningWindowExpired) {
+    resolveExpiredTurnWhenFinished();
+    return;
   }
+
+  await ensureMicStreamingForFollowUp();
 }
 
 function floatToPcm16Base64(input: Float32Array, inputSampleRate: number): string {
@@ -331,12 +360,16 @@ function handleMessage(event: MessageEvent): void {
 
       case "audio_delta":
         if (msg.audio) {
+          assistantResponsePending = true;
+          responseActivityVersion++;
           const samples = pcm16Base64ToFloat32(msg.audio);
-          playPcm16Chunk(samples);
+          playPcm16Chunk(samples, msg.startMs, msg.endMs);
         }
         break;
 
       case "transcript_delta":
+        assistantResponsePending = true;
+        responseActivityVersion++;
         // Mic stays open while the assistant speaks so the user can interrupt;
         // browser echoCancellation suppresses the assistant's own audio.
         currentOnTranscriptDelta?.(msg.text);
@@ -344,7 +377,6 @@ function handleMessage(event: MessageEvent): void {
 
       case "assistant_interrupted":
         console.log("[RealtimeChat] User interrupted assistant — stopping playback");
-        assistantInterrupted = true;
         stopAndResetAudioPlayback();
         void ensureAudioContext(false);
         if (currentMode === "voice" && !voiceTurnResolved) {
@@ -356,6 +388,26 @@ function handleMessage(event: MessageEvent): void {
         void finishResponse(msg.fullText || "", msg.followupExpected === true);
         break;
 
+      case "session_ended":
+        resetRealtimeSocket();
+        {
+          const lifecycle = turnLifecycleVersion;
+          void waitForQueuedAudio().then(() => {
+            if (lifecycle === turnLifecycleVersion) resolveCurrentTurn();
+          });
+        }
+        break;
+
+      case "assistant_work_started":
+        pendingAssistantWork.add(msg.delegationId ?? "text-request");
+        assistantResponsePending = true;
+        break;
+
+      case "assistant_work_finished":
+        pendingAssistantWork.delete(msg.delegationId ?? "text-request");
+        resolveExpiredTurnWhenFinished();
+        break;
+
       case "user_transcript":
         // Hard-cap window is not cleared here either — it counts down from
         // activation regardless of how many user/assistant exchanges happen.
@@ -363,16 +415,23 @@ function handleMessage(event: MessageEvent): void {
         break;
 
       case "speech_started":
+        // Generation can be finished while several seconds of audio remain
+        // queued locally. VAD must stop that tail too.
+        if (playbackSources.size > 0) stopAndResetAudioPlayback();
+        break;
       case "speech_stopped":
         // VAD fires on ambient noise too; do not touch the listening-window
         // timer here or noise will keep the mic open indefinitely.
         break;
 
       case "async_job_started":
+        activeAgentJobs.add(msg.domain ?? "agent");
         currentOnAsyncJobStarted?.();
         break;
 
       case "async_job_finished":
+        activeAgentJobs.delete(msg.domain ?? "agent");
+        assistantResponsePending = true;
         currentOnAsyncJobFinished?.();
         if (currentMode !== "voice" || voiceTurnResolved) {
           assistantSpeakingOutsideTurn = true;
@@ -482,6 +541,7 @@ function sendJson(payload: Record<string, unknown>): void {
 }
 
 async function startMicStreaming(): Promise<void> {
+  if (isWsOpen()) sendJson({ type: "input_start" });
   if (activeMicStart) return activeMicStart;
 
   stopMicStreaming();
@@ -564,6 +624,7 @@ async function startMicStreaming(): Promise<void> {
 }
 
 async function ensureMicStreamingForFollowUp(): Promise<void> {
+  if (listeningWindowExpired) return;
   const lifecycleVersion = turnLifecycleVersion;
   const micIsActive =
     activeMicStream?.active === true &&
@@ -585,6 +646,7 @@ async function ensureMicStreamingForFollowUp(): Promise<void> {
 }
 
 function stopMicStreaming(): void {
+  if (activeProcessor && isWsOpen()) sendJson({ type: "input_end" });
   micLifecycleVersion++;
   activeMicStart = null;
   if (activeProcessor) {
@@ -608,6 +670,9 @@ function stopMicStreaming(): void {
 
 export function stopRealtimeChat(options: { closeAudioOutput?: boolean } = {}): void {
   resolveCurrentTurn();
+  // Expiring the command-mic window may leave a long answer queued. Let that
+  // audio finish; the explicit Stop button must silence it immediately.
+  if (options.closeAudioOutput) stopAndResetAudioPlayback();
   resetRealtimeSocket();
   rejectPendingConnections(new Error("Realtime chat stopped"));
   currentMode = null;
@@ -620,6 +685,9 @@ export function stopRealtimeChat(options: { closeAudioOutput?: boolean } = {}): 
   currentResolve = null;
   assistantSpeakingOutsideTurn = false;
   assistantSpeakingOutsideTurnFollowup = false;
+  pendingAssistantWork.clear();
+  activeAgentJobs.clear();
+  assistantResponsePending = false;
 }
 
 function resetRealtimeSocket(): void {
@@ -698,6 +766,9 @@ export async function startRealtimeVoiceTurn(
   options: RealtimeVoiceTurnOptions = {}
 ): Promise<void> {
   resolveCurrentTurn();
+  // A new wake phrase also interrupts audio left after the previous mic window.
+  // Async speech is already arriving for this turn, so preserve its queue.
+  if (!assistantSpeakingOutsideTurn) stopAndResetAudioPlayback();
   const lifecycleVersion = ++turnLifecycleVersion;
   currentOnTranscriptDelta = onTranscriptDelta;
   currentOnDone = onDone;
@@ -708,6 +779,8 @@ export async function startRealtimeVoiceTurn(
   currentOnListeningWindowChange = options.onListeningWindowChange;
   currentMode = "voice";
   voiceTurnResolved = false;
+  listeningWindowExpired = false;
+  assistantResponsePending = false;
   clearListeningWindow();
 
   return new Promise<void>((resolve) => {
@@ -722,7 +795,7 @@ export async function startRealtimeVoiceTurn(
 
     (async () => {
       try {
-        await ensureAudioContext();
+        await ensureAudioContext(!assistantSpeakingOutsideTurn);
         if (lifecycleVersion !== turnLifecycleVersion) return;
         const ws = await connectRealtime();
         if (lifecycleVersion !== turnLifecycleVersion) return;
@@ -733,6 +806,9 @@ export async function startRealtimeVoiceTurn(
         await startMicStreaming();
         if (lifecycleVersion !== turnLifecycleVersion) return;
         startListeningWindow(LISTENING_WINDOW_MS);
+        if (options.initialText?.trim()) {
+          ws.send(JSON.stringify({ type: "user_text", text: options.initialText.trim() }));
+        }
       } catch (error) {
         fail(error);
       }

@@ -10,6 +10,10 @@ A voice-controlled smart-home assistant. Wake-word detection runs on the React c
 The post-wake-word conversational agent that owns the live voice turn and delegates smart-home work to specialist agents or direct Home Assistant command execution.
 _Avoid_: Main agent, Chat agent, Intent classifier.
 
+**Delegated voice request**:
+A complete user request handed from the live voice conversation to the assistant's reasoning and smart-home capabilities after the user's requested scope has settled.
+_Avoid_: Transcript fragment, partially spoken command.
+
 **Specialist agent**:
 An agent with ownership of a bounded smart-home capability, such as TV control or ScheduledTask handling, invoked by the Realtime Voice Agent.
 _Avoid_: Sub-agent, Skill, Intent.
@@ -239,6 +243,8 @@ The lineage of `ScheduledTask` records produced by a single recurring instructio
 The single Specialist agent that handles ScheduledTask voice flows: creation (parse, disambiguate device, ask user, save), list, query, update, and cancellation. It does not participate in firing — firing is a separate, primitive server-side flow.
 
 ## Relationships
+
+- A **Realtime voice turn** can produce multiple **Delegated voice requests**; each request represents a settled user objective rather than an individual speech fragment.
 
 - **Simulated eval** and **Recorded-run eval** are distinct kinds of **Offline assistant eval**.
 - A **Simulated eval** uses a **Simulated assistant environment** appropriate to the assessed agent's task domain.

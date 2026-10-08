@@ -36,7 +36,11 @@ export const AI_MODEL_ADVANCED = process.env.AI_MODEL_ADVANCED ?? process.env.AI
 export const EMBEDDING_MODEL =
   process.env.EMBEDDING_MODEL ?? "text-embedding-ada-002";
 
-/** Realtime: voice chat via Azure OpenAI Realtime API v2 */
+/** GPT Live voice deployment; client delegation uses the existing AI SDK models. */
+export const AI_MODEL_LIVE = process.env.AI_MODEL_LIVE ?? "gpt-live-1";
+export const GPT_LIVE_VOICE = process.env.GPT_LIVE_VOICE ?? "marin";
+
+/** Legacy native Realtime evaluation settings; browser voice uses GPT Live. */
 export const AI_MODEL_REALTIME = process.env.AI_MODEL_REALTIME;
 export const AI_MODEL_TRANSCRIBE = process.env.AI_MODEL_TRANSCRIBE ?? "whisper-1";
 export const AZURE_OPENAI_REALTIME_API_VERSION =
