@@ -169,48 +169,7 @@ function App() {
     startWakeListener();
   }, [startWakeListener]);
 
-  const handleTextCommand = useCallback(
-    async (text: string, resumeWakeWord = true) => {
-      const lifecycle = assistantLifecycle.current;
-      const version = ++voiceTurnVersion.current;
-      isListeningForWakeWord.current = false;
-      setIsWakeWordMode(false);
-      setIsListening(false);
-      setCountdown(null);
-      setIsGestureCameraActive(false);
-      await stopWakeListener();
-      if (lifecycle !== assistantLifecycle.current || version !== voiceTurnVersion.current) return;
-      handleRecognizedText({ sender: "user", text });
-      let fullTranscript = "";
-      await startRealtimeChat(
-        text,
-        (delta) => {
-          fullTranscript += delta;
-        },
-        (finalText) => {
-          const responseText =
-            finalText || fullTranscript || "Response received.";
-          handleRecognizedText({
-            sender: "assistant",
-            text: responseText,
-          });
-          noteAnnouncement(responseText);
-        },
-        (error) => {
-          handleRecognizedText({
-            sender: "assistant",
-            text: `Chat error: ${error}`,
-          });
-        }
-      );
-      if (resumeWakeWord && lifecycle === assistantLifecycle.current && version === voiceTurnVersion.current) {
-        startWakeWordListening();
-      }
-    },
-    [handleRecognizedText, startWakeWordListening, stopWakeListener]
-  );
-
-  const enterVoiceTurn = useCallback(() => {
+  const enterVoiceTurn = useCallback((initialText?: string, chime = true) => {
     if (!assistantEnabled.current) return;
     const lifecycle = assistantLifecycle.current;
     const version = ++voiceTurnVersion.current;
@@ -218,7 +177,7 @@ function App() {
     setIsWakeWordMode(false);
     setIsListening(true);
     setIsGestureCameraActive(true);
-    playPing();
+    if (chime) playPing();
     let fullTranscript = "";
     let asyncJobStarted = false;
     stopWakeListener().then(() => {
@@ -257,7 +216,11 @@ function App() {
           hasActiveAgentRun.current = false;
         },
         {
-          onListeningWindowChange: setCountdown,
+          onListeningWindowChange: (remaining) => {
+            setCountdown(remaining);
+            setIsListening(remaining !== null);
+          },
+          initialText,
         }
       );
     }).finally(() => {
@@ -274,15 +237,61 @@ function App() {
     });
   }, [handleRecognizedText, startWakeWordListening, stopWakeListener]);
 
+  const handleTextCommand = useCallback(
+    async (text: string) => {
+      if (assistantEnabled.current) {
+        handleRecognizedText({ sender: "user", text });
+        enterVoiceTurn(text, false);
+        return;
+      }
+      const lifecycle = assistantLifecycle.current;
+      const version = ++voiceTurnVersion.current;
+      isListeningForWakeWord.current = false;
+      setIsWakeWordMode(false);
+      setIsListening(false);
+      setCountdown(null);
+      setIsGestureCameraActive(false);
+      await stopWakeListener();
+      if (lifecycle !== assistantLifecycle.current || version !== voiceTurnVersion.current) return;
+      handleRecognizedText({ sender: "user", text });
+      let fullTranscript = "";
+      await startRealtimeChat(
+        text,
+        (delta) => {
+          fullTranscript += delta;
+        },
+        (finalText) => {
+          const responseText =
+            finalText || fullTranscript || "Response received.";
+          handleRecognizedText({
+            sender: "assistant",
+            text: responseText,
+          });
+          noteAnnouncement(responseText);
+        },
+        (error) => {
+          handleRecognizedText({
+            sender: "assistant",
+            text: `Chat error: ${error}`,
+          });
+        }
+      );
+      if (lifecycle === assistantLifecycle.current && version === voiceTurnVersion.current) {
+        startWakeWordListening();
+      }
+    },
+    [enterVoiceTurn, handleRecognizedText, startWakeWordListening, stopWakeListener]
+  );
+
   useEffect(() => {
     setAsyncJobEventHandler((event) => {
       if (!assistantEnabled.current) return;
       if (event.kind !== "needs_input") {
         hasActiveAgentRun.current = false;
       }
-      void stopWakeListener();
-      isListeningForWakeWord.current = false;
-      setIsWakeWordMode(false);
+      // Async replies need a command microphone during speech as well. The
+      // voice-turn handoff stops browser recognition before opening that mic.
+      enterVoiceTurn(undefined, false);
     });
     setAsyncAssistantSpeechEndHandler(({ followupExpected }) => {
       if (!assistantEnabled.current) return;
@@ -358,15 +367,10 @@ function App() {
         Promise.all([stopWakeListener(), pauseRequest]).then(() => {
           if (!assistantEnabled.current || lifecycle !== assistantLifecycle.current) return;
           if (trailing) {
-            // User said the question in the same breath as the wake word —
-            // route it via user_text so the realtime API responds immediately,
-            // then open the realtime mic so the user can ask a follow-up
-            // within the 30s listening window without re-saying the wake word.
+            // Open the command mic before sending the captured text so the
+            // assistant can be interrupted throughout its first response.
             console.log("Routing trailing text as command:", trailing);
-            handleTextCommand(trailing, false).finally(() => {
-              if (!assistantEnabled.current || lifecycle !== assistantLifecycle.current) return;
-              enterVoiceTurn();
-            });
+            enterVoiceTurn(trailing);
           } else {
             // Bare wake word — open the realtime mic for the next utterance.
             console.log(

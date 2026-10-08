@@ -169,9 +169,13 @@ The application integrates with Home Assistant through:
 
 ## 🤖 AI-Powered Features
 
-### Realtime Voice Agent
+### GPT Live Voice Agent
 
-After browser wake-word detection, raw audio streams to the Realtime Voice Agent. It answers general chat directly or calls tools for Home Assistant commands, ScheduledTasks, and TV automation.
+After browser wake-word detection, the server streams 24 kHz PCM16 audio to GPT Live. Its full-duplex voice model delegates work to the application, whose existing AI SDK loop selects tools and Specialist agents. Existing Home Assistant tools, confirmations, ScheduledTasks, memory, and TV jobs remain server-owned.
+
+Deploy `gpt-live-1` in Azure Foundry and set `AI_MODEL_LIVE` to its deployment name. The application uses the existing `AI_MODEL_ADVANCED` for delegated reasoning; no separate GPT Live backend deployment is required. Optionally set `GPT_LIVE_VOICE` (defaults to `marin`). The resource and API key use the existing Azure OpenAI settings. `AI_MODEL_LIVE_BACKEND`, `AI_MODEL_REALTIME`, and `AI_MODEL_TRANSCRIBE` are not used for browser voice. The independent native Realtime evaluation adapter retains its legacy settings.
+
+The internal `/api/realtime-chat` route is retained for browser compatibility. GPT Live has no authoritative turn-completed event: transcript display and speech completion use silence-based grouping. Client delegation waits for a delegation event and 800 ms without new transcript fragments before running a request. Browser-submitted wake-word text goes through the same AI SDK adapter. Delegation IDs correlate replies, repeated IDs are ignored, and requests run in order. The command mic stops after 30 seconds, while agent work, speech streaming, and queued playback continue to completion. Wake-word listening resumes after the reply finishes; Stop still silences it immediately. Muted sessions close only after work and speech settle.
 
 ### Proactive Reminders
 

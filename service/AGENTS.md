@@ -70,7 +70,7 @@ The service package is a Node.js/Express backend that provides:
 
 ### Realtime Voice Agent (`src/realtimeChat.ts`)
 
-Owns the post-wake-word voice turn, streams raw audio to Azure OpenAI Realtime, and selects direct Home Assistant tools or Specialist agents based on request meaning.
+Owns the post-wake-word GPT Live connection at `/openai/v1/live/sessions`. Streams 24 kHz PCM16 audio, uses client delegation and the existing AI SDK loop for reasoning and tools, and retains server-owned confirmations and Specialist jobs. Configure `AI_MODEL_LIVE` and `GPT_LIVE_VOICE`; reasoning uses `AI_MODEL_ADVANCED`. `liveDelegation.ts` waits for a delegation event plus 800 ms of transcript quiet, deduplicates IDs, and serializes requests. `liveVoiceAgent.ts` supplies browser voice history, persistent memory, and existing tools to the AI SDK loop. Transcript fragments are grouped for display using silence; they never directly trigger device actions. Delegated AI SDK steps and tool results retain the `realtime` trace category for dashboards and recorded evaluations; these traces do not establish audio playback completion.
 
 ### Home Assistant Integration (`src/ha.ts`)
 

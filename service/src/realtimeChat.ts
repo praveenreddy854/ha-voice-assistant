@@ -1,11 +1,14 @@
 import http from "http";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { LiveDelegationController, type VoiceHistoryItem } from "./liveDelegation";
+import { runLiveVoiceAgent, type LiveVoiceTool } from "./liveVoiceAgent";
 import WebSocket, { WebSocketServer } from "ws";
 import {
   AZURE_OPENAI_API_KEY,
   AZURE_OPENAI_RESOURCE_NAME,
-  AZURE_OPENAI_REALTIME_API_VERSION,
-  AI_MODEL_REALTIME,
-  AI_MODEL_TRANSCRIBE,
+  AI_MODEL_LIVE,
+  AI_MODEL_ADVANCED,
+  GPT_LIVE_VOICE,
   USER_ADDRESS,
 } from "./config";
 
@@ -13,8 +16,6 @@ const HOME_ASSISTANT_DEVICES = (process.env.HOME_ASSISTANT_DEVICES || "")
   .split(",")
   .map((d) => d.trim())
   .filter(Boolean);
-import { executeHACommand } from "./ha";
-import { runAgent } from "./agents/core";
 import { startTvAgentJob } from "./tvJobManager";
 import {
   ActiveRunDomain,
@@ -24,32 +25,21 @@ import {
   resumeActiveRun,
   startActiveRun,
 } from "./activeRunManager";
-import { getTracer } from "./tracing";
-import {
-  buildRealtimeInstructions,
-  buildRealtimeTurnInstructions,
-  needsActionConfirmation,
-  REALTIME_TOOLS,
-} from "./realtimeAgent";
-import { RealtimeTraceRecorder } from "./tracing/realtimeTrace";
 import {
   deleteMemory,
   formatMemoryContext,
-  getPromptMemoryContext,
   MemoryScopes,
   MemoryType,
-  recordMemoryInteraction,
   retrieveMemories,
   saveMemory,
   updateMemory,
   validateMemoryWrite,
 } from "./memory";
+import { executeHACommand } from "./ha";
+import { runAgent } from "./agents/core";
+import { buildRealtimeInstructions, buildRealtimeTurnInstructions, needsActionConfirmation, REALTIME_TOOLS } from "./realtimeAgent";
 
 type JsonRecord = Record<string, unknown>;
-
-// ============================================================================
-// Web Search via DuckDuckGo HTML
-// ============================================================================
 
 const MAX_CONTENT_LENGTH = 4000;
 
@@ -164,74 +154,28 @@ async function executeWebSearch(query: string): Promise<string> {
 }
 
 // ============================================================================
-// Persistent Azure Realtime Session
+// Azure GPT Live Session
 // ============================================================================
 
 let azureWs: WebSocket | null = null;
 let azureReady = false;
 let activeClientWs: WebSocket | null = null;
 let fullTranscript = "";
-let lastUserTranscript = "";
 let pendingFollowUp = false;
-let responseInFlight = false;
-let responseCreatePending = false;
-let queuedResponseInstructions: string | null = null;
-let queuedResponseTraceId: string | null = null;
-let queuedAssistantSpeechInstructions: string[] = [];
-let suppressCancelledResponseDone = false;
-let interruptedAssistantText: string | null = null;
-let readyCallbacks: Array<() => void> = [];
-let pendingAudioResponseTimer: NodeJS.Timeout | null = null;
-let pendingAudioResponseRequested = false;
-
-// Short conversational memory cap: at most 10 items and 5 minutes.
-const MEMORY_MAX_ITEMS = 10;
-const MEMORY_MAX_AGE_MS = 5 * 60 * 1000;
-const conversationItems: Array<{ id: string; createdAt: number }> = [];
-
-function pruneConversationMemory(): void {
-  const now = Date.now();
-  while (
-    conversationItems.length > 0 &&
-    now - conversationItems[0].createdAt > MEMORY_MAX_AGE_MS
-  ) {
-    const dropped = conversationItems.shift();
-    if (dropped) deleteAzureItem(dropped.id);
-  }
-  while (conversationItems.length > MEMORY_MAX_ITEMS) {
-    const dropped = conversationItems.shift();
-    if (dropped) deleteAzureItem(dropped.id);
-  }
+const voiceHistory: VoiceHistoryItem[] = [];
+interface VoiceDelivery {
+  client(payload: JsonRecord): void;
+  speak(content: string): void;
 }
-
-function deleteAzureItem(itemId: string): void {
-  if (!azureWs || azureWs.readyState !== WebSocket.OPEN) return;
-  azureWs.send(
-    JSON.stringify({ type: "conversation.item.delete", item_id: itemId })
-  );
-}
-let audioLog = {
-  chunkCount: 0,
-  approxBytes: 0,
-  lastLoggedAt: 0,
-};
-
-function parseArgs(raw: string): JsonRecord {
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed
-      : {};
-  } catch {
-    return {};
-  }
-}
+const voiceDelivery = new AsyncLocalStorage<VoiceDelivery>();
 
 function isClientActive(): boolean {
   return activeClientWs?.readyState === WebSocket.OPEN;
 }
 
 function sendClient(payload: JsonRecord): void {
+  const delivery = voiceDelivery.getStore();
+  if (delivery) { delivery.client(payload); return; }
   if (!isClientActive()) return;
   activeClientWs?.send(JSON.stringify(payload));
 }
@@ -241,114 +185,26 @@ function sendAzure(payload: JsonRecord): void {
   azureWs.send(JSON.stringify(payload));
 }
 
-function requestAssistantSpeech(instructions: string): void {
-  if (!azureReady || !isClientActive()) return;
-  fullTranscript = "";
-  if (responseInFlight || responseCreatePending) {
-    // Tool-result acknowledgements (for example "On it") must be
-    // spoken before a fast async run's completion announcement.
-    queuedAssistantSpeechInstructions.push(instructions);
-    return;
-  }
-  requestDefaultResponse(instructions, "queue", null);
-}
-
-type BusyResponseBehavior = "queue" | "skip";
-
-function requestDefaultResponse(
-  instructions?: string,
-  busyBehavior: BusyResponseBehavior = "queue",
-  traceTurnId: string | null = realtimeTrace.currentTurnId
-): boolean {
-  if (responseInFlight || responseCreatePending) {
-    if (busyBehavior === "queue") {
-      queuedResponseInstructions = instructions ?? "";
-      queuedResponseTraceId = traceTurnId;
+function appendLiveContext(type: string, content: string, delegationId: string | null = null, socket = azureWs): void {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  const sendChunk = (chunk: string) => socket.send(JSON.stringify({ type, delegation_id: delegationId, content: chunk }));
+  // A 400-byte chunk stays below the 500-token limit even with byte fallback.
+  let chunk = "";
+  for (const character of content) {
+    if (Buffer.byteLength(chunk + character, "utf8") > 400) {
+      sendChunk(chunk);
+      chunk = "";
     }
-    return false;
+    chunk += character;
   }
-
-  responseCreatePending = true;
-  realtimeTrace.responseRequested(traceTurnId, instructions);
-  sendAzure({
-    type: "response.create",
-    response: {
-      modalities: ["text", "audio"],
-      ...(instructions ? { instructions } : {}),
-    },
-  });
-  return true;
+  if (chunk) sendChunk(chunk);
 }
 
-function flushQueuedResponse(): void {
-  if (queuedResponseInstructions !== null) {
-    const instructions = queuedResponseInstructions;
-    const traceTurnId = queuedResponseTraceId;
-    queuedResponseInstructions = null;
-    queuedResponseTraceId = null;
-    requestDefaultResponse(instructions || undefined, "queue", traceTurnId);
-    return;
-  }
-  const assistantSpeech = queuedAssistantSpeechInstructions.shift();
-  if (assistantSpeech) {
-    requestDefaultResponse(assistantSpeech, "queue", null);
-  }
-}
-
-async function requestDefaultResponseWithMemory(
-  query: string,
-  busyBehavior: BusyResponseBehavior = "queue"
-): Promise<void> {
-  const traceTurnId = realtimeTrace.currentTurnId;
-  const span = getTracer().startSpan("realtime.memory.inject", {
-    attributes: {
-      "telemetry.kind": "realtime_memory",
-      "realtime.query": query,
-    },
-  });
-  const memoryContext = await getPromptMemoryContext({
-    query,
-    agentType: "realtime",
-  });
-  span.setAttribute("realtime.memory.context_present", Boolean(memoryContext));
-  span.setAttribute("realtime.memory.has_guard", /guard/i.test(memoryContext));
-  span.end();
-  const responseInstructions = buildRealtimeTurnInstructions({
-    memoryContext,
-    activeRun: getActiveRun(),
-    interruptedAssistantText,
-  });
-  const responseRequested = requestDefaultResponse(
-    responseInstructions || undefined,
-    busyBehavior,
-    traceTurnId
-  );
-  if (query.trim() && (responseRequested || busyBehavior === "queue")) {
-    interruptedAssistantText = null;
-  }
-}
-
-function resetAudioLog(): void {
-  audioLog = {
-    chunkCount: 0,
-    approxBytes: 0,
-    lastLoggedAt: 0,
-  };
-}
-
-function recordAudioAppend(base64Audio: string): void {
-  audioLog.chunkCount += 1;
-  audioLog.approxBytes += Math.floor((base64Audio.length * 3) / 4);
-
-  const now = Date.now();
-  if (now - audioLog.lastLoggedAt < 1000) return;
-
-  console.log(
-    `[RealtimeChat] Forwarding microphone audio chunks=${audioLog.chunkCount} approxBytes=${audioLog.approxBytes}`
-  );
-  audioLog.chunkCount = 0;
-  audioLog.approxBytes = 0;
-  audioLog.lastLoggedAt = now;
+function requestAssistantSpeech(instructions: string): void {
+  const delivery = voiceDelivery.getStore();
+  if (delivery) { delivery.speak(instructions); return; }
+  if (!azureReady || !isClientActive()) return;
+  appendLiveContext("session.commentary.append", instructions);
 }
 
 function activeRunLabel(domain: ActiveRunDomain): string {
@@ -405,15 +261,6 @@ function isHomeAssistantStateResult(data: unknown): boolean {
   return typeof record.entity_id === "string" && "state" in record;
 }
 
-function matchWakePhrase(
-  transcript: string
-): { trailingText: string } | null {
-  const match = transcript.toLocaleLowerCase().match(
-    /^\s*(?:hey[,\s]+|ok[,\s]+)?assistant\b[,.\s]*(.*)$/
-  );
-  return match ? { trailingText: match[1]?.trim() ?? "" } : null;
-}
-
 function stringList(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const result = value
@@ -465,47 +312,28 @@ function compactMemoryPayload(memory: {
   };
 }
 
-function clearPendingAudioResponse(): void {
-  if (pendingAudioResponseTimer) {
-    clearTimeout(pendingAudioResponseTimer);
-    pendingAudioResponseTimer = null;
-  }
-}
-
-function scheduleAudioResponseFallback(): void {
-  clearPendingAudioResponse();
-  pendingAudioResponseRequested = false;
-  pendingAudioResponseTimer = setTimeout(() => {
-    void requestAudioResponseWithMemory("");
-  }, 1500);
-}
-
-async function requestAudioResponseWithMemory(transcript: string): Promise<void> {
-  if (pendingAudioResponseRequested) return;
-  pendingAudioResponseRequested = true;
-  clearPendingAudioResponse();
-  await requestDefaultResponseWithMemory(
-    transcript,
-    suppressCancelledResponseDone ? "queue" : "skip"
-  );
-}
-
 function startRealtimeTvJob(prompt: string) {
+  const delivery = voiceDelivery.getStore();
+  const notify = (payload: JsonRecord) => delivery ? delivery.client(payload) : sendClient(payload);
+  const speak = (content: string) => delivery ? delivery.speak(content) : requestAssistantSpeech(content);
   const started = startTvAgentJob(prompt, {
     onComplete: (message) => {
-      sendClient({ type: "async_job_finished", domain: "tv", status: "completed" });
-      requestAssistantSpeech(completionSpeechInstructions({ prompt, message }));
+      notify({ type: "async_job_finished", domain: "tv", status: "completed" });
+      speak(completionSpeechInstructions({ prompt, message }));
     },
     onError: (message) => {
-      sendClient({ type: "async_job_finished", domain: "tv", status: "error" });
-      requestAssistantSpeech(failureSpeechInstructions("TV command", message));
+      notify({ type: "async_job_finished", domain: "tv", status: "error" });
+      speak(failureSpeechInstructions("TV command", message));
     },
   });
-  sendClient({ type: "async_job_started", domain: "tv", jobId: started.jobId });
+  notify({ type: "async_job_started", domain: "tv", jobId: started.jobId });
   return started;
 }
 
 function startRealtimeScheduledTaskJob(prompt: string) {
+  const delivery = voiceDelivery.getStore();
+  const notify = (payload: JsonRecord) => delivery ? delivery.client(payload) : sendClient(payload);
+  const speak = (content: string) => delivery ? delivery.speak(content) : requestAssistantSpeech(content);
   const started = startActiveRun({
     domain: "scheduled_task",
     prompt,
@@ -523,29 +351,29 @@ function startRealtimeScheduledTaskJob(prompt: string) {
       return result.message || "Done";
     },
     onComplete: (message, run) => {
-      sendClient({
+      notify({
         type: "async_job_finished",
         domain: "scheduled_task",
         status: "completed",
         jobId: run.id,
       });
-      requestAssistantSpeech(
+      speak(
         completionSpeechInstructions({ prompt: run.prompt, message })
       );
     },
     onError: (message, run) => {
-      sendClient({
+      notify({
         type: "async_job_finished",
         domain: "scheduled_task",
         status: "error",
         jobId: run.id,
       });
-      requestAssistantSpeech(
+      speak(
         failureSpeechInstructions("scheduled task command", message)
       );
     },
   });
-  sendClient({
+  notify({
     type: "async_job_started",
     domain: "scheduled_task",
     jobId: started.jobId,
@@ -554,6 +382,9 @@ function startRealtimeScheduledTaskJob(prompt: string) {
 }
 
 function startRealtimeHomeAssistantJob(command: string) {
+  const delivery = voiceDelivery.getStore();
+  const notify = (payload: JsonRecord) => delivery ? delivery.client(payload) : sendClient(payload);
+  const speak = (content: string) => delivery ? delivery.speak(content) : requestAssistantSpeech(content);
   const started = startActiveRun({
     domain: "home_assistant",
     prompt: command,
@@ -571,13 +402,13 @@ function startRealtimeHomeAssistantJob(command: string) {
       };
     },
     onComplete: (result, run) => {
-      sendClient({
+      notify({
         type: "async_job_finished",
         domain: "home_assistant",
         status: "completed",
         jobId: run.id,
       });
-      requestAssistantSpeech(
+      speak(
         completionSpeechInstructions({
           prompt: run.prompt,
           message: result.message,
@@ -586,18 +417,18 @@ function startRealtimeHomeAssistantJob(command: string) {
       );
     },
     onError: (message, run) => {
-      sendClient({
+      notify({
         type: "async_job_finished",
         domain: "home_assistant",
         status: "error",
         jobId: run.id,
       });
-      requestAssistantSpeech(
+      speak(
         failureSpeechInstructions("Home Assistant command", message)
       );
     },
   });
-  sendClient({
+  notify({
     type: "async_job_started",
     domain: "home_assistant",
     jobId: started.jobId,
@@ -608,14 +439,22 @@ function startRealtimeHomeAssistantJob(command: string) {
 function startReplacementRun(
   domain: ActiveRunDomain,
   prompt: string,
-  confirmed: boolean
+  confirmed: boolean,
+  replacedDomain: ActiveRunDomain
 ) {
+  if (
+    domain === "home_assistant" &&
+    needsActionConfirmation(prompt) &&
+    !confirmed
+  ) {
+    return null;
+  }
+  if (replacedDomain !== domain) {
+    cancelActiveRun(replacedDomain);
+  }
   if (domain === "tv") return startRealtimeTvJob(prompt);
   if (domain === "scheduled_task") {
     return startRealtimeScheduledTaskJob(prompt);
-  }
-  if (needsActionConfirmation(prompt) && !confirmed) {
-    return null;
   }
   return startRealtimeHomeAssistantJob(prompt);
 }
@@ -735,7 +574,8 @@ function controlActiveRun(
     const started = startReplacementRun(
       replacementDomain,
       prompt,
-      args.confirmed === true
+      args.confirmed === true,
+      activeRun.domain
     );
     if (!started) {
       return "confirmation_required: Ask the user to confirm this protected or bulk destructive replacement before executing it.";
@@ -902,487 +742,248 @@ async function executeRealtimeTool(
   }
 }
 
-const REALTIME_INSTRUCTIONS = buildRealtimeInstructions({
-  devices: HOME_ASSISTANT_DEVICES,
-  address: USER_ADDRESS,
-});
-const realtimeTrace = new RealtimeTraceRecorder({
-  model: AI_MODEL_REALTIME || "",
-  instructions: REALTIME_INSTRUCTIONS,
-});
+const REALTIME_INSTRUCTIONS = buildRealtimeInstructions({ devices: HOME_ASSISTANT_DEVICES, address: USER_ADDRESS });
+
+const LIVE_INSTRUCTIONS = `You are a concise English-speaking smart-home voice assistant.
+Listen and speak naturally, adapting when the user interrupts. A bare wake phrase means wait silently for the next request.
+Delegate device actions, state queries, scheduling, TV control, memory, web searches, and complex reasoning to the backend.
+Never claim an action succeeded until its backend result confirms success. Ask for any required clarification or confirmation.
+After an accepted command say "On it." once, and after routine success say "Done." Questions and failures need a clear answer.
+Interrupting speech does not cancel a running action. Delegate explicit requests to pause, resume, change, or cancel work.
+Delegate answers to a pending clarification or confirmation to the application, including short answers such as yes or no.
+Only the application can accept commands, confirm actions, or report their outcome. Do not acknowledge acceptance before its result arrives.
+User and assistant transcript fragments can overlap; do not interpret each fragment as a completed turn.`;
 
 function connectAzure(onReady: () => void): void {
-  if (azureWs && azureReady && azureWs.readyState === WebSocket.OPEN) {
-    onReady();
-    return;
-  }
-
-  if (
-    azureWs &&
-    !azureReady &&
-    (azureWs.readyState === WebSocket.OPEN ||
-      azureWs.readyState === WebSocket.CONNECTING)
-  ) {
-    readyCallbacks.push(onReady);
-    return;
-  }
-
-  // Close stale connection if any
-  if (azureWs) {
-    realtimeTrace.close("Stale Azure Realtime connection replaced");
-    azureWs.removeAllListeners();
-    if (azureWs.readyState === WebSocket.OPEN || azureWs.readyState === WebSocket.CONNECTING) {
-      azureWs.close();
-    }
-    azureWs = null;
-    azureReady = false;
-  }
-  readyCallbacks = [onReady];
-
-  const azureUrl =
-    `wss://${AZURE_OPENAI_RESOURCE_NAME}.openai.azure.com/openai/realtime` +
-    `?api-version=${AZURE_OPENAI_REALTIME_API_VERSION}` +
-    `&deployment=${AI_MODEL_REALTIME}`;
-
-  const ws = new WebSocket(azureUrl, {
-    headers: { "api-key": AZURE_OPENAI_API_KEY! },
-  });
+  const ws = new WebSocket(
+    `wss://${AZURE_OPENAI_RESOURCE_NAME}.openai.azure.com/openai/v1/live/sessions`,
+    { headers: { "api-key": AZURE_OPENAI_API_KEY! } }
+  );
   azureWs = ws;
+  azureReady = false;
+  let speechTimer: NodeJS.Timeout | undefined;
+  let closeTimer: NodeJS.Timeout | undefined;
+  let inputMuted = true;
+  let closing = false;
+  let userDisplayText = "";
+  let userTranscriptTimer: NodeJS.Timeout | undefined;
+  let latestUsage: unknown;
+  let speechActive = false;
+  const announcedDelegations = new Set<string>();
 
-  ws.on("open", () => {
-    console.log("[RealtimeChat] Connected to Azure Realtime API");
-
-    // Configure the session as the post-wake-word voice agent.
-    ws.send(JSON.stringify({
-      type: "session.update",
-      session: {
-        modalities: ["text", "audio"],
-        voice: "alloy",
-        instructions: REALTIME_INSTRUCTIONS,
-        input_audio_format: "pcm16",
-        output_audio_format: "pcm16",
-        input_audio_transcription: {
-          model: AI_MODEL_TRANSCRIBE,
+  const current = () => azureWs === ws;
+  const send = (payload: JsonRecord) => {
+    if (current() && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
+  };
+  const closeIfIdle = () => {
+    if (closeTimer) clearTimeout(closeTimer);
+    if (!inputMuted) return;
+    closeTimer = setTimeout(() => {
+      if (!current()) return;
+      if (speechActive || delegations.busy || getActiveRun()?.status === "running") { closeIfIdle(); return; }
+      closing = true;
+      delegations.dispose();
+      send({ type: "session.close" });
+    }, 5000);
+  };
+  const scopes = new Map<string | null, { pending: boolean; speech: string[] }>();
+  const append = (content: string, id: string | null, quiet = false) => {
+    if (!current() || closing || !isClientActive()) return;
+    appendLiveContext(quiet ? "session.thinking.append" : "session.commentary.append", content, id, ws);
+  };
+  const delegations = new LiveDelegationController({
+    history: voiceHistory,
+    onIdle: closeIfIdle,
+    reply: (content, id, quiet) => {
+      append(content, id, quiet);
+      if (current()) sendClient({ type: "assistant_work_finished", delegationId: id });
+      const scope = scopes.get(id);
+      if (scope) {
+        scope.pending = false;
+        for (const content of scope.speech.splice(0)) append(content, id);
+      }
+    },
+    run: (request) => {
+      const scope = { pending: true, speech: [] as string[] };
+      scopes.set(request.delegationId, scope);
+      const delivery: VoiceDelivery = {
+        client: (payload) => {
+          if (current() && !closing && activeClientWs?.readyState === WebSocket.OPEN) activeClientWs.send(JSON.stringify(payload));
         },
-        tools: REALTIME_TOOLS,
-      },
-    }));
-
+        speak: (content) => {
+          if (scope.pending) scope.speech.push(content);
+          else append(content, request.delegationId);
+        },
+      };
+      const activeRun = getActiveRun();
+      const runtime = buildRealtimeTurnInstructions({ activeRun });
+      return voiceDelivery.run(delivery, () => runLiveVoiceAgent(request, `${REALTIME_INSTRUCTIONS}\n${runtime}`, REALTIME_TOOLS as LiveVoiceTool[], executeRealtimeTool));
+    },
   });
-
+  ws.on("user_text", (text: string) => {
+    if (closing) return;
+    sendClient({ type: "assistant_work_started", delegationId: null });
+    appendLiveContext("session.thinking.append", `The user submitted this request to the application: ${text}. The application is handling it; wait for its result.`, null, ws);
+    delegations.submitText(text);
+  });
+  const speechActivity = () => {
+    speechActive = true;
+    if (closeTimer) clearTimeout(closeTimer);
+    if (speechTimer) clearTimeout(speechTimer);
+    // GPT Live has no speech-done event. This is a UI grouping heuristic only.
+    speechTimer = setTimeout(() => {
+      if (!current()) return;
+      speechActive = false;
+      speechTimer = undefined;
+      sendClient({ type: "response_done", fullText: fullTranscript, followupExpected: pendingFollowUp });
+      fullTranscript = "";
+      closeIfIdle();
+    }, 1200);
+  };
+  ws.on("open", () => send({
+    type: "session.start",
+    session: {
+      model: AI_MODEL_LIVE,
+      instructions: LIVE_INSTRUCTIONS,
+      audio: { output: { voice: GPT_LIVE_VOICE } },
+      delegation: { type: "client" },
+    },
+  }));
   ws.on("message", async (data) => {
+    if (!current()) return;
     try {
       const event = JSON.parse(data.toString());
-      realtimeTrace.observe(event);
-
       switch (event.type) {
-        case "session.created":
-          console.log("[RealtimeChat] Azure session created");
-          break;
-
-        case "session.updated":
-          console.log("[RealtimeChat] Azure session configured");
+        case "session.started":
           azureReady = true;
-          for (const cb of readyCallbacks.splice(0)) {
-            cb();
-          }
+          onReady();
           break;
-
-        case "response.created":
-          responseCreatePending = false;
-          responseInFlight = true;
+        case "session.output_audio.delta":
+          sendClient({ type: "audio_delta", audio: event.delta, startMs: event.start_ms, endMs: event.end_ms });
+          speechActivity();
           break;
-
-        case "input_audio_buffer.speech_started":
-          console.log("[RealtimeChat] Azure speech started");
-          if (responseInFlight) {
-            realtimeTrace.interrupt("User interrupted the in-flight spoken response");
-            console.log("[RealtimeChat] Barge-in: cancelling in-flight response");
-            if (fullTranscript.trim()) {
-              interruptedAssistantText = fullTranscript.trim();
-            }
-            queuedAssistantSpeechInstructions = [];
-            suppressCancelledResponseDone = true;
-            sendAzure({ type: "response.cancel" });
-            sendClient({ type: "assistant_interrupted" });
-          }
-          sendClient({ type: "speech_started" });
-          break;
-
-        case "input_audio_buffer.speech_stopped":
-          console.log("[RealtimeChat] Azure speech stopped");
-          sendClient({ type: "speech_stopped" });
-          break;
-
-        case "input_audio_buffer.committed":
-          console.log("[RealtimeChat] Azure audio buffer committed");
-          resetAudioLog();
-          pendingFollowUp = false;
-          scheduleAudioResponseFallback();
-          break;
-
-        case "conversation.item.created":
-          if (event.item?.id) {
-            conversationItems.push({
-              id: event.item.id,
-              createdAt: Date.now(),
-            });
-            pruneConversationMemory();
-          }
-          break;
-
-        case "conversation.item.deleted":
-          if (event.item_id) {
-            const idx = conversationItems.findIndex(
-              (i) => i.id === event.item_id
-            );
-            if (idx >= 0) conversationItems.splice(idx, 1);
-          }
-          break;
-
-        case "input_audio_buffer.cleared":
-          console.log("[RealtimeChat] Azure audio buffer cleared");
-          resetAudioLog();
-          break;
-
-        case "response.audio.delta":
-          sendClient({
-            type: "audio_delta",
-            audio: event.delta,
-          });
-          break;
-
-        case "response.audio_transcript.delta":
+        case "session.output_transcript.delta":
           fullTranscript += event.delta;
-          sendClient({
-            type: "transcript_delta",
-            text: event.delta,
-          });
+          sendClient({ type: "transcript_delta", text: event.delta });
+          speechActivity();
           break;
-
-        case "response.text.delta":
-          fullTranscript += event.delta;
-          sendClient({
-            type: "transcript_delta",
-            text: event.delta,
-          });
+        case "session.input_transcript.delta":
+          delegations.appendTranscript(String(event.delta || ""));
+          userDisplayText += event.delta;
+          if (userTranscriptTimer) clearTimeout(userTranscriptTimer);
+          // Display grouping only: fragments never trigger household actions.
+          userTranscriptTimer = setTimeout(() => {
+            if (current()) sendClient({ type: "user_transcript", text: userDisplayText });
+            userDisplayText = "";
+          }, 800);
           break;
-
-        case "conversation.item.input_audio_transcription.completed":
-          console.log(
-            `[RealtimeChat] Azure transcription completed chars=${String(event.transcript || "").length}`
-          );
-          if (event.transcript) {
-            const transcript = String(event.transcript);
-            const activeRun = getActiveRun();
-            const wakeMatch = matchWakePhrase(transcript);
-
-            if (wakeMatch) {
-              const pausedRun = activeRun ? pauseActiveRun() : undefined;
-              console.log(
-                pausedRun
-                  ? `[RealtimeChat] Wake phrase paused active ${pausedRun.domain} job ${pausedRun.id}`
-                  : "[RealtimeChat] Wake phrase paused the active spoken response"
-              );
-              if (fullTranscript.trim()) {
-                interruptedAssistantText = fullTranscript.trim();
-              }
-              clearPendingAudioResponse();
-              queuedAssistantSpeechInstructions = [];
-              pendingAudioResponseRequested = true;
-              pendingFollowUp = true;
-              lastUserTranscript = "";
-              fullTranscript = "";
-              if (responseInFlight) {
-                suppressCancelledResponseDone = true;
-                sendAzure({ type: "response.cancel" });
-              } else {
-                responseCreatePending = false;
-              }
-              sendClient({
-                type: "agent_run_paused",
-                domain: pausedRun?.domain ?? "realtime",
-                jobId: pausedRun?.id,
-              });
-              sendClient({ type: "user_transcript", text: transcript });
-
-              if (wakeMatch.trailingText) {
-                lastUserTranscript = wakeMatch.trailingText;
-                pendingAudioResponseRequested = true;
-                void requestDefaultResponseWithMemory(
-                  wakeMatch.trailingText,
-                  "queue"
-                );
-              } else {
-                realtimeTrace.finishWakePhrase(String(event.item_id || ""));
-              }
-              break;
+        case "session.delegation.created":
+          if (event.delegation?.target === "client" && typeof event.delegation.id === "string") {
+            const id = event.delegation.id;
+            if (!announcedDelegations.has(id)) {
+              announcedDelegations.add(id);
+              sendClient({ type: "assistant_work_started", delegationId: id });
             }
-
-            lastUserTranscript = transcript;
-            void requestAudioResponseWithMemory(transcript);
-            sendClient({
-              type: "user_transcript",
-              text: transcript,
-            });
+            delegations.delegate(id);
           }
           break;
-
-        case "response.done": {
-          console.log("[RealtimeChat] Azure response done");
-          responseInFlight = false;
-          responseCreatePending = false;
-          if (suppressCancelledResponseDone) {
-            suppressCancelledResponseDone = false;
-            fullTranscript = "";
-            flushQueuedResponse();
-            break;
-          }
-          // Skip function-call-only responses — the next response.create that
-          // follows the tool result will produce the actual user-facing answer.
-          const hasFunctionCall = event.response?.output?.some(
-            (o: any) => o.type === "function_call"
-          );
-          if (hasFunctionCall) {
-            flushQueuedResponse();
-            break;
-          }
-          const hasOutput = event.response?.output?.some(
-            (o: any) => o.type === "message"
-          );
-          const followupExpected = pendingFollowUp;
-          pendingFollowUp = false;
-          if (hasOutput && fullTranscript.trim() && lastUserTranscript.trim()) {
-            recordMemoryInteraction({
-              agentType: "realtime",
-              userText: lastUserTranscript,
-              assistantText: fullTranscript,
-            });
-            lastUserTranscript = "";
-          }
-          sendClient({
-            type: "response_done",
-            fullText: fullTranscript,
-            followupExpected,
-            hasOutput: hasOutput || fullTranscript.length > 0,
-          });
-          fullTranscript = "";
-          flushQueuedResponse();
+        case "session.usage.updated":
+          latestUsage = event.usage;
           break;
-        }
-
-        case "response.function_call_arguments.done": {
-          const callId = event.call_id;
-          const fnName = event.name;
-          console.log(`[RealtimeChat] Function call: ${fnName}`, event.arguments);
-
-          const toolTrace = realtimeTrace.startTool(event);
-          let toolOutput: string;
-          try {
-            toolOutput = await executeRealtimeTool(
-              fnName,
-              parseArgs(event.arguments)
-            );
-            realtimeTrace.finishTool(toolTrace, toolOutput);
-          } catch (error) {
-            realtimeTrace.finishTool(toolTrace, JSON.stringify({
-              error: error instanceof Error ? error.message : String(error),
-            }), error);
-            throw error;
-          }
-
-          ws.send(JSON.stringify({
-            type: "conversation.item.create",
-            item: {
-              type: "function_call_output",
-              call_id: callId,
-              output: toolOutput,
-            },
-          }));
-
-          requestDefaultResponse(undefined, "queue", toolTrace?.turnId ?? null);
+        case "session.closed":
+          latestUsage = event.usage;
+          console.log("[GPT Live] Session closed", event.reason, latestUsage);
+          ws.close();
           break;
-        }
-
-        case "error": {
-          const errMessage = event.error?.message || "Azure Realtime API error";
-          console.error("[RealtimeChat] Azure error:", event.error);
-          // Swallow benign errors from our defensive cleanup on reconnect —
-          // it's expected that there may be no in-flight response or audio
-          // buffer to clear when the session has been idle.
-          if (
-            /no active response/i.test(errMessage) ||
-            /buffer is empty/i.test(errMessage) ||
-            /buffer.*empty/i.test(errMessage)
-          ) {
-            responseCreatePending = false;
-            break;
-          }
-          if (/active response in progress/i.test(errMessage)) {
-            responseCreatePending = false;
-            responseInFlight = true;
-            break;
-          }
-          responseCreatePending = false;
-          sendClient({
-            type: "error",
-            message: errMessage,
-          });
+        case "error":
+          sendClient({ type: "error", message: event.error?.message || "GPT Live API error" });
           break;
-        }
       }
-    } catch (err) {
-      realtimeTrace.close(`Realtime event handling failed: ${err instanceof Error ? err.message : String(err)}`);
-      console.error("[RealtimeChat] Error parsing Azure message:", err);
+    } catch (error) {
+      sendClient({ type: "error", message: error instanceof Error ? error.message : "GPT Live event failed" });
     }
   });
-
-  ws.on("error", (err) => {
-    realtimeTrace.close(`Azure connection error: ${err.message}`);
-    console.error("[RealtimeChat] Azure WS error:", err.message);
-    azureReady = false;
-    responseCreatePending = false;
-    queuedResponseInstructions = null;
-    queuedResponseTraceId = null;
-    queuedAssistantSpeechInstructions = [];
-    readyCallbacks = [];
-    resetAudioLog();
-    sendClient({
-      type: "error",
-      message: `Azure connection error: ${err.message}`,
-    });
+  ws.on("error", (error) => {
+    if (current()) sendClient({ type: "error", message: `GPT Live connection error: ${error.message}` });
   });
-
   ws.on("close", () => {
-    realtimeTrace.close("Azure Realtime connection closed");
-    console.log("[RealtimeChat] Azure WS closed");
-    azureWs = null;
+    delegations.dispose();
+    if (speechTimer) clearTimeout(speechTimer);
+    if (userTranscriptTimer) clearTimeout(userTranscriptTimer);
+    if (closeTimer) clearTimeout(closeTimer);
+    if (!current()) return;
     azureReady = false;
-    responseCreatePending = false;
-    queuedResponseInstructions = null;
-    queuedResponseTraceId = null;
-    queuedAssistantSpeechInstructions = [];
-    readyCallbacks = [];
-    resetAudioLog();
-    conversationItems.length = 0;
+    azureWs = null;
+    sendClient({ type: "session_ended" });
+  });
+  // The app's command microphone has a bounded listening window.
+  ws.on("client_disconnected", () => { closing = true; delegations.dispose(); });
+  ws.on("input_end", () => {
+    inputMuted = true;
+    send({ type: "session.input_audio.mute" });
+    closeIfIdle();
+  });
+  ws.on("input_start", () => {
+    inputMuted = false;
+    if (closeTimer) clearTimeout(closeTimer);
+    send({ type: "session.input_audio.unmute" });
   });
 }
 
-// ============================================================================
-// Client WebSocket Handler
-// ============================================================================
-
 export function setupRealtimeChatProxy(server: http.Server): void {
-  if (!AI_MODEL_REALTIME) {
-    console.log("[RealtimeChat] AI_MODEL_REALTIME not set, skipping WebSocket setup");
-    return;
-  }
-
   const wss = new WebSocketServer({ noServer: true });
-
   server.on("upgrade", (req, socket, head) => {
-    if (req.url?.startsWith("/api/realtime-chat")) {
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        wss.emit("connection", ws, req);
-      });
+    if (req.url?.split("?")[0] === "/api/realtime-chat") {
+      wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
     }
   });
-
   wss.on("connection", (clientWs) => {
-    console.log("[RealtimeChat] Client connected");
-    if (activeClientWs && activeClientWs !== clientWs) realtimeTrace.close("Realtime client replaced");
+    if (activeClientWs && activeClientWs !== clientWs) activeClientWs.close();
+    if (azureWs) { azureWs.emit("client_disconnected"); azureWs.close(); }
     activeClientWs = clientWs;
-
-    // Discard any stale state left over from a prior client on the same Azure
-    // session: a response may still be streaming, and the input buffer may
-    // hold unflushed audio. Without this, the new turn inherits the old turn's
-    // tail and "responds" before the user even speaks.
-    if (azureWs && azureReady) {
-      sendAzure({ type: "response.cancel" });
-      sendAzure({ type: "input_audio_buffer.clear" });
-      fullTranscript = "";
-      responseInFlight = false;
-      responseCreatePending = false;
-      queuedResponseInstructions = null;
-      queuedResponseTraceId = null;
-      queuedAssistantSpeechInstructions = [];
+    fullTranscript = "";
+    pendingFollowUp = false;
+    if (!AI_MODEL_ADVANCED || !AZURE_OPENAI_RESOURCE_NAME || !AZURE_OPENAI_API_KEY) {
+      sendClient({ type: "error", message: "Configure AI_MODEL_ADVANCED, AZURE_OPENAI_RESOURCE_NAME, and AZURE_OPENAI_API_KEY for GPT Live." });
+      clientWs.close();
+      return;
     }
-
-    // Connect to Azure (reuses existing session if alive)
-    connectAzure(() => {
-      clientWs.send(JSON.stringify({ type: "session_ready" }));
-    });
-
+    connectAzure(() => sendClient({ type: "session_ready" }));
     clientWs.on("message", async (data) => {
+      if (activeClientWs !== clientWs) return;
       try {
         const msg = JSON.parse(data.toString());
-
-        if (msg.type === "user_text" && msg.text && azureWs && azureReady) {
-          realtimeTrace.beginText(String(msg.text));
-          fullTranscript = "";
-          lastUserTranscript = String(msg.text);
-
-          // Send text as a conversation item
-          azureWs.send(JSON.stringify({
-            type: "conversation.item.create",
-            item: {
-              type: "message",
-              role: "user",
-              content: [{ type: "input_text", text: msg.text }],
-            },
-          }));
-
-          // Trigger response generation
-          await requestDefaultResponseWithMemory(String(msg.text));
-        } else if (msg.type === "input_audio" && msg.audio && azureWs && azureReady) {
-          recordAudioAppend(msg.audio);
-          azureWs.send(JSON.stringify({
-            type: "input_audio_buffer.append",
-            audio: msg.audio,
-          }));
-        } else if (msg.type === "commit_audio" && azureWs && azureReady) {
-          console.log("[RealtimeChat] Client requested audio commit");
-          azureWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-        } else if (msg.type === "force_followup") {
-          // Client opened the mic for a bare wake-word — keep it open after
-          // the next response no matter what the model decides.
+        if (!azureReady || !azureWs) return;
+        if (msg.type === "input_audio" && msg.audio) {
+          sendAzure({ type: "session.input_audio.append", audio: msg.audio });
+        } else if (msg.type === "input_end") {
+          azureWs.emit("input_end");
+        } else if (msg.type === "input_start" || msg.type === "force_followup") {
           pendingFollowUp = true;
+          azureWs.emit("input_start");
+        } else if (msg.type === "user_text" && msg.text) {
+          azureWs.emit("user_text", String(msg.text));
         } else if (msg.type === "pause_active_agent") {
-          const pausedRun = pauseActiveRun();
-          if (pausedRun) {
-            console.log(
-              `[RealtimeChat] Client wake phrase paused active ${pausedRun.domain} job ${pausedRun.id}`
-            );
-            clientWs.send(JSON.stringify({
-              type: "agent_run_paused",
-              domain: pausedRun.domain,
-              jobId: pausedRun.id,
-            }));
+          const run = pauseActiveRun();
+          if (run) {
+            sendClient({ type: "agent_run_paused", domain: run.domain, jobId: run.id });
+            appendLiveContext("session.thinking.append", `The user paused ${run.domain} job ${run.id}. Wait for their follow-up decision.`);
           }
         }
-      } catch (err) {
-        realtimeTrace.close(`Realtime client message failed: ${err instanceof Error ? err.message : String(err)}`);
-        console.error("[RealtimeChat] Error parsing client message:", err);
+      } catch (error) {
+        sendClient({ type: "error", message: error instanceof Error ? error.message : "Invalid client message" });
       }
     });
-
-    clientWs.on("close", () => {
-      console.log("[RealtimeChat] Client disconnected");
-      if (activeClientWs === clientWs) {
-        realtimeTrace.close("Realtime client disconnected before turn completion");
-        activeClientWs = null;
-      }
-      // Keep Azure session alive for next client connection
-    });
-
-    clientWs.on("error", (err) => {
-      console.error("[RealtimeChat] Client WS error:", err.message);
-      if (activeClientWs === clientWs) {
-        realtimeTrace.close(`Realtime client error: ${err.message}`);
-        activeClientWs = null;
-      }
-    });
+    const disconnect = () => {
+      if (activeClientWs !== clientWs) return;
+      azureWs?.emit("client_disconnected");
+      activeClientWs = null;
+      sendAzure({ type: "session.close" });
+      const closing = azureWs;
+      const timer = setTimeout(() => closing?.terminate(), 2000);
+      timer.unref();
+    };
+    clientWs.on("close", disconnect);
+    clientWs.on("error", disconnect);
   });
-
-  console.log("[RealtimeChat] WebSocket proxy ready on /api/realtime-chat");
 }

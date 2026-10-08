@@ -36,7 +36,11 @@ Stopping a recognizer waits at most one second for the browser's `end` event.
 Generation checks prevent late callbacks, socket events, and microphone streams
 from restarting a stopped or replaced interaction.
 
-The command microphone retains its 30-second cap. A failed socket or a 15-second
+The command microphone retains its 30-second cap. Expiry stops audio input but
+keeps the connection open while delegated reasoning, Specialist jobs, and the
+spoken reply finish. The browser waits for queued playback before returning to
+wake-word detection; the explicit Stop button still silences playback immediately.
+A failed socket or a 15-second
 session-setup timeout resolves the current turn so wake-word detection can resume.
 Only wake-word recognition is renewed during idle time; the command audio service
 is not kept streaming.
