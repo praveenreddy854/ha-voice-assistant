@@ -55,3 +55,26 @@ Automated coverage simulates eight hours of idle recognition, permission/network
 failures, missing browser events, Stop races, late media streams, and dropped
 sockets. Playwright covers the real React UI with mocked speech and backend APIs.
 These checks do not substitute for a physical microphone/TV soak test.
+
+## Speech playback and interruption
+
+A command captured alongside the wake phrase opens the command microphone before
+submitting the captured text. The microphone remains available during speech
+playback within the original 30-second window. Expiry stops input while accepted
+work and the spoken reply continue.
+
+The GPT Live proxy sends the browser `response_done` after 1.2 seconds without
+new output audio or transcript fragments. This is a grouping heuristic, not an
+authoritative model or speech-completion event. The browser waits for buffered
+audio to drain before completing that response and ignores completion callbacks
+invalidated by a newer response, interruption, or Stop action.
+
+The explicit Stop action stops buffered audio immediately, including after the
+microphone deadline. Browser handling of `assistant_interrupted` and
+`speech_started` notifications also clears buffered playback, but the current GPT
+Live proxy does not forward those legacy notifications. Client unit tests of
+those handlers do not establish end-to-end provider interruption behavior.
+
+Automated tests use synthetic audio and mocked recognition/proxy events. Physical
+microphone recognition, echo cancellation, and GPT Live interruption behavior
+still need verification with the actual microphone and speakers.
