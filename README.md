@@ -177,6 +177,14 @@ Deploy `gpt-live-1` in Azure Foundry and set `AI_MODEL_LIVE` to its deployment n
 
 The internal `/api/realtime-chat` route is retained for browser compatibility. GPT Live has no authoritative turn-completed event: transcript display and speech completion use silence-based grouping. Client delegation waits for a delegation event and 800 ms without new transcript fragments before running a request. Browser-submitted wake-word text goes through the same AI SDK adapter. Delegation IDs correlate replies, repeated IDs are ignored, and requests run in order. The command mic stops after 30 seconds, while agent work, speech streaming, and queued playback continue to completion. Wake-word listening resumes after the reply finishes; Stop still silences it immediately. Muted sessions close only after work and speech settle.
 
+### Apple Shortcut
+
+Apple devices on the home network can invoke the same assistant capabilities
+through the `Ask Assistant` personal Shortcut. The checked-in workflow contains
+a local-URL placeholder; local packaging injects that URL and produces an
+ignored, signed `.shortcut` file. See
+[`docs/apple-shortcuts.md`](docs/apple-shortcuts.md) for setup and safety notes.
+
 ### Proactive Reminders
 
 When Azure Cosmos DB logging is enabled, a scheduled job reads the captured
