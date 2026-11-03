@@ -31,5 +31,6 @@ service/models/
 *.key
 *.pem
 
-# Grphify
+# Graphify
+/graphify-out/
 service/graphify-out
