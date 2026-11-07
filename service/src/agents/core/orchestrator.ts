@@ -80,6 +80,7 @@ function getOrCreateLoop(def: AgentDefinition): AgentLoop {
           description: t.function.description,
           parameters: t.function.parameters as Record<string, unknown>,
           inputSchema: t.function.inputSchema,
+          strict: t.function.strict,
         },
       };
 

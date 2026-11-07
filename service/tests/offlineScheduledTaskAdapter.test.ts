@@ -18,7 +18,7 @@ process.env.AZURE_COSMOS_CONTAINER = "test";
 
 interface RequestWithTools extends ModelRequest {
   model: string;
-  tools: Array<{ name: string; description: string; parameters: { properties: Record<string, unknown> } }>;
+  tools: Array<{ name: string; description: string; strict?: boolean; parameters: { properties: Record<string, unknown>; required?: string[] } }>;
 }
 interface Call {
   name: string;
@@ -53,6 +53,28 @@ const complete = (message = "Scheduled.", success = true): Call => ({ name: "com
 const save = (): Call => ({ name: "save_scheduled_task", args: fixture("announcement-at-time").initial.expected.mutations[0].args });
 const loadAdapter = async (model?: string) => (await import("../src/evals/scheduled-task/adapter")).createScheduledTaskAdapter(model);
 
+for (const id of ["announcement-at-time", "announcement-relative-dst", "update-preserve-fields"]) {
+  test(`Responses requests preserve omitted scheduling fields: ${id}`, async t => {
+    const scenario = fixture(id);
+    const calls: Call[] = scenario.initial.expected.mutations.map(call => ({ name: call.toolName, args: call.args }));
+    if (scenario.initial.expected.requiresList) calls.unshift({ name: "list_scheduled_tasks", args: {} });
+    script(t, [...calls, complete()], request => {
+      const save = request.tools.find(tool => tool.name === "save_scheduled_task")!;
+      const update = request.tools.find(tool => tool.name === "update_scheduled_task")!;
+      // Missing strict=false makes Responses require all properties, even though
+      // Zod marks them optional: the observed production failure mechanism.
+      assert.equal(save.strict, false);
+      assert.equal(update.strict, false);
+      assert.ok(!save.parameters.required?.includes("recurringPattern"));
+      assert.ok(!save.parameters.required?.includes("description"));
+      const patch = update.parameters.properties.patch as { required?: string[] };
+      assert.equal(patch.required?.length ?? 0, 0);
+    });
+    const result = await (await loadAdapter()).execute(scenario, new AbortController().signal);
+    assert.equal(result.taskAssertion, true, "Exact storage and mutation constraints must still be enforced");
+  });
+}
+
 test("ScheduledTask adapter uses production loop, schemas and rendered prompt without any live execution or setup I/O", async (t) => {
   const cosmos = t.mock.method(Databases.prototype, "createIfNotExists", async () => {
     assert.fail("No live storage or memory initialization is permitted");
@@ -77,6 +99,7 @@ test("ScheduledTask adapter uses production loop, schemas and rendered prompt wi
     for (const contract of contracts) {
       const sent = request.tools.find(tool => tool.name === contract.function.name)!;
       assert.equal(sent.description, contract.function.description);
+      assert.equal(sent.strict, contract.function.strict);
       assert.deepEqual(sent.parameters.properties, contract.function.inputSchema!.toJSONSchema().properties);
     }
     if (step === 1) assert.match(JSON.stringify(request), /eval-task-1/);

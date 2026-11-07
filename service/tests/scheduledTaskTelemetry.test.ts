@@ -97,6 +97,10 @@ test("SDK auto-execution records one result and preserves fresh model usage end 
   let calls = 0;
   t.mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
     readModelRequest(url, init);
+    const request = JSON.parse(String(init?.body)) as { tools: Array<{ name: string; strict?: boolean }> };
+    for (const definition of tools.SCHEDULED_TASK_TOOLS) {
+      assert.equal(request.tools.find(tool => tool.name === definition.function.name)?.strict, false);
+    }
     return ++calls === 1
       ? toolResponse("save_scheduled_task", input(), "fresh-save")
       : toolResponse("complete_task", { success: true, message: "Saved synthetic task" }, "fresh-complete");

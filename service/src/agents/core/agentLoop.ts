@@ -49,6 +49,8 @@ export interface ToolDefinition {
     parameters: Record<string, unknown>;
     /** Zod schema (preferred). When present, used instead of `parameters`. */
     inputSchema?: z.ZodType;
+    /** Explicit provider strictness; false preserves optional tool fields. */
+    strict?: boolean;
   };
   /**
    * If provided, the tool auto-executes inside the generateText loop.
@@ -224,6 +226,7 @@ export function createAgentLoop(
       aiTools[def.function.name] = tool({
         description: desc,
         inputSchema: schema as any,
+        strict: def.function.strict,
         execute: async (args: any, options: AgentToolExecutionOptions) =>
           executeFn(args, options),
       });
@@ -231,6 +234,7 @@ export function createAgentLoop(
       aiTools[def.function.name] = tool({
         description: desc,
         inputSchema: schema as any,
+        strict: def.function.strict,
       });
     }
   }

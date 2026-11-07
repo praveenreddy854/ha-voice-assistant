@@ -88,6 +88,7 @@ function newTask(input: SaveScheduledTaskInput, now: string): ScheduledTask {
 
 function scenario(options: {
   id: string;
+  version?: string;
   task: string;
   request: string;
   expectations: string;
@@ -99,7 +100,7 @@ function scenario(options: {
 }): Scenario<ScheduledTaskState> {
   const now = options.now || SCHEDULED_TASK_REFERENCE_NOW;
   return {
-    id: options.id, version: "1", request: options.request,
+    id: options.id, version: options.version || "1", request: options.request,
     context: {
       task: options.task, target: "scheduled_tasks", app: "ScheduledTask",
       startingState: options.storage === "write_failure" ? "storage_write_failure" : options.id,
@@ -182,12 +183,15 @@ export const scheduledTaskScenarios: Scenario<ScheduledTaskState>[] = [
     },
   }),
   scenario({
-    id: "announcement-relative-dst", task: "create_relative_announcement", now: relativeNow,
+    id: "announcement-relative-dst", version: "2", task: "create_relative_announcement", now: relativeNow,
     request: "Remind me in ten minutes with the exact announcement title 'Check the oven'. Use task category, medium priority, no recurrence, and no description.",
     expectations: "Ten minutes from 01:55 EST crosses the spring DST jump: save 03:05 EDT, March 8 (07:05Z), not 03:05 EST or tomorrow. Keep the clock fixed across model turns.",
     expected: {
-      tasks: [appointment, newTask(relativeInput, relativeNow)], fulfillable: true,
-      mutations: [{ toolName: "save_scheduled_task", args: relativeInput }],
+      tasks: [appointment, { ...newTask(relativeInput, relativeNow), timing: { requestReceivedAt: relativeNow, delaySeconds: 600 } }], fulfillable: true,
+      mutations: [{ toolName: "save_scheduled_task", args: {
+        title: "Check the oven", effect: { kind: "announcement" }, delaySeconds: 600,
+        isRecurring: false, category: "task", priority: "medium",
+      } }],
     },
   }),
   scenario({

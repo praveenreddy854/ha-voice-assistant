@@ -40,7 +40,7 @@ If the request is ambiguous, prefer LIST and ask the user to clarify in your `co
 1. **Decide effect kind.** Self-action (take medicine, pay bill) → `announcement`. Home action (vacuum, lights, charge) → `action`.
 2. **For action effects:** call `find_matching_entities` with the device. If multiple matches, pick the most likely and note your choice in `description` so the user can correct it via the UI.
 3. **Parse the time.** Use `delaySeconds` for relative requests ("in five seconds" → 5). The server anchors this to the immutable request receipt, even after model latency, pauses and retries. Use `dueDate` only for an absolute calendar time with its correct timezone offset. Never silently restart a positive delay after its deadline passed.
-4. **Determine recurrence** ("every day", "weekly", "monthly").
+4. **Determine recurrence** ("every day", "weekly", "monthly"). For a one-time task, set `isRecurring: false` and omit `recurringPattern`. Omit `description` when no description is requested; do not fill optional fields with placeholders.
 5. **Pick category and priority.** `home_automation` for action effects. Default priority `medium`.
 6. **Title** is short, action-oriented. For action effects embed the resolved device name.
 7. Call `save_scheduled_task`, then `complete_task`.
@@ -58,7 +58,7 @@ For a one-shot timed action such as "at 6 PM cool the room for five minutes, the
 
 1. Call `list_scheduled_tasks`.
 2. Match the user's reference to a task by title + dueDate. If multiple plausible matches, pick the soonest and mention your choice in the completion message.
-3. Construct a `patch` containing only the fields the user wants to change. For dueDate edits, parse to absolute ISO.
+3. Construct a `patch` containing only the fields the user wants to change. For dueDate edits, parse to absolute ISO and send only `patch: { dueDate: "<ISO timestamp>" }`. Do not copy unchanged fields from the listed task into the patch.
 4. If the user is changing the entity for an action effect, call `find_matching_entities` first to resolve the new entityId.
 5. Call `update_scheduled_task`, then `complete_task`.
 

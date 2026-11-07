@@ -39,6 +39,10 @@ export const SCHEDULED_TASK_TOOLS: ToolDefinition[] = ALL_TOOLS.map((mod) => ({
     description: mod.definition.description,
     parameters: {},
     inputSchema: mod.definition.inputSchema,
+    // Responses otherwise normalizes omitted strictness to require every field,
+    // inventing recurrence values on creates and unrelated fields in patches.
+    // The SDK and executor still validate every call against the Zod schema.
+    strict: false,
   },
   execute: async (
     args: Record<string, unknown>,

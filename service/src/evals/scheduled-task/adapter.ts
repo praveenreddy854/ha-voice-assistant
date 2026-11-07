@@ -31,7 +31,7 @@ export async function createScheduledTaskAdapter(modelOverride?: string): Promis
     fixtureInstructions, maxIterations: constants.SCHEDULED_TASK_AGENT_MAX_ITERATIONS,
     prompts: scheduledTaskScenarios.map(scenario => ({ id: scenario.id, systemPrompt: systemPromptFor(scenario.initial) })),
     tools: tools.map(tool => ({
-      name: tool.function.name, description: tool.function.description, schema: tool.function.inputSchema!.toJSONSchema(),
+      name: tool.function.name, description: tool.function.description, schema: tool.function.inputSchema!.toJSONSchema(), strict: tool.function.strict,
     })),
   });
 

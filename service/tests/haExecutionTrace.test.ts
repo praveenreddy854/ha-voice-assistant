@@ -36,6 +36,7 @@ test("HA commands retain downstream model, actual request results and parent att
   });
   try {
     const { executeHACommand } = requireModule("../src/ha") as typeof import("../src/ha");
+    const existingSessionIds = new Set(getAllTraces().map(trace => trace.sessionId));
     createTrace("voice-parent", "realtime", "Turn off test light");
     await withTraceSession("voice-parent", async () => {
       assert.equal((await executeHACommand("Turn off test light")).success, true);
@@ -43,7 +44,7 @@ test("HA commands retain downstream model, actual request results and parent att
       failed = true;
       assert.equal((await executeHACommand("Turn off test light")).success, false);
     });
-    const traces = getAllTraces().filter(trace => trace.agentType === "home_assistant");
+    const traces = getAllTraces().filter(trace => trace.agentType === "home_assistant" && !existingSessionIds.has(trace.sessionId));
     assert.equal(traces.length, 2); assert.deepEqual(modelCalls, ["synthetic-quality-model", "synthetic-quality-model"]);
     const success = traces.find(trace => trace.status === "completed")!;
     const error = traces.find(trace => trace.status === "error")!;
