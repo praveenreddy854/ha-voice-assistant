@@ -187,7 +187,7 @@ dialog::backdrop{background:#060c16bd}
 @media(max-width:500px){.score-calculation{grid-template-columns:1fr}.score-calculation dd{margin-bottom:8px}}
 @media(prefers-reduced-motion:reduce){button{transition:none}}
 </style></head><body>
-<nav class="toolbar" aria-label="Navigation"><a href="/">Home</a><a href="/dashboards">Telemetry dashboards</a><a href="/telemetry">Trace explorer</a></nav>
+<nav class="toolbar" aria-label="Navigation"><a href="/">Home</a><a href="/dashboards/evals/online">Online evaluations</a><a href="/dashboards">Telemetry dashboards</a><a href="/telemetry">Trace explorer</a></nav>
 <header class="page-heading"><div><p class="eyebrow">Observability / Offline evals</p><h1>Agent evaluations</h1><p>Are your agents getting the job done? Start with an overview, then explore an agent's results and the evidence behind them.</p></div><button id="refresh" class="secondary">Refresh</button></header>
 <div id="status" role="status" aria-live="polite"></div><div id="global-busy" role="status"></div>
 <main>

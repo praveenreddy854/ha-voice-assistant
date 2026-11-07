@@ -36,7 +36,7 @@ description: "";
 
 1. Pick the best-matching entity by comparing the command to **`attributes.friendly_name`**  
    and **`entity_id`** (case-insensitive).  
-   • If several entities match, choose the first alphabetical `entity_id`.  
+   • Honor an explicit entity_id exactly. For a device-name request, prefer the matching available entity over an unavailable/restored legacy entity (e.g. use media_player.samsungtv_2 when media_player.samsungtv is unavailable). The state off is available and may be turned on. Never resolve competing device identities by alphabetical order; return the error object when the target remains ambiguous.
    • If no entity matches, return the _error_ object (see below).
 
 2. If the user asks to check, get, query, or report a device's current state,

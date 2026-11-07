@@ -306,12 +306,16 @@ export function createAgentLoop(
     if (session.isComplete) {
       return { type: "complete", message: "Session already completed" };
     }
+    const remainingIterations = session.maxIterations - session.currentIteration;
+    if (remainingIterations <= 0) {
+      return { type: "error", error: `Agent reached its session iteration limit (${session.maxIterations})` };
+    }
 
     try {
       abortSignal?.throwIfAborted();
       await pauseGate?.waitIfPaused();
       abortSignal?.throwIfAborted();
-      let stepCounter = 0;
+      let stepCounter = session.currentIteration;
       const systemMessages = [
         typeof config.systemPrompt === "function" ? config.systemPrompt() : config.systemPrompt,
         ...session.systemMessages,
@@ -334,7 +338,7 @@ export function createAgentLoop(
         messages: session.messages,
         abortSignal,
         toolsContext,
-        stopWhen: stepCountIs(maxIterations),
+        stopWhen: stepCountIs(remainingIterations),
         onStepFinish: config.onStepFinish
           ? ({ text, toolCalls, finishReason, usage, performance, response }) => {
               stepCounter++;
@@ -447,16 +451,17 @@ export function createAgentLoop(
     }
 
     // If we ran out of steps or the model just finished
-    if (result.finishReason === "stop" || result.finishReason === "length") {
-      session.isComplete = true;
+    if (result.finishReason === "length") {
+      return { type: "error", error: "Model output was truncated before explicit task completion" };
+    }
+    if (result.finishReason === "stop") {
       return {
-        type: "complete",
-        message: result.text || "Task completed",
+        type: "error",
+        error: "Agent stopped without calling complete_task; task completion was not established",
       };
     }
 
     // Max iterations or other stop
-    session.isComplete = true;
     return {
       type: "error",
       error: `Agent stopped: ${result.finishReason}. Text: ${result.text || "(none)"}`,

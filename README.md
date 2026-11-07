@@ -204,6 +204,12 @@ is a no-op when Cosmos DB is not configured.
 
 ## 🔧 API Endpoints
 
+### Online evaluations
+
+The backend automatically grades completed live runs in a separate worker. Open `/dashboards/evals/online` to review model cohorts, evidence, independent judge disagreements and queue health. See [configuration and recovery](docs/online-evals.md) and the [model quality audit](docs/model-quality-audit.md) based on recent live-service traces.
+
+`ONLINE_EVAL_ENABLED=false` disables this worker. `AI_MODEL_HOME_ASSISTANT` controls downstream device-command translation and defaults to `AI_MODEL_ADVANCED`.
+
 ### Backend Service Endpoints
 
 - `GET /` - Operations home with links to evals, telemetry, and performance dashboards

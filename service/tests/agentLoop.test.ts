@@ -10,6 +10,39 @@ process.env.AZURE_OPENAI_API_KEY ??= "agent-loop-test";
 
 type ModelResult = Awaited<ReturnType<MockLanguageModelV4["doGenerate"]>>;
 
+test("screenshot continuations share a total iteration budget and monotonic telemetry step numbers", async () => {
+  const { createAgentLoop } = await import("../src/agents/core/agentLoop");
+  const model = new MockLanguageModelV4({ doGenerate: [
+    toolCall("screen-1", "get_latest_screenshot"), toolCall("move", "navigate"),
+    toolCall("screen-2", "get_latest_screenshot"), toolCall("extra", "navigate"),
+  ] });
+  const steps: number[] = [];
+  const loop = createAgentLoop({ systemPrompt: "Test", model: "test", maxIterations: 3,
+    onStepFinish: event => { steps.push(event.stepNumber); },
+    tools: [
+      { type: "function", function: { name: "get_latest_screenshot", parameters: { type: "object", properties: {} } } },
+      { type: "function", function: { name: "navigate", parameters: { type: "object", properties: {} } }, execute: async () => "moved" },
+    ],
+  }, () => model);
+  const session = loop.createSession("Open app");
+  assert.equal((await loop.run(session.id)).type, "tool_calls");
+  assert.equal((await loop.submitToolResults(session.id, [{ toolName: "get_latest_screenshot", toolCallId: "screen-1", result: "image" }])).type, "tool_calls");
+  const exhausted = await loop.submitToolResults(session.id, [{ toolName: "get_latest_screenshot", toolCallId: "screen-2", result: "image" }]);
+  assert.equal(exhausted.type, "error"); assert.match(exhausted.error!, /iteration limit/);
+  assert.equal(model.doGenerateCalls.length, 3); assert.deepEqual(steps, [1, 2, 3]);
+});
+
+for (const reason of ["length", "stop"] as const) test(`${reason} without complete_task never fabricates successful completion`, async () => {
+  const { createAgentLoop } = await import("../src/agents/core/agentLoop");
+  const result = toolCall("unused", "complete_task");
+  result.content = [{ type: "text", text: reason === "stop" ? "" : "partial output" }];
+  result.finishReason = { unified: reason, raw: undefined };
+  const model = new MockLanguageModelV4({ doGenerate: [result] });
+  const loop = createAgentLoop({ systemPrompt: "Test", model: "test", tools: [] }, () => model);
+  const output = await loop.run(loop.createSession("Do task").id);
+  assert.equal(output.type, "error"); assert.equal(output.success, undefined);
+});
+
 function toolCall(
   toolCallId: string,
   toolName: string,

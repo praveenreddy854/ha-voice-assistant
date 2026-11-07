@@ -130,7 +130,7 @@ test("calibration worker grades only this agent's references without constructin
   const job: EvalJob = { id: "calibration-worker", agentId: "realtime", mode: "calibrate" };
   await runWorker(job, store);
   assert.equal(create.mock.callCount(), 0);
-  assert.equal(judgeCalls, 6);
+  assert.equal(judgeCalls, references.length);
   assert.equal((await store.list<{ agentId: string; passed: boolean }>("calibrations"))[0].agentId, "realtime");
   assert.equal((await store.list("runs")).length, 0);
   assert.equal(job.status, "completed");

@@ -141,6 +141,8 @@ export interface EvalMetrics {
 }
 export interface Assessment {
   agentId: string;
+  /** Routing acceptance and actual device execution are distinct assessment objectives. */
+  evaluationScope?: "routing" | "execution";
   mode: EvalMode;
   request: string;
   finalResponse: string;

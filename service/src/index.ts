@@ -46,6 +46,8 @@ import { startGestureMonitor } from "./gestureMonitor";
 import { traceRouter } from "./tracing/traceApi";
 import { dashboardRouter } from "./tracing/dashboardApi";
 import { evalRouter, evalSupervisor } from "./evals/api";
+import { onlineRouter } from "./evals/online/api";
+import { onlineSupervisor } from "./evals/online/supervisor";
 import { homePage } from "./homePage";
 import { setupRealtimeChatProxy } from "./realtimeChat";
 import { addAnnouncementClient } from "./announcementBus";
@@ -128,6 +130,7 @@ app.use(payloadTooLargeHandler);
 app.use(traceRouter);
 app.use(dashboardRouter);
 app.use(evalRouter);
+app.use(onlineRouter);
 
 // Serve telemetry viewer HTML
 app.get("/telemetry", (_req, res) => {
@@ -148,6 +151,7 @@ startOutDirCleaner();
 startProactiveReminders();
 startMemoryConsolidation();
 evalSupervisor.start();
+onlineSupervisor.start();
 
 // Start gesture monitor for fist-to-pause TV control (RTSP mode only)
 if (isRtspMode()) {
@@ -1236,6 +1240,7 @@ setupRealtimeChatProxy(server);
 
 // Graceful shutdown
 process.on("SIGTERM", async () => {
+  onlineSupervisor.stop();
   evalSupervisor.stop();
   console.log("SIGTERM received, shutting down gracefully...");
   await shutdownTracing();
@@ -1243,6 +1248,7 @@ process.on("SIGTERM", async () => {
 });
 
 process.on("SIGINT", async () => {
+  onlineSupervisor.stop();
   evalSupervisor.stop();
   console.log("SIGINT received, shutting down gracefully...");
   await shutdownTracing();

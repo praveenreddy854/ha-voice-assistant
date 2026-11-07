@@ -1,0 +1,32 @@
+# Model quality audit — November 6, 2026
+
+Read-only source: the running service at `http://10.0.0.202:3005/api/telemetry/sessions`, plus detail requests for all 59 sessions starting October 1 or later. The service returned 168 retained sessions overall. No device action was replayed. SSH was not authenticated, so raw process logs and remote environment settings were not inspected.
+
+## Findings and changes
+
+1. **The live success signal hides downstream failures.** Of 53 recent runs using `gpt-6.1-sol`, 31 delegated Home Assistant requests. Their retained results end with a job ID and “On it.”, without downstream HA request/results. For example, `realtime-9bd8e840-b60b-4875-8ff7-826f361b7ae5` accepts camera preset one on October 26 (New York); `realtime-123882e7-65af-4a38-ab98-44e85a9d5d64` shortly afterward records “No, it's not done” and replaces the job. Acceptance is not evidence of physical completion. **Changed:** retain separate `home_assistant` execution traces with the actual translation model, prompt version, generated and normalized command plan, memory IDs and individual HTTP results. Online evals grade them separately from voice routing.
+
+2. **A higher-quality voice model did not upgrade HA translation.** Before this change, `getHACommandBody` always used `AI_MODEL_MINI`. The inspected local configuration uses `gpt-6.1-sol` for advanced reasoning and `gpt-5.6-terra` for mini; the remote mini deployment cannot be verified from its existing traces. **Changed:** add `AI_MODEL_HOME_ASSISTANT`, defaulting to `AI_MODEL_ADVANCED`, and retain the actual configured translation model for future audit. The operator can explicitly choose a different deployment.
+
+3. **The HA prompt freezes its first device-state snapshot for the process lifetime.** `getHAPrompt` cached the rendered prompt with state already substituted. The live TV trace `7c2cfe3b-0852-447f-a948-fa5bdf876761` shows `samsungtv_2` as the available entity while the old `samsungtv` entity is unavailable; the previous translation prompt also instructed alphabetical choice among matches. These mechanisms can target a stale entity independently of model capability. **Changed:** cache only the template, fetch current states per command, and prefer an available matching entity over an unavailable restored alias. An explicit entity ID remains authoritative; unresolved device ambiguity produces an error rather than an alphabetical guess.
+
+4. **Empty natural stops could fabricate completion.** Two live `gpt-6.1-sol` turns with user text “assistant” retain the final message “Task completed”, despite the system instruction to remain silent on a bare wake phrase. The core loop accepted any natural stop, including empty output, as successful completion. The absence of `complete_task` is the mechanism that can produce this exact fallback; the trace alone cannot establish every upstream audio event. **Changed:** a response limit or a stop without explicit `complete_task` is an execution error, not a fabricated success.
+
+5. **Earlier TV loops escaped their nominal step cap.** Local retained September traces `e365dcec-8ce6-4549-9d56-9fc02ac2b4b6` and `3bd26233-7842-4efd-87e6-4ffa832adcc5` contain 96 and 54 LLM steps. Every screenshot continuation received a new full step budget, and telemetry step numbers restarted. **Changed:** use the remaining session-wide budget and monotonically increasing step numbers; regression tests cross multiple screenshot resumptions. These older traces are separate from the current model comparison.
+
+6. **Extra camera guard actions were often authorized.** The November 3 preset-zero trace `realtime-883e8890-1760-4c99-9d0c-ea10ed7a37b9` retains explicit scoped preferences to guard the camera when selecting presets. Treating every guard-mode addition as a hallucination would produce misleading evals. **Changed:** paired references accept the same expanded command with a matching saved preference and reject it without one.
+
+## Evals adjusted to the failures
+
+Added six categorical judge references for deadline drift after a rejected write, non-executable delayed phases hidden in prose, losing an explicit target during delegation, correctly applying a scoped camera preference, adding that action without authorization, and accepted routing with no downstream completion evidence. Both offline and online judges now receive guidance on these distinctions. Existing TV scoring references already assess repeated ineffective recovery as one mistake episode rather than charging duplicated telemetry copies repeatedly.
+
+The online worker saves independent primary/reviewer judgments, preserves disagreement as unknown, checks evidence citations and snapshot integrity, and reports errors/skips separately from task outcomes. Cohorts keep model and prompt/judge versions separate. The results should reveal where a newer model regresses instead of concealing it in generic success flags.
+
+## Remaining changes to prioritize
+
+- Anchor short relative scheduling deadlines server-side to request receipt. The local September five-second LB1 example recalculates its expired deadline after a rejected save; the fixed-clock simulator does not currently reproduce model/network latency. Add an advancing-clock scenario before changing scheduling semantics.
+- Represent later shutoffs as executable persisted phases, not just prose in a single immediate action. The local September AC example is insufficient evidence of a reliable five-minute shutoff. This audit does not change the task schema or replay that action.
+- Compare models on the same requests, starting states, prompt/tool manifests and reference set. The remote October/November sample has 50 newer-model voice turns versus four older-model turns, three of which are greetings. That is not a defensible causal A/B comparison. Higher reported acceptance is not higher completion quality.
+- Link voice job IDs to final specialist outcomes and retain spoken completion/clarification delivery separately. New HA traces close the execution visibility gap, but an application reply still does not prove the user heard it. The November 3 “and launch YouTube” trace contains camera-related history with no explicit TV target; its clarification is not proof of a wrong-device regression.
+
+No remote settings, saved preferences, device state, or running service were changed by this audit. The implementation changes are local until deployed.

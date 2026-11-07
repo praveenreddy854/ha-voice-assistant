@@ -62,7 +62,7 @@ export const homePage = `<!doctype html>
       <a class="card" href="/dashboards/evals" aria-labelledby="evals-title">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="3"/><path d="m8 12 3 3 5-6"/></svg>
         <h2 id="evals-title">Evals dashboard</h2>
-        <p>Run offline simulations, grade recorded sessions, and review regression alerts with supporting evidence.</p>
+        <p>Review online evaluations, run offline simulations, and inspect regression alerts with supporting evidence.</p>
         <span class="open">Open evals <span aria-hidden="true">→</span></span>
       </a>
       <a class="card" href="/telemetry" aria-labelledby="telemetry-title">

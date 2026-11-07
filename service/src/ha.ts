@@ -1,4 +1,4 @@
-import { HOME_ASSISTANT_URL, HOME_ASSISTANT_TOKEN, AI_MODEL_MINI } from "./config";
+import { HOME_ASSISTANT_URL, HOME_ASSISTANT_TOKEN, AI_MODEL_HOME_ASSISTANT } from "./config";
 import fs from "fs";
 import path from "path";
 import { HassServiceCommandBody, HassServiceCommand, HassState } from "./types/ha";
@@ -12,8 +12,14 @@ import {
 import { getTracer } from "./tracing";
 import type { AgentPauseGate } from "./agents/core/types";
 import { delay } from "./agents/common/utils";
+import { createHash, randomUUID } from "node:crypto";
+import { addEvent, addLLMStep, completeTrace, createTrace, getActiveSessionId, trackToolResult, withTraceSession } from "./tracing/agentTraceStore";
 
-const promptCache = new Map();
+function retainHAEvidence(callback: () => void): void {
+  try { callback(); } catch { console.error("[HA telemetry] Evidence capture failed"); }
+}
+
+const promptCache = new Map<string, string>();
 const homeAssistantCacheKey = "HOMEASSISTANT";
 const LIVING_ROOM_PTZ_PRESET_ENTITY_ID = "select.living_room_ptz_preset";
 const LIVING_ROOM_GUARD_SET_BUTTON_ENTITY_ID =
@@ -57,10 +63,23 @@ export async function getHACommandBody(
   ];
 
   try {
+    const started = Date.now();
     const responseText = await generateCompletion({
-      model: AI_MODEL_MINI || "",
+      model: AI_MODEL_HOME_ASSISTANT || "",
       messages,
       abortSignal: options?.abortSignal,
+    });
+    const sessionId = getActiveSessionId();
+    if (sessionId) retainHAEvidence(() => {
+      addEvent(sessionId, "ha.translation.configuration", "Home Assistant translation configuration", {
+        model: AI_MODEL_HOME_ASSISTANT || "unreported",
+        promptVersion: createHash("sha256").update(promptCache.get(homeAssistantCacheKey) || "").digest("hex").slice(0, 24),
+      });
+      addLLMStep(sessionId, {
+        stepNumber: 1, timestamp: new Date(started).toISOString(), finishReason: "translation_response",
+        requestModel: AI_MODEL_HOME_ASSISTANT, text: responseText, toolCalls: [], messages,
+        responseTimeMs: Date.now() - started,
+      });
     });
     await waitForRunPermission(options);
     return JSON.parse(responseText) as HassServiceCommandBody;
@@ -73,26 +92,20 @@ export async function getHACommandBody(
   }
 }
 
-async function getHAPrompt(command: string, options?: HAExecutionOptions) {
+export async function getHAPrompt(command: string, options?: HAExecutionOptions): Promise<string> {
   if (!promptCache.has(homeAssistantCacheKey)) {
-    let prompt = fs.readFileSync(
+    const prompt = fs.readFileSync(
       path.join(__dirname, "prompts", "HOMEASSISTANT.md"),
       "utf8"
     );
-    const deviceStates = await getDeviceStates(undefined, options);
-
-    prompt = prompt.replace(
-      "{{{Devices}}}",
-      JSON.stringify(deviceStates, null, 2)
-    );
-
     promptCache.set(homeAssistantCacheKey, prompt);
   }
 
-  const cachedPrompt = promptCache
-    .get(homeAssistantCacheKey)
-    .replace("{{{UserCommand}}}", command);
-  return cachedPrompt;
+  // Cache only the template; device state and entity options must stay current.
+  const deviceStates = await getDeviceStates(undefined, options);
+  return promptCache.get(homeAssistantCacheKey)!
+    .replace("{{{Devices}}}", () => JSON.stringify(deviceStates, null, 2))
+    .replace("{{{UserCommand}}}", () => command);
 }
 
 export async function fetchAllStates(
@@ -255,6 +268,30 @@ export async function executeHACommand(
   messageHistory?: Array<{ role: string; content: string }>,
   options?: HAExecutionOptions
 ): Promise<{ success: boolean; message: string; data?: any }> {
+  const parentSessionId = getActiveSessionId();
+  const sessionId = `home-assistant-${randomUUID()}`;
+  retainHAEvidence(() => {
+    createTrace(sessionId, "home_assistant", command);
+    addEvent(sessionId, "ha.execution.started", "Downstream Home Assistant command execution", {
+      parentSessionId, model: AI_MODEL_HOME_ASSISTANT || "unreported",
+      evidenceScope: "Command translation, memory augmentations and HTTP results. Transport acceptance does not establish physical completion; no unobserved state is inferred.",
+    });
+  });
+  try {
+    const result = await withTraceSession(sessionId, () => executeHACommandInternal(command, messageHistory, options));
+    retainHAEvidence(() => completeTrace(sessionId, result.success, result.message, result.success ? "completed" : "error"));
+    return result;
+  } catch (error) {
+    retainHAEvidence(() => completeTrace(sessionId, false, error instanceof Error ? error.message : String(error), "error"));
+    throw error;
+  }
+}
+
+async function executeHACommandInternal(
+  command: string,
+  messageHistory?: Array<{ role: string; content: string }>,
+  options?: HAExecutionOptions
+): Promise<{ success: boolean; message: string; data?: any }> {
   const span = getTracer().startSpan("ha.command.execute", {
     attributes: {
       "ha.command.text": command,
@@ -292,6 +329,10 @@ export async function executeHACommand(
       mediaTransportNormalizedCount
     );
     span.setAttribute("ha.guard_set_current_position.applied", guardSetApplied);
+    const traceId = getActiveSessionId();
+    if (traceId) retainHAEvidence(() => addEvent(traceId, "ha.translation.resolved", "Generated and normalized command plan", {
+      generated: generatedHaBody, plan: haBody, guardSetApplied, memoryIds: memory.memories.map(item => item.id),
+    }));
     
     // Handle array of commands (multi-step operations)
     if (Array.isArray(haBody)) {
@@ -502,6 +543,28 @@ async function executeHAStateLookup(
 }
 
 async function executeSingleHACommand(
+  haBody: HassServiceCommand,
+  originalCommand: string,
+  options?: HAExecutionOptions
+): Promise<{ success: boolean; message: string; data?: any }> {
+  const started = Date.now(), traceId = getActiveSessionId();
+  const record = (observation: string, success: boolean) => {
+    if (traceId) retainHAEvidence(() => trackToolResult(traceId, {
+      toolCallId: randomUUID(), toolName: "home_assistant_request", args: { ...haBody },
+      observation, toolSuccess: success, durationMs: Date.now() - started,
+    }));
+  };
+  try {
+    const result = await executeSingleHACommandInternal(haBody, originalCommand, options);
+    record(JSON.stringify(result), result.success);
+    return result;
+  } catch (error) {
+    record(error instanceof Error ? error.message : String(error), false);
+    throw error;
+  }
+}
+
+async function executeSingleHACommandInternal(
   haBody: HassServiceCommand,
   originalCommand: string,
   options?: HAExecutionOptions

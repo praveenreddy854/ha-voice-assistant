@@ -201,11 +201,11 @@ test("baseline, fidelity and semantic step groups never pool different agents", 
 
 test("judge calibration runs only the selected agent's reference set and persists separate reports", () => withStore(async store => {
   const all = referenceAssessments();
-  assert.equal(all.length, 18);
-  assert.equal(new Set(all.map(reference => reference.id)).size, 18);
+  assert.equal(all.length, 24);
+  assert.equal(new Set(all.map(reference => reference.id)).size, 24);
   const complete = EVAL_AGENT_IDS.flatMap(agentId => calibrationReferenceAssessments(agentId));
-  assert.equal(complete.length, 27);
-  assert.equal(new Set(complete.map(reference => reference.id)).size, 27);
+  assert.equal(complete.length, 33);
+  assert.equal(new Set(complete.map(reference => reference.id)).size, 33);
   for (const agentId of EVAL_AGENT_IDS) {
     const seen: string[] = [];
     const references = calibrationReferenceAssessments(agentId);
@@ -234,7 +234,7 @@ test("judge calibration runs only the selected agent's reference set and persist
     });
     const report = await calibrateJudge(store, judge, "judge", "1", new AbortController().signal, agentId);
     assert.equal(report.agentId, agentId);
-    assert.equal(report.results.length, agentId === "tv" ? 15 : 6);
+    assert.equal(report.results.length, references.length);
     assert.equal(report.passed, true);
     assert.ok(seen.every(id => id === agentId));
     if (agentId !== "tv") {
@@ -281,7 +281,7 @@ test("API scopes runs, alerts, jobs, calibrations and discovery, and rejects unk
       const data = await response.json() as Record<string, Array<{ agentId?: string; id: string; referenceCount?: number }>> &
         { runs: EvalRunSummary[]; batches: EvalBatchSummary[] };
       assert.deepEqual(data.agents.map(agent => ({ id: agent.id, count: agent.referenceCount })), [
-        { id: "tv", count: 15 }, { id: "scheduled_task", count: 6 }, { id: "realtime", count: 6 },
+        { id: "tv", count: 15 }, { id: "scheduled_task", count: 8 }, { id: "realtime", count: 10 },
       ]);
       assert.equal(data.runs.length, 1);
       assert.equal(data.runs[0].agentId, agentId);

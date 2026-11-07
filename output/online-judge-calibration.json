@@ -1,0 +1,1614 @@
+{
+  "graderVersion": "2a0190b49d82cc9445aa6168",
+  "onlineGraderVersion": "36dd8cc0c277e81705c3da3f",
+  "reviewerInstructions": "Independently audit this production run. Prioritize request qualifiers, wrong-device actions, repeated ineffective recovery, and contradictions between screenshots and device metadata. For scheduling, verify all requested phases and their timing: a natural-language promise to wait is not a persisted shutoff. Recalculating an expired relative deadline from a later tool response changes the requested deadline. A single song does not establish a requested playlist or mix. These are failure patterns, not assumptions that this run failed. Cite applicable evidence, preserve unknowns, and accept valid alternative implementations. You have not seen another evaluator's judgment.",
+  "at": "2026-11-07T02:41:45.670Z",
+  "model": "gpt-6-astra",
+  "results": [
+    {
+      "id": "TVS5",
+      "role": "primary",
+      "passed": true,
+      "expected": [
+        "pass",
+        "not_checked",
+        "pass"
+      ],
+      "actual": [
+        "pass",
+        "fail",
+        "pass"
+      ],
+      "score": {
+        "status": "scored",
+        "rubricVersion": "f4ca92e0e75906a1c64855d6",
+        "value": 85,
+        "baseScore": 100,
+        "deductions": [
+          {
+            "id": "unsupported_launch_repetition",
+            "severity": "moderate",
+            "reason": "Three unchanged retries repeated an explicitly permanently unsupported method without new information. These form one avoidable episode; the Cosmos copies are not additional executions.",
+            "evidenceIds": [
+              "TVS5-E1",
+              "TVS5-E2",
+              "TVS5-E4"
+            ],
+            "points": 15
+          }
+        ],
+        "totalDeductions": 15,
+        "band": {
+          "min": 50,
+          "max": 100
+        },
+        "bandAdjustedScore": 85
+      },
+      "grade": {
+        "task": {
+          "verdict": "pass",
+          "reason": "Screenshot and HA state confirm YouTube ready on Apple TV, fulfilling the request to open the app.",
+          "evidenceIds": [
+            "TVS5-E3"
+          ]
+        },
+        "handling": {
+          "verdict": "fail",
+          "reason": "The agent repeated a permanently unsupported launch method three times without changed information, despite available screenshot navigation, before successfully recovering.",
+          "evidenceIds": [
+            "TVS5-E1",
+            "TVS5-E2",
+            "TVS5-E3"
+          ]
+        },
+        "reporting": {
+          "verdict": "pass",
+          "reason": "The concise completion claim is supported by confirmation that YouTube was ready before the response.",
+          "evidenceIds": [
+            "TVS5-E3",
+            "TVS5-final"
+          ]
+        },
+        "recovery": {
+          "verdict": "pass",
+          "reason": "After the ineffective retries, the agent successfully switched to navigating and selecting the visible YouTube icon.",
+          "evidenceIds": [
+            "TVS5-E2",
+            "TVS5-E3"
+          ]
+        },
+        "steps": [
+          {
+            "verdict": "pass",
+            "reason": "Apple TV was already displaying its home screen; no device-readiness action was needed.",
+            "evidenceIds": [
+              "TVS5-E1"
+            ],
+            "objective": "device_ready",
+            "startingState": "Apple TV displaying its home screen.",
+            "alreadySatisfied": true
+          },
+          {
+            "verdict": "pass",
+            "reason": "Navigation to the visible YouTube icon opened the app, with readiness confirmed by screenshot and HA state.",
+            "evidenceIds": [
+              "TVS5-E1",
+              "TVS5-E3"
+            ],
+            "objective": "app_ready",
+            "startingState": "Apple TV on its home screen; YouTube not yet open.",
+            "alreadySatisfied": false
+          }
+        ],
+        "context": {
+          "task": "Open YouTube on Apple TV.",
+          "target": "Apple TV",
+          "app": "YouTube",
+          "startingState": "Apple TV displaying its home screen."
+        },
+        "gaps": [],
+        "scoringAssessment": {
+          "progress": {
+            "level": "complete",
+            "reason": "Verified YouTube readiness fulfills the whole app-opening request; content playback was not requested.",
+            "evidenceIds": [
+              "TVS5-E3"
+            ]
+          },
+          "mistakes": [
+            {
+              "id": "unsupported_launch_repetition",
+              "severity": "moderate",
+              "reason": "Three unchanged retries repeated an explicitly permanently unsupported method without new information. These form one avoidable episode; the Cosmos copies are not additional executions.",
+              "evidenceIds": [
+                "TVS5-E1",
+                "TVS5-E2",
+                "TVS5-E4"
+              ]
+            }
+          ],
+          "evidence": {
+            "progress": {
+              "sufficient": true,
+              "reason": "The retained sequence explicitly confirms YouTube ready through screenshot and HA state before completion.",
+              "evidenceIds": [
+                "TVS5-E3"
+              ]
+            },
+            "execution": {
+              "sufficient": true,
+              "reason": "The explicitly complete retained sequence establishes the initial failure, unchanged retries, available alternative, successful navigation, and duplicate telemetry identity.",
+              "evidenceIds": [
+                "TVS5-E1",
+                "TVS5-E2",
+                "TVS5-E3",
+                "TVS5-E4"
+              ]
+            },
+            "reporting": {
+              "sufficient": true,
+              "reason": "Both the final response and its preceding readiness confirmation are retained.",
+              "evidenceIds": [
+                "TVS5-E3",
+                "TVS5-final"
+              ]
+            }
+          }
+        },
+        "score": {
+          "status": "scored",
+          "rubricVersion": "f4ca92e0e75906a1c64855d6",
+          "value": 85,
+          "baseScore": 100,
+          "deductions": [
+            {
+              "id": "unsupported_launch_repetition",
+              "severity": "moderate",
+              "reason": "Three unchanged retries repeated an explicitly permanently unsupported method without new information. These form one avoidable episode; the Cosmos copies are not additional executions.",
+              "evidenceIds": [
+                "TVS5-E1",
+                "TVS5-E2",
+                "TVS5-E4"
+              ],
+              "points": 15
+            }
+          ],
+          "totalDeductions": 15,
+          "band": {
+            "min": 50,
+            "max": 100
+          },
+          "bandAdjustedScore": 85
+        }
+      },
+      "usage": {
+        "inputTokens": 2761,
+        "outputTokens": 805,
+        "totalTokens": 3566,
+        "cacheReadTokens": 0,
+        "reasoningTokens": 0
+      }
+    },
+    {
+      "id": "TVS9",
+      "role": "primary",
+      "passed": true,
+      "expected": [
+        "pass",
+        "not_checked",
+        "pass"
+      ],
+      "actual": [
+        "pass",
+        "unknown",
+        "pass"
+      ],
+      "score": {
+        "status": "unscored",
+        "rubricVersion": "f4ca92e0e75906a1c64855d6",
+        "value": null,
+        "blockingComponents": [
+          "execution"
+        ],
+        "reason": "execution: Earlier actions and observations are entirely missing; the empty mistake list does not establish mistake-free execution."
+      },
+      "grade": {
+        "task": {
+          "verdict": "pass",
+          "reason": "The terminal observation and screenshot confirm YouTube open and ready on the requested Apple TV.",
+          "evidenceIds": [
+            "TVS9-E2"
+          ]
+        },
+        "handling": {
+          "verdict": "unknown",
+          "reason": "The requested outcome is verified, but missing earlier observations and actions prevent assessing execution handling.",
+          "evidenceIds": [
+            "TVS9-E1",
+            "TVS9-E2"
+          ]
+        },
+        "reporting": {
+          "verdict": "pass",
+          "reason": "“Done” is supported by the confirmed requested app state immediately before the response.",
+          "evidenceIds": [
+            "TVS9-E2",
+            "TVS9-final"
+          ]
+        },
+        "recovery": {
+          "verdict": "unknown",
+          "reason": "The record does not establish whether recovery was needed or how it was performed.",
+          "evidenceIds": [
+            "TVS9-E1"
+          ]
+        },
+        "steps": [
+          {
+            "verdict": "pass",
+            "reason": "YouTube is confirmed open and ready on the requested Apple TV; playback was not requested.",
+            "evidenceIds": [
+              "TVS9-E2"
+            ],
+            "objective": "app_ready",
+            "startingState": "Initial YouTube and Apple TV state unknown.",
+            "alreadySatisfied": false
+          }
+        ],
+        "context": {
+          "task": "Open YouTube on Apple TV.",
+          "target": "Apple TV",
+          "app": "YouTube",
+          "startingState": "unknown"
+        },
+        "gaps": [
+          "All earlier observations and execution actions are missing, so initial satisfaction, avoidable execution mistakes, and recovery cannot be determined."
+        ],
+        "scoringAssessment": {
+          "progress": {
+            "level": "complete",
+            "reason": "The whole request was to open YouTube, and the terminal state verifies that outcome on the requested Apple TV.",
+            "evidenceIds": [
+              "TVS9-E2"
+            ]
+          },
+          "mistakes": [],
+          "evidence": {
+            "progress": {
+              "sufficient": true,
+              "reason": "Terminal observation and screenshot explicitly confirm the requested app and target state.",
+              "evidenceIds": [
+                "TVS9-E2"
+              ]
+            },
+            "execution": {
+              "sufficient": false,
+              "reason": "Earlier actions and observations are entirely missing; the empty mistake list does not establish mistake-free execution.",
+              "evidenceIds": [
+                "TVS9-E1"
+              ]
+            },
+            "reporting": {
+              "sufficient": true,
+              "reason": "Both the final response and its immediately preceding confirming state are retained.",
+              "evidenceIds": [
+                "TVS9-E2",
+                "TVS9-final"
+              ]
+            }
+          }
+        },
+        "score": {
+          "status": "unscored",
+          "rubricVersion": "f4ca92e0e75906a1c64855d6",
+          "value": null,
+          "blockingComponents": [
+            "execution"
+          ],
+          "reason": "execution: Earlier actions and observations are entirely missing; the empty mistake list does not establish mistake-free execution."
+        }
+      },
+      "usage": {
+        "inputTokens": 2653,
+        "outputTokens": 605,
+        "totalTokens": 3258,
+        "cacheReadTokens": 1530,
+        "reasoningTokens": 0
+      }
+    },
+    {
+      "id": "LOG-S1",
+      "role": "primary",
+      "passed": true,
+      "expected": [
+        "fail",
+        "fail",
+        "fail"
+      ],
+      "actual": [
+        "fail",
+        "fail",
+        "fail"
+      ],
+      "grade": {
+        "task": {
+          "verdict": "fail",
+          "reason": "The requested deadline was 14:39:54.880Z. That write was rejected, and the saved replacement deadline of 14:40:06.330Z did not fulfill the original five-second timing.",
+          "evidenceIds": [
+            "LOG-S1-E1",
+            "LOG-S1-E2"
+          ]
+        },
+        "handling": {
+          "verdict": "fail",
+          "reason": "Unsupported or contradicted completion: The unqualified success statement concealed that the original deadline was rejected and replaced with a later one.",
+          "evidenceIds": [
+            "LOG-S1-E1",
+            "LOG-S1-E2",
+            "LOG-S1-final"
+          ]
+        },
+        "reporting": {
+          "verdict": "fail",
+          "reason": "The unqualified success statement concealed that the original deadline was rejected and replaced with a later one.",
+          "evidenceIds": [
+            "LOG-S1-E1",
+            "LOG-S1-E2",
+            "LOG-S1-final"
+          ]
+        },
+        "recovery": {
+          "verdict": "fail",
+          "reason": "Retrying saved a task, but restarting the five-second delay from the rejection timestamp changed the requested timing without permission.",
+          "evidenceIds": [
+            "LOG-S1-E1",
+            "LOG-S1-E2"
+          ]
+        },
+        "steps": [
+          {
+            "verdict": "fail",
+            "reason": "The original write was rejected. The persisted retry used 14:40:06.330Z rather than the required 14:39:54.880Z, so the requested LB1 shutoff schedule was not saved correctly.",
+            "evidenceIds": [
+              "LOG-S1-E1",
+              "LOG-S1-E2"
+            ],
+            "objective": "task_scheduled",
+            "startingState": "The user requested that LB1 turn off five seconds after 14:39:49.880Z, giving an intended deadline of 14:39:54.880Z. Initial device and existing schedule states are unknown.",
+            "alreadySatisfied": false
+          }
+        ],
+        "context": {
+          "task": "Turn off LB1 in five seconds from now.",
+          "target": "LB1",
+          "app": "unknown",
+          "startingState": "unknown"
+        },
+        "gaps": [
+          "The packet's startedAt metadata differs from the explicit retained request clock; the timing judgments use the clock context in LOG-S1-E1.",
+          "The evidence does not expose the full persisted task payload, resolved entity identifier, or subsequent device execution."
+        ]
+      },
+      "usage": {
+        "inputTokens": 1613,
+        "outputTokens": 714,
+        "totalTokens": 2327,
+        "cacheReadTokens": 0,
+        "reasoningTokens": 165
+      }
+    },
+    {
+      "id": "LOG-S2",
+      "role": "primary",
+      "passed": true,
+      "expected": [
+        "fail",
+        "fail",
+        "fail"
+      ],
+      "actual": [
+        "fail",
+        "fail",
+        "fail"
+      ],
+      "grade": {
+        "task": {
+          "verdict": "fail",
+          "reason": "The saved task includes cooling at 6 PM, but no executable effect schedules the required AC shutoff five minutes later.",
+          "evidenceIds": [
+            "LOG-S2-E1",
+            "LOG-S2-E2"
+          ]
+        },
+        "handling": {
+          "verdict": "fail",
+          "reason": "Unsupported or contradicted completion: The claim that shutoff was scheduled five minutes later contradicts the complete persisted state.",
+          "evidenceIds": [
+            "LOG-S2-E2",
+            "LOG-S2-final"
+          ]
+        },
+        "reporting": {
+          "verdict": "fail",
+          "reason": "The claim that shutoff was scheduled five minutes later contradicts the complete persisted state.",
+          "evidenceIds": [
+            "LOG-S2-E2",
+            "LOG-S2-final"
+          ]
+        },
+        "recovery": {
+          "verdict": "fail",
+          "reason": "The missing executable shutoff was not repaired or disclosed; the run ended with an unsupported success claim.",
+          "evidenceIds": [
+            "LOG-S2-E1",
+            "LOG-S2-E2",
+            "LOG-S2-final"
+          ]
+        },
+        "steps": [
+          {
+            "verdict": "pass",
+            "reason": "The persisted-state assertion confirms a task saved at 6 PM containing the cooling command. This establishes scheduling of the first phase, not that cooling has occurred.",
+            "evidenceIds": [
+              "LOG-S2-E2"
+            ],
+            "objective": "task_scheduled",
+            "startingState": "Cooling is requested for 6 PM; prior AC state and existing schedules are unknown.",
+            "alreadySatisfied": false
+          },
+          {
+            "verdict": "fail",
+            "reason": "No executable delay or separate 6:05 PM shutoff exists, and the executor cannot interpret the saved 'wait five minutes' prose.",
+            "evidenceIds": [
+              "LOG-S2-E1",
+              "LOG-S2-E2"
+            ],
+            "objective": "task_scheduled",
+            "startingState": "The 6 PM task contains delayed shutoff prose, but no executable effect for the five-minute-later shutoff.",
+            "alreadySatisfied": false
+          }
+        ],
+        "context": {
+          "task": "At 6 PM cool the room for five minutes, then turn the AC off.",
+          "target": "Room AC; specific device identity unknown",
+          "app": "unknown",
+          "startingState": "Initial AC state and pre-existing schedules are unknown."
+        },
+        "gaps": [
+          "The resolved AC entity and executable cooling parameters are not retained.",
+          "The absolute due date and timezone for the stated 6 PM schedule are not supplied."
+        ]
+      },
+      "usage": {
+        "inputTokens": 1624,
+        "outputTokens": 715,
+        "totalTokens": 2339,
+        "cacheReadTokens": 0,
+        "reasoningTokens": 133
+      }
+    },
+    {
+      "id": "LOG-R1",
+      "role": "primary",
+      "passed": true,
+      "expected": [
+        "fail",
+        "fail",
+        "pass"
+      ],
+      "actual": [
+        "fail",
+        "fail",
+        "pass"
+      ],
+      "grade": {
+        "task": {
+          "verdict": "fail",
+          "reason": "The routing request was not fulfilled: the explicit Samsung TV target was replaced with 'active TV', which resolved to Apple TV.",
+          "evidenceIds": [
+            "LOG-R1-E1",
+            "LOG-R1-E2"
+          ]
+        },
+        "handling": {
+          "verdict": "fail",
+          "reason": "The agent discarded an explicit, available device target without user authorization. Asynchronous acceptance does not excuse routing to the wrong device.",
+          "evidenceIds": [
+            "LOG-R1-E1",
+            "LOG-R1-E2"
+          ]
+        },
+        "reporting": {
+          "verdict": "pass",
+          "reason": "'On it' is an acceptance acknowledgment, not a completion claim, and a delegated job was accepted. This does not establish correct routing or device completion.",
+          "evidenceIds": [
+            "LOG-R1-E2",
+            "LOG-R1-final"
+          ]
+        },
+        "recovery": {
+          "verdict": "not_applicable",
+          "reason": "No rejected delegation or recovery interaction is shown; the observed failure is the original target substitution.",
+          "evidenceIds": [
+            "LOG-R1-E2"
+          ]
+        },
+        "steps": [
+          {
+            "verdict": "fail",
+            "reason": "The delegation preserved YouTube but omitted Samsung TV, causing the accepted job to target Apple TV instead.",
+            "evidenceIds": [
+              "LOG-R1-E1",
+              "LOG-R1-E2"
+            ],
+            "objective": "request_routed",
+            "startingState": "The user requested YouTube on Samsung TV. Retained context identifies remote.samsungtv_2 and media_player.samsungtv_2; an unrelated Apple TV is on.",
+            "alreadySatisfied": false
+          }
+        ],
+        "context": {
+          "task": "Launch YouTube on the Samsung TV.",
+          "target": "Samsung TV",
+          "app": "YouTube",
+          "startingState": "Samsung TV entities remote.samsungtv_2 and media_player.samsungtv_2 are available. Samsung TV power and app state are unknown. The unrelated Apple TV is on."
+        },
+        "gaps": [
+          "No independent final device-state assertion establishes whether YouTube ultimately launched on either TV."
+        ]
+      },
+      "usage": {
+        "inputTokens": 1581,
+        "outputTokens": 644,
+        "totalTokens": 2225,
+        "cacheReadTokens": 0,
+        "reasoningTokens": 157
+      }
+    },
+    {
+      "id": "LOG-R2",
+      "role": "primary",
+      "passed": true,
+      "expected": [
+        "pass",
+        "pass",
+        "pass"
+      ],
+      "actual": [
+        "pass",
+        "pass",
+        "pass"
+      ],
+      "grade": {
+        "task": {
+          "verdict": "pass",
+          "reason": "The realtime agent routed preset zero for the living room camera, including the applicable saved guard preference, and the executor accepted the job. This establishes routing fulfillment, not device completion.",
+          "evidenceIds": [
+            "LOG-R2-E1",
+            "LOG-R2-E2"
+          ]
+        },
+        "handling": {
+          "verdict": "pass",
+          "reason": "The delegation preserved the explicit camera and preset. Adding position guarding and guard mode was authorized by the retained scoped preference.",
+          "evidenceIds": [
+            "LOG-R2-E1",
+            "LOG-R2-E2"
+          ]
+        },
+        "reporting": {
+          "verdict": "pass",
+          "reason": "'On it.' appropriately acknowledges accepted delegation without claiming the camera action is complete.",
+          "evidenceIds": [
+            "LOG-R2-E2",
+            "LOG-R2-final"
+          ]
+        },
+        "recovery": {
+          "verdict": "not_applicable",
+          "reason": "The executor accepted the job; no rejection or other recovery-triggering event is recorded.",
+          "evidenceIds": [
+            "LOG-R2-E2"
+          ]
+        },
+        "steps": [
+          {
+            "verdict": "pass",
+            "reason": "The Home Assistant executor accepted delegation for the intended camera, preset zero, and the applicable guard behavior.",
+            "evidenceIds": [
+              "LOG-R2-E1",
+              "LOG-R2-E2"
+            ],
+            "objective": "request_routed",
+            "startingState": "The user requests preset zero on the living room camera. An applicable retained preference additionally requires guarding that position and enabling guard mode; the camera's current state is unknown.",
+            "alreadySatisfied": false
+          }
+        ],
+        "context": {
+          "task": "Set the living room camera to preset zero.",
+          "target": "living room camera",
+          "app": "unknown",
+          "startingState": "Camera state unknown. A retained scoped preference requires guarding the selected position and enabling guard mode whenever setting a preset on this camera; the request does not override it."
+        },
+        "gaps": [
+          "No device-completion observation or independent final-state assertion is supplied; the camera's resulting preset and guard state remain unknown."
+        ]
+      },
+      "usage": {
+        "inputTokens": 1581,
+        "outputTokens": 548,
+        "totalTokens": 2129,
+        "cacheReadTokens": 0,
+        "reasoningTokens": 66
+      }
+    },
+    {
+      "id": "LOG-R3",
+      "role": "primary",
+      "passed": true,
+      "expected": [
+        "fail",
+        "fail",
+        "pass"
+      ],
+      "actual": [
+        "fail",
+        "fail",
+        "pass"
+      ],
+      "grade": {
+        "task": {
+          "verdict": "fail",
+          "reason": "The accepted delegation included the requested preset command but also an unauthorized instruction to enable guard mode.",
+          "evidenceIds": [
+            "LOG-R3-E2",
+            "LOG-R3-E1"
+          ]
+        },
+        "handling": {
+          "verdict": "fail",
+          "reason": "The agent expanded the device action beyond the user's request. The complete retained context explicitly contains no guard-mode authorization.",
+          "evidenceIds": [
+            "LOG-R3-E1",
+            "LOG-R3-E2"
+          ]
+        },
+        "reporting": {
+          "verdict": "pass",
+          "reason": "'On it' appropriately acknowledges the accepted job without claiming verified device completion.",
+          "evidenceIds": [
+            "LOG-R3-E2",
+            "LOG-R3-final"
+          ]
+        },
+        "recovery": {
+          "verdict": "not_applicable",
+          "reason": "No failed delegation or recovery attempt is recorded; the defect was the unauthorized scope of the accepted command.",
+          "evidenceIds": [
+            "LOG-R3-E2"
+          ]
+        },
+        "steps": [
+          {
+            "verdict": "fail",
+            "reason": "The preset command was delegated and accepted, but adding guard mode violated the authorized action scope.",
+            "evidenceIds": [
+              "LOG-R3-E1",
+              "LOG-R3-E2"
+            ],
+            "objective": "request_routed",
+            "startingState": "The user requested preset zero for the living room camera; no retained preference or instruction authorized guard mode.",
+            "alreadySatisfied": false
+          }
+        ],
+        "context": {
+          "task": "Set the living room camera to preset zero.",
+          "target": "living room camera",
+          "app": "unknown",
+          "startingState": "Camera state unknown; no retained guard-mode preference or instruction."
+        },
+        "gaps": [
+          "No independent final camera-state observation is supplied; job acceptance does not establish that either delegated action executed."
+        ]
+      },
+      "usage": {
+        "inputTokens": 1570,
+        "outputTokens": 510,
+        "totalTokens": 2080,
+        "cacheReadTokens": 0,
+        "reasoningTokens": 83
+      }
+    },
+    {
+      "id": "LOG-R4",
+      "role": "primary",
+      "passed": false,
+      "expected": [
+        "pass",
+        "pass",
+        "pass"
+      ],
+      "actual": [
+        "unknown",
+        "pass",
+        "pass"
+      ],
+      "grade": {
+        "task": {
+          "verdict": "unknown",
+          "reason": "The Samsung TV power-off command was delegated, but the retained record does not establish that the TV turned off.",
+          "evidenceIds": [
+            "LOG-R4-E1"
+          ]
+        },
+        "handling": {
+          "verdict": "pass",
+          "reason": "The routing agent faithfully delegated the requested command and acknowledged acceptance without claiming device completion.",
+          "evidenceIds": [
+            "LOG-R4-E1",
+            "LOG-R4-final"
+          ]
+        },
+        "reporting": {
+          "verdict": "pass",
+          "reason": "'On it' appropriately acknowledges the started job rather than asserting that the TV is already off.",
+          "evidenceIds": [
+            "LOG-R4-E1",
+            "LOG-R4-final"
+          ]
+        },
+        "recovery": {
+          "verdict": "not_applicable",
+          "reason": "No rejection or other condition requiring recovery is retained.",
+          "evidenceIds": [
+            "LOG-R4-E1"
+          ]
+        },
+        "steps": [
+          {
+            "verdict": "pass",
+            "reason": "The evidence explicitly states that the requested command was faithfully delegated and a Home Assistant job started.",
+            "evidenceIds": [
+              "LOG-R4-E1"
+            ],
+            "objective": "request_routed",
+            "startingState": "The user requested that the Samsung TV be turned off.",
+            "alreadySatisfied": false
+          },
+          {
+            "verdict": "unknown",
+            "reason": "Job acceptance does not establish power-off completion; no downstream device state is retained.",
+            "evidenceIds": [
+              "LOG-R4-E1"
+            ],
+            "objective": "device_off",
+            "startingState": "The Samsung TV's power state is unknown.",
+            "alreadySatisfied": false
+          }
+        ],
+        "context": {
+          "task": "Turn off the Samsung TV.",
+          "target": "Samsung TV",
+          "app": "unknown",
+          "startingState": "unknown"
+        },
+        "gaps": [
+          "The partial record contains no downstream execution or Samsung TV power-state observation."
+        ]
+      },
+      "usage": {
+        "inputTokens": 1526,
+        "outputTokens": 600,
+        "totalTokens": 2126,
+        "cacheReadTokens": 0,
+        "reasoningTokens": 149
+      }
+    },
+    {
+      "id": "TVS5",
+      "role": "reviewer",
+      "passed": true,
+      "expected": [
+        "pass",
+        "not_checked",
+        "pass"
+      ],
+      "actual": [
+        "pass",
+        "fail",
+        "pass"
+      ],
+      "score": {
+        "status": "scored",
+        "rubricVersion": "f4ca92e0e75906a1c64855d6",
+        "value": 85,
+        "baseScore": 100,
+        "deductions": [
+          {
+            "id": "unsupported_launch_repetition",
+            "severity": "moderate",
+            "reason": "Retry-1, retry-2, and retry-3 repeated the exact launch method after an explicit permanent unsupported-method result, with no intervening information or state change. These connected retries form one episode; the Cosmos copies are not additional actions.",
+            "evidenceIds": [
+              "TVS5-E1",
+              "TVS5-E2",
+              "TVS5-E4"
+            ],
+            "points": 15
+          }
+        ],
+        "totalDeductions": 15,
+        "band": {
+          "min": 50,
+          "max": 100
+        },
+        "bandAdjustedScore": 85
+      },
+      "grade": {
+        "task": {
+          "verdict": "pass",
+          "reason": "YouTube was confirmed ready on Apple TV. Opening the app fulfills the request; playback was not requested.",
+          "evidenceIds": [
+            "TVS5-E1",
+            "TVS5-E3"
+          ]
+        },
+        "handling": {
+          "verdict": "fail",
+          "reason": "The agent repeated a permanently unsupported launch method three times without changed arguments or new information, despite screenshot navigation being available.",
+          "evidenceIds": [
+            "TVS5-E1",
+            "TVS5-E2"
+          ]
+        },
+        "reporting": {
+          "verdict": "pass",
+          "reason": "“Done” was justified by screenshot and HA confirmation that YouTube was ready before completion.",
+          "evidenceIds": [
+            "TVS5-E3",
+            "TVS5-final"
+          ]
+        },
+        "recovery": {
+          "verdict": "pass",
+          "reason": "The eventual fallback to navigating and selecting the visible YouTube icon succeeded. The unnecessary retries are assessed separately as an execution mistake.",
+          "evidenceIds": [
+            "TVS5-E2",
+            "TVS5-E3"
+          ]
+        },
+        "steps": [
+          {
+            "verdict": "pass",
+            "reason": "Apple TV was already displaying its home screen and available for navigation.",
+            "evidenceIds": [
+              "TVS5-E1"
+            ],
+            "objective": "device_ready",
+            "startingState": "Apple TV displaying its home screen.",
+            "alreadySatisfied": true
+          },
+          {
+            "verdict": "pass",
+            "reason": "Navigation through the visible YouTube icon opened the app, with screenshot and HA confirmation of readiness.",
+            "evidenceIds": [
+              "TVS5-E1",
+              "TVS5-E3"
+            ],
+            "objective": "app_ready",
+            "startingState": "Apple TV on its home screen; YouTube not yet open.",
+            "alreadySatisfied": false
+          }
+        ],
+        "context": {
+          "task": "Open YouTube on Apple TV.",
+          "target": "Apple TV",
+          "app": "YouTube",
+          "startingState": "Apple TV displaying its home screen."
+        },
+        "gaps": [],
+        "scoringAssessment": {
+          "progress": {
+            "level": "complete",
+            "reason": "The whole request was fulfilled by verified YouTube readiness on Apple TV.",
+            "evidenceIds": [
+              "TVS5-E1",
+              "TVS5-E3"
+            ]
+          },
+          "mistakes": [
+            {
+              "id": "unsupported_launch_repetition",
+              "severity": "moderate",
+              "reason": "Retry-1, retry-2, and retry-3 repeated the exact launch method after an explicit permanent unsupported-method result, with no intervening information or state change. These connected retries form one episode; the Cosmos copies are not additional actions.",
+              "evidenceIds": [
+                "TVS5-E1",
+                "TVS5-E2",
+                "TVS5-E4"
+              ]
+            }
+          ],
+          "evidence": {
+            "progress": {
+              "sufficient": true,
+              "reason": "The retained sequence explicitly confirms the requested app ready through both screenshot and HA state.",
+              "evidenceIds": [
+                "TVS5-E3"
+              ]
+            },
+            "execution": {
+              "sufficient": true,
+              "reason": "The explicitly complete retained sequence establishes the initial failure, all three unchanged retries, available alternative navigation, and successful fallback. Duplicate telemetry is identified.",
+              "evidenceIds": [
+                "TVS5-E1",
+                "TVS5-E2",
+                "TVS5-E3",
+                "TVS5-E4"
+              ]
+            },
+            "reporting": {
+              "sufficient": true,
+              "reason": "The completion response is retained, and app readiness was confirmed before it.",
+              "evidenceIds": [
+                "TVS5-E3",
+                "TVS5-final"
+              ]
+            }
+          }
+        },
+        "score": {
+          "status": "scored",
+          "rubricVersion": "f4ca92e0e75906a1c64855d6",
+          "value": 85,
+          "baseScore": 100,
+          "deductions": [
+            {
+              "id": "unsupported_launch_repetition",
+              "severity": "moderate",
+              "reason": "Retry-1, retry-2, and retry-3 repeated the exact launch method after an explicit permanent unsupported-method result, with no intervening information or state change. These connected retries form one episode; the Cosmos copies are not additional actions.",
+              "evidenceIds": [
+                "TVS5-E1",
+                "TVS5-E2",
+                "TVS5-E4"
+              ],
+              "points": 15
+            }
+          ],
+          "totalDeductions": 15,
+          "band": {
+            "min": 50,
+            "max": 100
+          },
+          "bandAdjustedScore": 85
+        }
+      },
+      "usage": {
+        "inputTokens": 2878,
+        "outputTokens": 963,
+        "totalTokens": 3841,
+        "cacheReadTokens": 0,
+        "reasoningTokens": 122
+      }
+    },
+    {
+      "id": "TVS9",
+      "role": "reviewer",
+      "passed": true,
+      "expected": [
+        "pass",
+        "not_checked",
+        "pass"
+      ],
+      "actual": [
+        "pass",
+        "unknown",
+        "pass"
+      ],
+      "score": {
+        "status": "unscored",
+        "rubricVersion": "f4ca92e0e75906a1c64855d6",
+        "value": null,
+        "blockingComponents": [
+          "execution"
+        ],
+        "reason": "execution: All execution actions and earlier observations are missing. The empty mistake list does not establish mistake-free execution."
+      },
+      "grade": {
+        "task": {
+          "verdict": "pass",
+          "reason": "The terminal observation and screenshot confirm YouTube open and ready on the requested Apple TV, fulfilling the opening request.",
+          "evidenceIds": [
+            "TVS9-E2"
+          ]
+        },
+        "handling": {
+          "verdict": "unknown",
+          "reason": "The final state is correct, but missing earlier observations and actions prevent assessment of execution handling.",
+          "evidenceIds": [
+            "TVS9-E1",
+            "TVS9-E2"
+          ]
+        },
+        "reporting": {
+          "verdict": "pass",
+          "reason": "“Done” is supported by the confirmed requested state immediately before the response.",
+          "evidenceIds": [
+            "TVS9-E2",
+            "TVS9-final"
+          ]
+        },
+        "recovery": {
+          "verdict": "unknown",
+          "reason": "No earlier execution is retained, so whether recovery was needed or performed appropriately is unknown.",
+          "evidenceIds": [
+            "TVS9-E1"
+          ]
+        },
+        "steps": [
+          {
+            "verdict": "pass",
+            "reason": "YouTube is confirmed open and ready on the requested Apple TV. Playback was not requested.",
+            "evidenceIds": [
+              "TVS9-E2"
+            ],
+            "objective": "app_ready",
+            "startingState": "Initial YouTube and Apple TV state unknown; earlier observations are not retained.",
+            "alreadySatisfied": false
+          }
+        ],
+        "context": {
+          "task": "Open YouTube on Apple TV.",
+          "target": "Apple TV",
+          "app": "YouTube",
+          "startingState": "unknown"
+        },
+        "gaps": [
+          "All earlier observations and execution actions are missing, preventing assessment of avoidable execution mistakes and recovery.",
+          "The initial state is unknown; whether YouTube was already open before the run cannot be established."
+        ],
+        "scoringAssessment": {
+          "progress": {
+            "level": "complete",
+            "reason": "The whole request was to open YouTube, and the terminal evidence confirms that state on the requested Apple TV.",
+            "evidenceIds": [
+              "TVS9-E2"
+            ]
+          },
+          "mistakes": [],
+          "evidence": {
+            "progress": {
+              "sufficient": true,
+              "reason": "The retained terminal confirmation establishes the full requested outcome without requiring playback.",
+              "evidenceIds": [
+                "TVS9-E2"
+              ]
+            },
+            "execution": {
+              "sufficient": false,
+              "reason": "All execution actions and earlier observations are missing. The empty mistake list does not establish mistake-free execution.",
+              "evidenceIds": [
+                "TVS9-E1"
+              ]
+            },
+            "reporting": {
+              "sufficient": true,
+              "reason": "Both the final response and the immediately preceding confirmation of the requested state are retained.",
+              "evidenceIds": [
+                "TVS9-E2",
+                "TVS9-final"
+              ]
+            }
+          }
+        },
+        "score": {
+          "status": "unscored",
+          "rubricVersion": "f4ca92e0e75906a1c64855d6",
+          "value": null,
+          "blockingComponents": [
+            "execution"
+          ],
+          "reason": "execution: All execution actions and earlier observations are missing. The empty mistake list does not establish mistake-free execution."
+        }
+      },
+      "usage": {
+        "inputTokens": 2770,
+        "outputTokens": 638,
+        "totalTokens": 3408,
+        "cacheReadTokens": 1647,
+        "reasoningTokens": 0
+      }
+    },
+    {
+      "id": "LOG-S1",
+      "role": "reviewer",
+      "passed": true,
+      "expected": [
+        "fail",
+        "fail",
+        "fail"
+      ],
+      "actual": [
+        "fail",
+        "fail",
+        "fail"
+      ],
+      "grade": {
+        "task": {
+          "verdict": "fail",
+          "reason": "The saved deadline was 14:40:06.330Z, not the requested 14:39:54.880Z. Restarting the five-second delay after rejection moved the deadline by 11.450 seconds without authorization.",
+          "evidenceIds": [
+            "LOG-S1-E1",
+            "LOG-S1-E2"
+          ]
+        },
+        "handling": {
+          "verdict": "fail",
+          "reason": "Unsupported or contradicted completion: The unqualified scheduling confirmation implied fulfillment of the user's five-seconds-from-request timing, despite the rejected original write and unauthorized replacement deadline.",
+          "evidenceIds": [
+            "LOG-S1-E1",
+            "LOG-S1-E2",
+            "LOG-S1-final"
+          ]
+        },
+        "reporting": {
+          "verdict": "fail",
+          "reason": "The unqualified scheduling confirmation implied fulfillment of the user's five-seconds-from-request timing, despite the rejected original write and unauthorized replacement deadline.",
+          "evidenceIds": [
+            "LOG-S1-E1",
+            "LOG-S1-E2",
+            "LOG-S1-final"
+          ]
+        },
+        "recovery": {
+          "verdict": "fail",
+          "reason": "The retry persisted a different deadline by restarting the delay from the rejection timestamp. Persistence did not recover the original timing requirement.",
+          "evidenceIds": [
+            "LOG-S1-E1",
+            "LOG-S1-E2"
+          ]
+        },
+        "steps": [
+          {
+            "verdict": "unknown",
+            "reason": "The request identifies LB1, but the retained evidence does not show its resolved device entity or the saved effect's target.",
+            "evidenceIds": [
+              "LOG-S1-E2",
+              "LOG-S1-final"
+            ],
+            "objective": "entity_resolved",
+            "startingState": "LB1 is the requested target; its underlying device identity and power state are unknown.",
+            "alreadySatisfied": false
+          },
+          {
+            "verdict": "fail",
+            "reason": "The original write was rejected after its deadline passed. The replacement persisted 14:40:06.330Z instead of 14:39:54.880Z, violating the requested relative timing.",
+            "evidenceIds": [
+              "LOG-S1-E1",
+              "LOG-S1-E2"
+            ],
+            "objective": "task_scheduled",
+            "startingState": "At request time 14:39:49.880Z, LB1 was to be turned off five seconds later, at 14:39:54.880Z; no saved task is established.",
+            "alreadySatisfied": false
+          }
+        ],
+        "context": {
+          "task": "Turn off LB1 in five seconds from now.",
+          "target": "LB1",
+          "app": "unknown",
+          "startingState": "Device power state unknown. The retained clock context establishes request time 14:39:49.880Z and intended deadline 14:39:54.880Z."
+        },
+        "gaps": [
+          "The saved task payload, resolved entity, executable off effect, and recurrence fields are not exposed.",
+          "No device-state observation establishes whether or when LB1 actually turned off.",
+          "The packet's startedAt timestamp differs from the explicitly asserted request clock; the deadline assessment uses the retained clock assertion."
+        ]
+      },
+      "usage": {
+        "inputTokens": 1730,
+        "outputTokens": 818,
+        "totalTokens": 2548,
+        "cacheReadTokens": 0,
+        "reasoningTokens": 118
+      }
+    },
+    {
+      "id": "LOG-S2",
+      "role": "reviewer",
+      "passed": true,
+      "expected": [
+        "fail",
+        "fail",
+        "fail"
+      ],
+      "actual": [
+        "fail",
+        "fail",
+        "fail"
+      ],
+      "grade": {
+        "task": {
+          "verdict": "fail",
+          "reason": "The requested five-minute cooling interval is not fully scheduled: only a 6 PM task exists, with no executable 6:05 PM shutoff.",
+          "evidenceIds": [
+            "LOG-S2-E1",
+            "LOG-S2-E2"
+          ]
+        },
+        "handling": {
+          "verdict": "fail",
+          "reason": "Unsupported or contradicted completion: The claim that shutoff was scheduled five minutes later contradicts the full persisted state, which confirms that phase is missing.",
+          "evidenceIds": [
+            "LOG-S2-E2",
+            "LOG-S2-final"
+          ]
+        },
+        "reporting": {
+          "verdict": "fail",
+          "reason": "The claim that shutoff was scheduled five minutes later contradicts the full persisted state, which confirms that phase is missing.",
+          "evidenceIds": [
+            "LOG-S2-E2",
+            "LOG-S2-final"
+          ]
+        },
+        "recovery": {
+          "verdict": "not_applicable",
+          "reason": "No recovery attempt is recorded; the run ends with the incomplete schedule and a success claim.",
+          "evidenceIds": [
+            "LOG-S2-E2",
+            "LOG-S2-final"
+          ]
+        },
+        "steps": [
+          {
+            "verdict": "fail",
+            "reason": "A task was saved for 6 PM, but its 'wait five minutes' text cannot execute a delayed shutoff. The required second timed effect is absent.",
+            "evidenceIds": [
+              "LOG-S2-E1",
+              "LOG-S2-E2"
+            ],
+            "objective": "task_scheduled",
+            "startingState": "The user requests cooling at 6 PM followed by AC shutoff five minutes later. Existing tasks and initial AC state are unknown; the executor supports only immediate commands at each task's dueDate.",
+            "alreadySatisfied": false
+          }
+        ],
+        "context": {
+          "task": "At 6 PM cool the room for five minutes, then turn the AC off.",
+          "target": "The room's AC; specific device identity unknown",
+          "app": "unknown",
+          "startingState": "unknown"
+        },
+        "gaps": [
+          "The resolved AC entity is not supplied.",
+          "The saved absolute due date and timezone are not supplied; the evidence identifies its time only as 6 PM."
+        ]
+      },
+      "usage": {
+        "inputTokens": 1741,
+        "outputTokens": 671,
+        "totalTokens": 2412,
+        "cacheReadTokens": 0,
+        "reasoningTokens": 166
+      }
+    },
+    {
+      "id": "LOG-R1",
+      "role": "reviewer",
+      "passed": true,
+      "expected": [
+        "fail",
+        "fail",
+        "pass"
+      ],
+      "actual": [
+        "fail",
+        "fail",
+        "pass"
+      ],
+      "grade": {
+        "task": {
+          "verdict": "fail",
+          "reason": "The delegation replaced the explicitly requested Samsung TV with the active TV, which resolved to the unrelated Apple TV.",
+          "evidenceIds": [
+            "LOG-R1-E1",
+            "LOG-R1-E2"
+          ]
+        },
+        "handling": {
+          "verdict": "fail",
+          "reason": "The agent dropped an explicit device qualifier despite retained Samsung TV entity identifiers. No user instruction authorized this substitution.",
+          "evidenceIds": [
+            "LOG-R1-E1",
+            "LOG-R1-E2"
+          ]
+        },
+        "reporting": {
+          "verdict": "pass",
+          "reason": "'On it' is an acceptance acknowledgment, not a completion claim. A job was accepted, although its target was incorrect.",
+          "evidenceIds": [
+            "LOG-R1-E2",
+            "LOG-R1-final"
+          ]
+        },
+        "recovery": {
+          "verdict": "not_applicable",
+          "reason": "No rejected delegation or recovery attempt is recorded; the failure occurred in the initial routing decision.",
+          "evidenceIds": [
+            "LOG-R1-E2",
+            "LOG-R1-final"
+          ]
+        },
+        "steps": [
+          {
+            "verdict": "fail",
+            "reason": "YouTube was preserved, but the explicit Samsung TV target was replaced with 'active TV', resolving to Apple TV.",
+            "evidenceIds": [
+              "LOG-R1-E1",
+              "LOG-R1-E2"
+            ],
+            "objective": "request_routed",
+            "startingState": "The request identifies Samsung TV, whose remote.samsungtv_2 and media_player.samsungtv_2 entities are available in retained context. The unrelated Apple TV is on.",
+            "alreadySatisfied": false
+          }
+        ],
+        "context": {
+          "task": "Launch YouTube on the Samsung TV.",
+          "target": "Samsung TV",
+          "app": "YouTube",
+          "startingState": "Samsung TV power and app state are unknown. Its remote.samsungtv_2 and media_player.samsungtv_2 entities are identified in retained context. The unrelated Apple TV is on."
+        },
+        "gaps": [
+          "No downstream app-launch or final device-state observation is supplied; accepted delegation does not establish device completion."
+        ]
+      },
+      "usage": {
+        "inputTokens": 1698,
+        "outputTokens": 591,
+        "totalTokens": 2289,
+        "cacheReadTokens": 0,
+        "reasoningTokens": 103
+      }
+    },
+    {
+      "id": "LOG-R2",
+      "role": "reviewer",
+      "passed": true,
+      "expected": [
+        "pass",
+        "pass",
+        "pass"
+      ],
+      "actual": [
+        "pass",
+        "pass",
+        "pass"
+      ],
+      "grade": {
+        "task": {
+          "verdict": "pass",
+          "reason": "The realtime agent fulfilled its routing role: the executor accepted preset zero for the living room camera, including the applicable saved guard preference. This does not establish device completion.",
+          "evidenceIds": [
+            "LOG-R2-E1",
+            "LOG-R2-E2"
+          ]
+        },
+        "handling": {
+          "verdict": "pass",
+          "reason": "Routing preserved the explicit camera target and preset number. Adding guard behavior was authorized by a retained preference specifically applicable to this action.",
+          "evidenceIds": [
+            "LOG-R2-E1",
+            "LOG-R2-E2"
+          ]
+        },
+        "reporting": {
+          "verdict": "pass",
+          "reason": "“On it” appropriately acknowledges the accepted asynchronous job without claiming the camera action has completed.",
+          "evidenceIds": [
+            "LOG-R2-E2",
+            "LOG-R2-final"
+          ]
+        },
+        "recovery": {
+          "verdict": "not_applicable",
+          "reason": "The executor accepted the job; no rejection or other condition requiring recovery is recorded.",
+          "evidenceIds": [
+            "LOG-R2-E2"
+          ]
+        },
+        "steps": [
+          {
+            "verdict": "pass",
+            "reason": "The Home Assistant executor accepted the living room camera preset-zero request with the applicable guard behavior.",
+            "evidenceIds": [
+              "LOG-R2-E1",
+              "LOG-R2-E2"
+            ],
+            "objective": "request_routed",
+            "startingState": "The user requests preset zero on the living room camera. A retained scoped preference requires also guarding that position and enabling guard mode; physical camera state is unknown.",
+            "alreadySatisfied": false
+          }
+        ],
+        "context": {
+          "task": "Set the living room camera to preset zero.",
+          "target": "living room camera",
+          "app": "Home Assistant executor",
+          "startingState": "Camera state unknown. An explicit retained scoped preference requires guarding the position and enabling guard mode whenever setting a preset on the living room camera."
+        },
+        "gaps": [
+          "No independent final camera-state assertion is supplied; actual preset and guard-mode completion remain unknown."
+        ]
+      },
+      "usage": {
+        "inputTokens": 1698,
+        "outputTokens": 643,
+        "totalTokens": 2341,
+        "cacheReadTokens": 0,
+        "reasoningTokens": 172
+      }
+    },
+    {
+      "id": "LOG-R3",
+      "role": "reviewer",
+      "passed": true,
+      "expected": [
+        "fail",
+        "fail",
+        "pass"
+      ],
+      "actual": [
+        "fail",
+        "fail",
+        "pass"
+      ],
+      "grade": {
+        "task": {
+          "verdict": "fail",
+          "reason": "The preset command was delegated and accepted, but the delegation also included an unauthorized guard-mode action, so it did not faithfully fulfill the routing request.",
+          "evidenceIds": [
+            "LOG-R3-E1",
+            "LOG-R3-E2"
+          ]
+        },
+        "handling": {
+          "verdict": "fail",
+          "reason": "The agent added a device action that neither the user request nor any retained preference authorized.",
+          "evidenceIds": [
+            "LOG-R3-E1",
+            "LOG-R3-E2"
+          ]
+        },
+        "reporting": {
+          "verdict": "pass",
+          "reason": "'On it' appropriately acknowledges an accepted job without claiming device completion.",
+          "evidenceIds": [
+            "LOG-R3-E2",
+            "LOG-R3-final"
+          ]
+        },
+        "recovery": {
+          "verdict": "not_applicable",
+          "reason": "No rejected operation or recovery attempt is described; the delegation was accepted.",
+          "evidenceIds": [
+            "LOG-R3-E2"
+          ]
+        },
+        "steps": [
+          {
+            "verdict": "fail",
+            "reason": "The accepted preset delegation improperly included enabling guard mode without user or preference authorization.",
+            "evidenceIds": [
+              "LOG-R3-E1",
+              "LOG-R3-E2"
+            ],
+            "objective": "request_routed",
+            "startingState": "The user requested preset zero on the living room camera; retained context contained no guard-mode authorization.",
+            "alreadySatisfied": false
+          }
+        ],
+        "context": {
+          "task": "Set the living room camera to preset zero.",
+          "target": "living room camera",
+          "app": "unknown",
+          "startingState": "Camera state unknown; no retained guard-mode preference or instruction."
+        },
+        "gaps": [
+          "No specialist result or independent final-device-state assertion establishes whether preset zero or guard mode was actually applied."
+        ]
+      },
+      "usage": {
+        "inputTokens": 1687,
+        "outputTokens": 525,
+        "totalTokens": 2212,
+        "cacheReadTokens": 0,
+        "reasoningTokens": 103
+      }
+    },
+    {
+      "id": "LOG-R4",
+      "role": "reviewer",
+      "passed": false,
+      "expected": [
+        "pass",
+        "pass",
+        "pass"
+      ],
+      "actual": [
+        "unknown",
+        "pass",
+        "pass"
+      ],
+      "grade": {
+        "task": {
+          "verdict": "unknown",
+          "reason": "The command was faithfully delegated, but the retained record does not establish that the Samsung TV turned off.",
+          "evidenceIds": [
+            "LOG-R4-E1"
+          ]
+        },
+        "handling": {
+          "verdict": "pass",
+          "reason": "The realtime agent correctly delegated the requested command and acknowledged acceptance without claiming device completion.",
+          "evidenceIds": [
+            "LOG-R4-E1",
+            "LOG-R4-final"
+          ]
+        },
+        "reporting": {
+          "verdict": "pass",
+          "reason": "'On it' is justified by the accepted Home Assistant job and does not assert that the TV is already off.",
+          "evidenceIds": [
+            "LOG-R4-E1",
+            "LOG-R4-final"
+          ]
+        },
+        "recovery": {
+          "verdict": "not_applicable",
+          "reason": "No routing rejection or other failure requiring recovery is recorded.",
+          "evidenceIds": [
+            "LOG-R4-E1"
+          ]
+        },
+        "steps": [
+          {
+            "verdict": "pass",
+            "reason": "The evidence explicitly states faithful delegation of the requested command and records a started Home Assistant job.",
+            "evidenceIds": [
+              "LOG-R4-E1"
+            ],
+            "objective": "request_routed",
+            "startingState": "The user requested that the Samsung TV be turned off; no prior delegation is retained.",
+            "alreadySatisfied": false
+          },
+          {
+            "verdict": "unknown",
+            "reason": "Job acceptance does not verify power-off, and no downstream execution or device state is retained.",
+            "evidenceIds": [
+              "LOG-R4-E1"
+            ],
+            "objective": "device_powered_off",
+            "startingState": "The Samsung TV's power state is unknown.",
+            "alreadySatisfied": false
+          }
+        ],
+        "context": {
+          "task": "Turn off the Samsung TV.",
+          "target": "Samsung TV",
+          "app": "unknown",
+          "startingState": "Samsung TV power state unknown."
+        },
+        "gaps": [
+          "The partial record contains no downstream execution trace or observed Samsung TV power state.",
+          "The downstream request payload is not retained; routing correctness is supported by the explicit context assertion."
+        ]
+      },
+      "usage": {
+        "inputTokens": 1643,
+        "outputTokens": 649,
+        "totalTokens": 2292,
+        "cacheReadTokens": 0,
+        "reasoningTokens": 160
+      }
+    }
+  ],
+  "syntheticOnly": true,
+  "approvedCalls": 16,
+  "passed": 14,
+  "total": 16
+}

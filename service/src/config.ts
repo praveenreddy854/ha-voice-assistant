@@ -33,6 +33,8 @@ export const AI_MODEL_MINI = process.env.AI_MODEL_MINI ?? process.env.AI_MODEL_N
 
 /** Advanced: agent loops (TV agent, navigation, typing) */
 export const AI_MODEL_ADVANCED = process.env.AI_MODEL_ADVANCED ?? process.env.AI_MODEL_MINI;
+/** Device-command translation needs the same intent fidelity as voice reasoning. */
+export const AI_MODEL_HOME_ASSISTANT = process.env.AI_MODEL_HOME_ASSISTANT ?? AI_MODEL_ADVANCED;
 export const EMBEDDING_MODEL =
   process.env.EMBEDDING_MODEL ?? "text-embedding-ada-002";
 

@@ -41,6 +41,7 @@ export function assessmentFromRecord(trace?: AgentTrace, flow?: TvFlowMemoryDocu
   const models = new Set(trace?.llmSteps.map(s => s.requestModel).filter(Boolean));
   const system = trace?.llmSteps.find(s => s.systemMessages?.length)?.systemMessages;
   return { agentId: agent.id, mode: "recorded", request: trace?.userPrompt || flow?.userPrompt || "", finalResponse,
+    evaluationScope: agent.id === "realtime" ? "routing" : "execution",
     startedAt: trace?.startedAt || flow!.createdAt, durationMs: trace?.durationMs, model: models.size === 1 ? [...models][0] : undefined,
     // Historical system-only hashes cannot claim equivalence with complete prompt+skill+tool manifests.
     promptVersion: system ? `retained-system-${digest(system)}` : undefined,
