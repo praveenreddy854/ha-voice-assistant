@@ -1,4 +1,5 @@
 // GPT Live backend proxy client with continuous 24 kHz PCM16 audio playback.
+import { messageHistoryManager } from "../utils/sessionManager";
 
 let activeWs: WebSocket | null = null;
 let activeAudioCtx: AudioContext | null = null;
@@ -289,6 +290,10 @@ async function finishResponse(fullText: string, followupExpected: boolean): Prom
     console.warn("[RealtimeChat] Response completed without audio deltas");
   }
 
+  if (fullText.trim()) {
+    messageHistoryManager.addMessage("assistant", fullText);
+    syncConversationHistory();
+  }
   currentOnDone?.(fullText);
   audioChunksInResponse = 0;
   loggedAudioDeltaForResponse = false;
@@ -354,6 +359,7 @@ function handleMessage(event: MessageEvent): void {
         activeConnectTimer = null;
         activeSessionReady = true;
         if (activeWs) {
+          syncConversationHistory();
           resolvePendingConnections(activeWs);
         }
         break;
@@ -411,6 +417,7 @@ function handleMessage(event: MessageEvent): void {
       case "user_transcript":
         // Hard-cap window is not cleared here either — it counts down from
         // activation regardless of how many user/assistant exchanges happen.
+        if (msg.text?.trim()) messageHistoryManager.addMessage("user", msg.text);
         currentOnUserTranscript?.(msg.text || "");
         break;
 
@@ -538,6 +545,18 @@ function isWsConnecting(): boolean {
 function sendJson(payload: Record<string, unknown>): void {
   if (!isWsOpen()) return;
   activeWs!.send(JSON.stringify(payload));
+}
+
+function syncConversationHistory(): void {
+  if (activeSessionReady) {
+    const history = messageHistoryManager.getSessionHistory();
+    sendJson({ type: "conversation_history", history, sentAt: Date.now() });
+  }
+}
+
+function sendUserText(ws: WebSocket, text: string): void {
+  ws.send(JSON.stringify({ type: "user_text", text }));
+  if (text.trim()) messageHistoryManager.addMessage("user", text);
 }
 
 async function startMicStreaming(): Promise<void> {
@@ -807,7 +826,7 @@ export async function startRealtimeVoiceTurn(
         if (lifecycleVersion !== turnLifecycleVersion) return;
         startListeningWindow(LISTENING_WINDOW_MS);
         if (options.initialText?.trim()) {
-          ws.send(JSON.stringify({ type: "user_text", text: options.initialText.trim() }));
+          sendUserText(ws, options.initialText.trim());
         }
       } catch (error) {
         fail(error);
@@ -838,7 +857,7 @@ export function startRealtimeChat(
     if (lifecycleVersion !== turnLifecycleVersion) return;
     const ws = await connectRealtime();
     if (lifecycleVersion !== turnLifecycleVersion) return;
-    ws.send(JSON.stringify({ type: "user_text", text }));
+    sendUserText(ws, text);
   };
 
   return new Promise<void>((resolve) => {
