@@ -549,7 +549,8 @@ function sendJson(payload: Record<string, unknown>): void {
 
 function syncConversationHistory(): void {
   if (activeSessionReady) {
-    sendJson({ type: "conversation_history", history: messageHistoryManager.getSessionHistory() });
+    const history = messageHistoryManager.getSessionHistory();
+    sendJson({ type: "conversation_history", history, sentAt: Date.now() });
   }
 }
 

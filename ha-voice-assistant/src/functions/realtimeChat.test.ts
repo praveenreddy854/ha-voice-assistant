@@ -206,7 +206,7 @@ test("a text exchange is restored before the next wake-word command on a new con
   socket.ready();
   await vi.advanceTimersByTimeAsync(0);
   const sent = socket.send.mock.calls.map(([raw]) => JSON.parse(raw));
-  expect(sent[0]).toEqual({ type: "conversation_history", history: [
+  expect(sent[0]).toEqual({ type: "conversation_history", sentAt: expect.any(Number), history: [
     { role: "user", content: "Turn on the bedroom light", createdAt: expect.any(Number) },
     { role: "assistant", content: "The bedroom light is on.", createdAt: expect.any(Number) },
   ] });
@@ -240,6 +240,7 @@ test("spoken conversation survives a reload with its original timestamps and exp
   await vi.advanceTimersByTimeAsync(0);
   expect(JSON.parse(FakeWebSocket.instances[1].send.mock.calls[0][0])).toEqual({
     type: "conversation_history",
+    sentAt: startedAt + 4 * 60_000,
     history: stored.messages.map(({ role, content, timestamp }: { role: string; content: string; timestamp: number }) => ({ role, content, createdAt: timestamp })),
   });
   chat.stopRealtimeChat();
@@ -252,7 +253,7 @@ test("spoken conversation survives a reload with its original timestamps and exp
   FakeWebSocket.instances[2].ready();
   await vi.advanceTimersByTimeAsync(0);
   const restored = JSON.parse(FakeWebSocket.instances[2].send.mock.calls[0][0]);
-  expect(restored).toEqual({ type: "conversation_history", history: [
+  expect(restored).toEqual({ type: "conversation_history", sentAt: startedAt + 5 * 60_000 + 1, history: [
     { role: "user", content: "And tomorrow?", createdAt: expect.any(Number) },
   ] });
   chat.stopRealtimeChat();

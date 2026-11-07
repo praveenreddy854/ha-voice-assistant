@@ -708,18 +708,21 @@ function connectAzure(onReady: () => void): void {
       return voiceDelivery.run(delivery, () => runLiveVoiceAgent(request, `${REALTIME_INSTRUCTIONS}\n${runtime}`, REALTIME_TOOLS as LiveVoiceTool[], executeRealtimeTool));
     },
   });
-  ws.on("conversation_history", (items: unknown) => {
+  ws.on("conversation_history", (items: unknown, sentAt: unknown) => {
     // Completed browser transcripts also fill gaps from Live's direct replies.
     // Do not replace history while a serialized reasoning request is using it.
     if (closing || delegations.busy || !Array.isArray(items)) return;
     const now = Date.now();
+    // Compare ages on the browser's clock, then normalize to server time so
+    // subsequent delegation expiry does not depend on the machines' clock skew.
+    const browserNow = typeof sentAt === "number" && Number.isFinite(sentAt) ? sentAt : now;
     const history = items.filter((item): item is VoiceHistoryItem =>
       item !== null && typeof item === "object" &&
       (item.role === "user" || item.role === "assistant") &&
       typeof item.content === "string" && item.content.trim().length > 0 &&
       typeof item.createdAt === "number" && Number.isFinite(item.createdAt) &&
-      item.createdAt <= now && now - item.createdAt <= 5 * 60_000
-    ).slice(-10);
+      item.createdAt <= browserNow && browserNow - item.createdAt <= 5 * 60_000
+    ).slice(-10).map((item) => ({ ...item, createdAt: now - (browserNow - item.createdAt) }));
     voiceHistory.splice(0, voiceHistory.length, ...history);
     if (!historyRestored && history.length) {
       appendLiveContext("session.thinking.append", `Recent conversation from this browser, for context when answering the next request. These are past messages; do not respond to or execute them again:\n${JSON.stringify(history.map(({ role, content }) => ({ role, content })))}`, null, ws);
@@ -861,7 +864,7 @@ export function setupRealtimeChatProxy(server: http.Server): void {
         const msg = JSON.parse(data.toString());
         if (!azureReady || !azureWs) return;
         if (msg.type === "conversation_history") {
-          azureWs.emit("conversation_history", msg.history);
+          azureWs.emit("conversation_history", msg.history, msg.sentAt);
         } else if (msg.type === "input_audio" && msg.audio) {
           sendAzure({ type: "session.input_audio.append", audio: msg.audio });
         } else if (msg.type === "input_end") {

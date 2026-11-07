@@ -199,6 +199,38 @@ test("restored history drops expired or invalid messages and keeps the last ten"
   assert.doesNotMatch(context, /Expired secret|Invalid role|Future message|Missing timestamp/);
 });
 
+for (const skew of [-30_000, 30_000]) {
+  test(`restored history preserves message ages with browser clock skew of ${skew}ms`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    const requests: Message[] = [];
+    const fixture = proxyFixture(async (request) => { requests.push(request); return "Done."; });
+    t.after(() => cleanup(fixture));
+    const serverNow = Date.now();
+    const sentAt = serverNow + skew;
+    const history = [
+      { role: "user", content: "Use the bedroom light", createdAt: sentAt - 299_000 },
+      { role: "assistant", content: "The bedroom light is on.", createdAt: sentAt - 500 },
+    ];
+    fixture.client.receive({ type: "conversation_history", sentAt, history: [
+      { role: "user", content: "Expired message", createdAt: sentAt - 300_001 },
+      ...history,
+      { role: "user", content: "Future message", createdAt: sentAt + 1000 },
+    ] });
+    fixture.client.receive({ type: "user_text", text: "Turn it off" });
+    t.mock.timers.tick(800);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(requests[0].history, history.map((item) => ({ ...item, createdAt: item.createdAt - skew })));
+
+    t.mock.timers.tick(1001);
+    fixture.client.receive({ type: "user_text", text: "Turn it back on" });
+    t.mock.timers.tick(800);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(requests[1].history.map((item: Message) => item.content), [
+      "The bedroom light is on.", "Turn it off", "Done.",
+    ]);
+  });
+}
+
 test("direct spoken replies update follow-up reasoning without duplicating Live context", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const requests: Message[] = [];

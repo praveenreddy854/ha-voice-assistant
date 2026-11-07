@@ -35,7 +35,7 @@ test("follow-up context survives reloads and each message expires after five min
   await page.clock.fastForward(4 * 60_000);
   await page.reload();
   await send("Turn it off");
-  expect(connections[1][0]).toEqual({ type: "conversation_history", history: original });
+  expect(connections[1][0]).toEqual({ type: "conversation_history", history: original, sentAt: expect.any(Number) });
   expect(connections[1][1]).toEqual({ type: "user_text", text: "Turn it off" });
 
   await page.clock.fastForward(60_001);
