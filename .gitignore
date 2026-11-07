@@ -38,3 +38,6 @@ service/graphify-out
 # Locally generated Apple Shortcut build output.
 service/shortcuts/*.shortcut
 service/dist/shortcuts/
+
+# Optional local Python runtime for gesture detection
+service/.venv/

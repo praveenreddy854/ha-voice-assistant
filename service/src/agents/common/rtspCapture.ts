@@ -1,90 +1,86 @@
 /**
- * RTSP Capture Module
- *
- * When on-device camera is disabled (CAMERA_ON_DEVICE !== "true"),
- * this module spawns ffmpeg to capture frames from an RTSP stream
- * at 1fps and saves them to out/{sessionId}/{timestamp}.jpg —
- * the same directory structure that screenshotStore.ts reads from.
- *
- * Requires ffmpeg to be installed on the host machine.
+ * Capture RTSP frames for a session. A failed capture is removed and can be
+ * restarted; a stopped or superseded process cannot remove its replacement.
  */
+import { spawn, ChildProcess } from 'child_process';
+import * as path from 'path';
+import { promises as fs } from 'fs';
+import * as readline from 'readline';
+import { redactLogText } from '../../logSanitizer';
 
-import { spawn, ChildProcess } from "child_process";
-import * as path from "path";
-import { promises as fs } from "fs";
-
-const activeCaptures = new Map<string, ChildProcess>();
+interface Capture {
+  proc?: ChildProcess;
+  stopped: boolean;
+}
+const activeCaptures = new Map<string, Capture>();
 
 function buildRtspUrl(): string {
-  const base = process.env.RTSP_URL;
-  if (!base) throw new Error("RTSP_URL is not set");
-
-  const username = process.env.RTSP_USERNAME;
-  const password = process.env.RTSP_PASSWORD;
-
-  if (username && password) {
-    // Insert credentials into rtsp://host... → rtsp://user:pass@host...
-    return base.replace("rtsp://", `rtsp://${username}:${password}@`);
+  if (!process.env.RTSP_URL) throw new Error('RTSP_URL is not set');
+  const url = new URL(process.env.RTSP_URL);
+  if (!['rtsp:', 'rtsps:'].includes(url.protocol)) throw new Error('RTSP_URL must use rtsp:// or rtsps://');
+  if (process.env.RTSP_USERNAME && process.env.RTSP_PASSWORD) {
+    url.username = process.env.RTSP_USERNAME;
+    url.password = process.env.RTSP_PASSWORD;
   }
-  return base;
+  return url.toString();
 }
 
-function getSessionDir(sessionId: string): string {
-  return path.join(process.cwd(), "out", sessionId);
-}
+export async function startRtspCapture(
+  sessionId: string,
+  options: { onFailure?: (message: string) => void } = {}
+): Promise<void> {
+  if (activeCaptures.has(sessionId)) return;
+  const capture: Capture = { stopped: false };
+  activeCaptures.set(sessionId, capture);
+  try {
+    const url = buildRtspUrl();
+    const dir = path.join(process.cwd(), 'out', sessionId);
+    await fs.mkdir(dir, { recursive: true });
+    if (capture.stopped) return;
 
-export async function startRtspCapture(sessionId: string): Promise<void> {
-  if (activeCaptures.has(sessionId)) return; // already running
-
-  const dir = getSessionDir(sessionId);
-  await fs.mkdir(dir, { recursive: true });
-
-  const rtspUrl = buildRtspUrl();
-  const outputPattern = path.join(dir, "%Y-%m-%dT%H-%M-%S.jpg");
-
-  const proc = spawn("ffmpeg", [
-    "-rtsp_transport", "tcp",
-    "-i", rtspUrl,
-    "-vf", "fps=1",
-    "-q:v", "5",
-    "-strftime", "1",
-    outputPattern,
-  ], { stdio: ["ignore", "pipe", "pipe"] });
-
-  activeCaptures.set(sessionId, proc);
-
-  proc.on("error", (err) => {
-    activeCaptures.delete(sessionId);
-    console.error(`[RTSP ${sessionId}] Failed to spawn ffmpeg: ${err.message}`);
-  });
-
-  proc.stderr?.on("data", (data: Buffer) => {
-    const msg = data.toString().trim();
-    // Only log real errors, not ffmpeg's verbose progress
-    if (msg.toLowerCase().includes("error") || msg.toLowerCase().includes("fatal")) {
-      console.error(`[RTSP ${sessionId}] ${msg}`);
-    }
-  });
-
-  proc.on("close", (code) => {
-    activeCaptures.delete(sessionId);
-    if (code && code !== 0 && code !== 255) {
-      console.error(`[RTSP ${sessionId}] ffmpeg exited with code ${code}`);
-    }
-  });
-
-  console.log(`[RTSP] Started capture for session ${sessionId}`);
+    const proc = spawn('ffmpeg', [
+      '-rtsp_transport', 'tcp',
+      '-timeout', '15000000',
+      '-i', url,
+      '-vf', 'fps=1', '-q:v', '5', '-strftime', '1',
+      path.join(dir, '%Y-%m-%dT%H-%M-%S.jpg'),
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    capture.proc = proc;
+    let failed = false;
+    const fail = (message: string) => {
+      if (capture.stopped || failed) return;
+      failed = true;
+      if (activeCaptures.get(sessionId) === capture) activeCaptures.delete(sessionId);
+      console.error('[RTSP ' + sessionId + '] ' + redactLogText(message));
+      options.onFailure?.(redactLogText(message));
+    };
+    proc.on('error', error => fail('Failed to spawn ffmpeg: ' + error.message));
+    // Buffer whole lines so a credential split across stderr chunks is redacted.
+    const lines = readline.createInterface({ input: proc.stderr! });
+    lines.on('line', line => {
+      if (/error|fatal/i.test(line)) console.error('[RTSP ' + sessionId + '] ' + redactLogText(line));
+    });
+    proc.on('close', (code, signal) => {
+      lines.close();
+      if (activeCaptures.get(sessionId) === capture) activeCaptures.delete(sessionId);
+      if (!capture.stopped) fail('Capture ended (code ' + code + ', signal ' + signal + '). Check the camera address and connection.');
+    });
+    console.log('[RTSP] Started capture for session ' + sessionId);
+  } catch (error) {
+    if (activeCaptures.get(sessionId) === capture) activeCaptures.delete(sessionId);
+    throw new Error(redactLogText(error instanceof Error ? error.message : String(error)));
+  }
 }
 
 export function stopRtspCapture(sessionId: string): void {
-  const proc = activeCaptures.get(sessionId);
-  if (!proc) return;
-
-  proc.kill("SIGTERM");
+  const capture = activeCaptures.get(sessionId);
+  if (!capture) return;
+  capture.stopped = true;
   activeCaptures.delete(sessionId);
-  console.log(`[RTSP] Stopped capture for session ${sessionId}`);
+  capture.proc?.kill('SIGTERM');
+  console.log('[RTSP] Stopped capture for session ' + sessionId);
 }
 
 export function isRtspMode(): boolean {
-  return process.env.CAMERA_ON_DEVICE !== "true";
+  return process.env.CAMERA_ON_DEVICE !== 'true';
 }
