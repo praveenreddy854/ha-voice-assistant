@@ -14,6 +14,7 @@ import type { AgentPauseGate } from "./agents/core/types";
 import { delay } from "./agents/common/utils";
 import { createHash, randomUUID } from "node:crypto";
 import { addEvent, addLLMStep, completeTrace, createTrace, getActiveSessionId, trackToolResult, withTraceSession } from "./tracing/agentTraceStore";
+import { getRequestContext } from "./requestContext";
 
 function retainHAEvidence(callback: () => void): void {
   try { callback(); } catch { console.error("[HA telemetry] Evidence capture failed"); }
@@ -274,9 +275,12 @@ export async function executeHACommand(
     createTrace(sessionId, "home_assistant", command);
     addEvent(sessionId, "ha.execution.started", "Downstream Home Assistant command execution", {
       parentSessionId, model: AI_MODEL_HOME_ASSISTANT || "unreported",
+      jobId: getRequestContext()?.jobId, originSessionId: getRequestContext()?.originSessionId,
       evidenceScope: "Command translation, memory augmentations and HTTP results. Transport acceptance does not establish physical completion; no unobserved state is inferred.",
     });
   });
+  const jobId = getRequestContext()?.jobId;
+  if (jobId) retainHAEvidence(() => addEvent(`job-${jobId}`, "job.child_session.started", "Home Assistant execution trace linked", { sessionId, agentType: "home_assistant" }));
   try {
     const result = await withTraceSession(sessionId, () => executeHACommandInternal(command, messageHistory, options));
     retainHAEvidence(() => completeTrace(sessionId, result.success, result.message, result.success ? "completed" : "error"));

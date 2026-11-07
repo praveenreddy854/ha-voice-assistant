@@ -186,6 +186,7 @@ export class TextAssistantSessionManager
   ): Promise<void> {
     try {
       const result = await this.executor({
+        requestReceivedAt: new Date(session.createdAt).toISOString(),
         command: session.command,
         history,
         abortSignal: session.abortController.signal,

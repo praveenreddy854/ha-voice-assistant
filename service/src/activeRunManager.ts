@@ -1,5 +1,17 @@
 import { randomUUID } from "crypto";
 import type { AgentPauseGate } from "./agents/core/types";
+import { getRequestContext, withRequestContext } from "./requestContext";
+import { addEvent, completeTrace, createTrace, getActiveSessionId, withTraceSession } from "./tracing/agentTraceStore";
+
+function retain(callback: () => void): void {
+  try { callback(); } catch { console.error("[ActiveRun] Job evidence capture failed"); }
+}
+const jobTraceId = (id: string) => `job-${id}`;
+function resultMessage(result: unknown): string {
+  if (typeof result === "string") return result;
+  if (result && typeof result === "object" && "message" in result && typeof result.message === "string") return result.message;
+  return "Background execution finished";
+}
 
 export type ActiveRunDomain = "tv" | "scheduled_task" | "home_assistant";
 export type ActiveRunStatus = "running" | "paused" | "cancelled";
@@ -164,8 +176,18 @@ export function startActiveRun<T>(
     startedAt: new Date().toISOString(),
   };
   activeRuns.set(run.domain, run);
-
-  void executeManagedRun(run, options);
+  const originSessionId = getRequestContext()?.originSessionId || getActiveSessionId() || undefined;
+  retain(() => {
+    createTrace(jobTraceId(run.id), "async_job", run.prompt);
+    addEvent(jobTraceId(run.id), "job.accepted", "Server-owned background job accepted", {
+      jobId: run.id, domain: run.domain, originSessionId,
+      requestReceivedAt: getRequestContext()?.receivedAt || run.startedAt,
+      evidenceScope: "Backend execution and notification callbacks only; no inferred audio playback or physical completion",
+    });
+  });
+  void withRequestContext(getRequestContext()?.receivedAt || run.startedAt,
+    () => withTraceSession(jobTraceId(run.id), () => executeManagedRun(run, options)),
+    { jobId: run.id, originSessionId });
   return { jobId: run.id, replacedRun };
 }
 
@@ -174,9 +196,12 @@ async function executeManagedRun<T>(
   options: StartActiveRunOptions<T>
 ): Promise<void> {
   let cancellationNotified = false;
+  let success = false, finalMessage = "Background job interrupted";
   const notifyCancellation = async () => {
     if (cancellationNotified) return;
     cancellationNotified = true;
+    finalMessage = "Background run cancelled; its device effects may be incomplete";
+    retain(() => addEvent(jobTraceId(run.id), "job.cancelled", finalMessage));
     try {
       await options.onCancelled?.(snapshot(run));
     } catch (error) {
@@ -190,7 +215,10 @@ async function executeManagedRun<T>(
       pauseGate: run.pauseController,
     });
     if (run.status !== "cancelled") {
+      retain(() => addEvent(jobTraceId(run.id), "job.execution.completed", resultMessage(result)));
       await options.onComplete?.(result, snapshot(run));
+      retain(() => addEvent(jobTraceId(run.id), "job.notification.callback_completed", "Completion callback returned; this does not establish that speech played"));
+      success = true; finalMessage = resultMessage(result);
     } else {
       await notifyCancellation();
     }
@@ -199,6 +227,8 @@ async function executeManagedRun<T>(
       await notifyCancellation();
     } else {
       const message = error instanceof Error ? error.message : String(error);
+      finalMessage = message;
+      retain(() => addEvent(jobTraceId(run.id), "job.execution.failed", message));
       await options.onError?.(message, snapshot(run));
     }
   } finally {
@@ -210,6 +240,7 @@ async function executeManagedRun<T>(
     } catch (error) {
       console.error(`[ActiveRun] Finalizer failed for ${run.id}:`, error);
     } finally {
+      retain(() => completeTrace(jobTraceId(run.id), success, finalMessage, success ? "completed" : "error"));
       if (activeRuns.get(run.domain)?.id === run.id) {
         activeRuns.delete(run.domain);
       }

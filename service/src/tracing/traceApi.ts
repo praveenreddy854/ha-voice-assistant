@@ -39,6 +39,11 @@ function sendTraceDetail(req: Request, res: Response): void {
 
 traceRouter.get("/api/telemetry/sessions", sendTraceSummaries);
 traceRouter.get("/api/telemetry/sessions/:sessionId", sendTraceDetail);
+traceRouter.get("/api/telemetry/jobs/:jobId", (req, res) => {
+  const job = getTrace(`job-${req.params.jobId}`);
+  if (!job) { res.status(404).json({ error: "Background job trace not found; older jobs may not have retained lifecycle evidence" }); return; }
+  res.json(job);
+});
 
 // Compatibility aliases for the in-progress viewer work.
 traceRouter.get("/api/traces", sendTraceSummaries);

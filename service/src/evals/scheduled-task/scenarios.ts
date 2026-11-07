@@ -29,6 +29,8 @@ export interface ScheduledTaskExpectation {
 
 export interface ScheduledTaskState {
   now: string;
+  /** Optional elapsed processing time per tool; the request anchor remains fixed. */
+  toolLatencyMs?: number;
   timeZone: string;
   tasks: ScheduledTask[];
   entities: EntityMatch[];
@@ -77,8 +79,9 @@ const bill: ScheduledTask = {
 const recurringTasks = [nextVacuum, upstairsVacuum, vacuum, appointment];
 
 function newTask(input: SaveScheduledTaskInput, now: string): ScheduledTask {
+  if (!input.dueDate) throw new Error("This fixture builder requires an absolute expected due date");
   return {
-    ...input, id: "eval-task-1", recurrenceFamilyId: "eval-family-1",
+    ...input, dueDate: input.dueDate, id: "eval-task-1", recurrenceFamilyId: "eval-family-1",
     status: "active", createdAt: now, updatedAt: now,
   };
 }
@@ -91,6 +94,7 @@ function scenario(options: {
   tasks?: ScheduledTask[];
   now?: string;
   storage?: ScheduledTaskState["storage"];
+  toolLatencyMs?: number;
   expected: ScheduledTaskExpectation;
 }): Scenario<ScheduledTaskState> {
   const now = options.now || SCHEDULED_TASK_REFERENCE_NOW;
@@ -100,10 +104,11 @@ function scenario(options: {
       task: options.task, target: "scheduled_tasks", app: "ScheduledTask",
       startingState: options.storage === "write_failure" ? "storage_write_failure" : options.id,
     },
-    expectations: `${options.expectations} The fixture clock is fixed at ${now} (${SCHEDULED_TASK_TIME_ZONE}), including retries and confirmations. Verify every stored field and leave all unrelated rows and memory unchanged. A correct refusal or clarification does not fulfill an impossible or unresolved scheduling request.`,
+    expectations: `${options.expectations} Request receipt is fixed at ${now} (${SCHEDULED_TASK_TIME_ZONE}); current time advances by ${options.toolLatencyMs || 0}ms per tool call. Never restart a relative delay after a retry. Verify every stored field and leave all unrelated rows and memory unchanged. A correct refusal or clarification does not fulfill an impossible or unresolved scheduling request.`,
     initial: structuredClone({
       now, timeZone: SCHEDULED_TASK_TIME_ZONE, tasks: options.tasks || [appointment],
       entities, memories: [], storage: options.storage || "available", expected: options.expected,
+      ...(options.toolLatencyMs ? { toolLatencyMs: options.toolLatencyMs } : {}),
     }),
   };
 }
@@ -124,8 +129,49 @@ const recurringInput: SaveScheduledTaskInput = {
   category: "home_automation", priority: "medium",
 };
 const updatedDueDate = "2026-03-08T10:00:00-04:00";
+const timedInput: SaveScheduledTaskInput = {
+  title: "Kitchen light timer", effect: { kind: "action", command: "turn on the kitchen light", entityId: "light.kitchen" },
+  dueDate: "2026-03-07T14:00:00Z", isRecurring: false, category: "home_automation", priority: "medium",
+  followUpActions: [{ afterSeconds: 300, command: "turn off the kitchen light" }],
+};
+const timedStart: ScheduledTask = {
+  id: "eval-task-1", recurrenceFamilyId: "eval-family-1", title: "Kitchen light timer",
+  effect: { kind: "action", command: "turn on the kitchen light", entityId: "light.kitchen" },
+  dueDate: "2026-03-07T14:00:00Z", isRecurring: false, category: "home_automation", priority: "medium", status: "active",
+  sequenceId: "eval-task-1", sequenceStep: 0, sequenceLength: 2,
+  createdAt: "2026-03-07T12:00:04.000Z", updatedAt: "2026-03-07T12:00:04.000Z",
+};
+const timedStop: ScheduledTask = {
+  ...timedStart, id: "eval-task-1-phase-1", title: "Kitchen light timer — phase 2", sequenceStep: 1,
+  dueDate: "2026-03-07T14:05:00.000Z", effect: { kind: "action", command: "turn off the kitchen light", entityId: "light.kitchen" },
+};
 
 export const scheduledTaskScenarios: Scenario<ScheduledTaskState>[] = [
+  scenario({
+    id: "relative-delay-processing-latency", task: "create_relative_announcement", now: relativeNow, toolLatencyMs: 2000,
+    request: "In ten minutes remind me with the exact title 'Check the oven'. Use delaySeconds, task category, medium priority, no description and no recurrence.",
+    expectations: "Save the deadline at 07:05Z despite two seconds of processing before the write; preserve the original request anchor across the DST jump.",
+    expected: { fulfillable: true, mutations: [{ toolName: "save_scheduled_task", args: { title: "Check the oven", effect: { kind: "announcement" }, delaySeconds: 600, isRecurring: false, category: "task", priority: "medium" } }],
+      tasks: [appointment, { ...newTask(relativeInput, "2026-03-08T06:55:02.000Z"), dueDate: "2026-03-08T07:05:00.000Z", timing: { requestReceivedAt: relativeNow, delaySeconds: 600 } }] },
+  }),
+  scenario({
+    id: "expired-short-relative-deadline", task: "reject_expired_relative_deadline", toolLatencyMs: 6000,
+    request: "In exactly five seconds remind me with title 'Short deadline'. Use delaySeconds, task category, medium priority, no description and no recurrence. If processing misses that deadline, ask me for a new time rather than restarting the delay.",
+    expectations: "The first storage attempt arrives six seconds after receipt. Its original five-second deadline is expired. Save nothing and ask for a new time; changing to a later absolute timestamp does not fulfill the original request.",
+    expected: { tasks: [appointment], mutations: [], fulfillable: false },
+  }),
+  scenario({
+    id: "timed-action-shutoff", task: "create_timed_action", toolLatencyMs: 2000,
+    request: "At 9 AM today turn on the kitchen light, then turn it off five minutes later. Save both phases atomically. Use the exact title 'Kitchen light timer', commands 'turn on the kitchen light' and 'turn off the kitchen light', no description, home_automation category, medium priority and no recurrence.",
+    expectations: "Resolve light.kitchen, then atomically save the start at 14:00Z and shutoff at 14:05Z in the same occurrence. A prose wait, a lone start, or independently persisted partial phases cannot establish a saved complete sequence.",
+    expected: { tasks: [appointment, timedStart, timedStop], fulfillable: true, mutations: [{ toolName: "save_scheduled_task", args: timedInput }] },
+  }),
+  scenario({
+    id: "cancel-timed-action-occurrence", task: "cancel_timed_occurrence", tasks: [appointment, timedStart, timedStop],
+    request: "Cancel the Kitchen light timer, including both its turn-on and turn-off phases. Leave my dentist appointment alone.",
+    expectations: "List first, then cancel occurrence eval-task-1 in eval-family-1. Remove all remaining rows sharing that sequenceId atomically, preserving the unrelated appointment.",
+    expected: { tasks: [appointment], fulfillable: true, requiresList: true, mutations: [{ toolName: "delete_scheduled_task", args: { scope: "occurrence", id: timedStart.id, recurrenceFamilyId: timedStart.recurrenceFamilyId } }] },
+  }),
   scenario({
     id: "announcement-at-time", task: "create_announcement",
     request: "Remind me today at 9 AM with the exact announcement title 'Take medicine'. Use medication category, high priority, no recurrence, and no description.",

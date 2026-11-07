@@ -10,7 +10,7 @@ import { reportedModelUsage, type TrialTelemetry } from "./telemetry";
 
 export interface OfflineLoopOptions {
   createLoop(config: AgentLoopConfig): AgentLoop;
-  systemPrompt: string;
+  systemPrompt: string | (() => string);
   tools: ToolDefinition[];
   model: string;
   maxIterations: number;
@@ -165,7 +165,7 @@ export async function runOfflineAgentLoop(options: OfflineLoopOptions): Promise<
     }
   } finally {
     try {
-      telemetry.trace.systemMessages = [options.systemPrompt];
+      telemetry.trace.systemMessages = [typeof options.systemPrompt === "function" ? options.systemPrompt() : options.systemPrompt];
       telemetry.trace.messages = loop.getMessages(session.id);
     } finally { loop.deleteSession(session.id); }
   }

@@ -53,6 +53,7 @@ import {
   recordMemoryInteraction,
 } from "../../memory";
 import { buildMemoryToolDefinitions } from "./memoryTools";
+import { getRequestContext, withRequestContext } from "../../requestContext";
 
 // ============================================================================
 // Session Store
@@ -196,6 +197,11 @@ async function createSession(
 
   // Create trace for this session
   createTrace(session.id, def.agentType, options.userPrompt!);
+  const request = getRequestContext();
+  addEvent(session.id, "agent.request.context", "Server request and background job context", {
+    requestReceivedAt: request?.receivedAt, jobId: request?.jobId, originSessionId: request?.originSessionId,
+  });
+  if (request?.jobId) addEvent(`job-${request.jobId}`, "job.child_session.started", "Specialist execution trace linked", { sessionId: session.id, agentType: def.agentType });
 
   console.log(
     `[Orchestrator] Session created for agent "${def.agentType}": ${session.id} (loop: ${loopSession.id}, max: ${maxSteps})`
@@ -684,6 +690,10 @@ async function handleExternalInput(
  * ```
  */
 export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult> {
+  return withRequestContext(getRequestContext()?.receivedAt || new Date().toISOString(), () => runAgentInRequestContext(options));
+}
+
+async function runAgentInRequestContext(options: AgentRunOptions): Promise<AgentRunResult> {
   const def = getAgent(options.agentType);
   if (!def) {
     return {

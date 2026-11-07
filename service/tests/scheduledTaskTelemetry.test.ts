@@ -15,11 +15,12 @@ let runAgent: typeof import("../src/agents/core/orchestrator").runAgent;
 const tasks = new Map<string, ScheduledTask>();
 const container = {
   items: {
-    upsert: async (task: ScheduledTask) => { tasks.set(task.id, task); return { resource: task }; },
+    upsert: async (task: ScheduledTask) => { const saved = { ...task, _etag: "test-etag" }; tasks.set(task.id, saved); return { resource: saved }; },
     query: () => ({ fetchAll: async () => ({ resources: [...tasks.values()] }) }),
   },
   item: (id: string) => ({
     read: async () => ({ resource: tasks.get(id) }),
+    replace: async (task: ScheduledTask) => { tasks.set(id, task); return { resource: task }; },
     delete: async () => { if (!tasks.delete(id)) throw new Error("Not found"); },
   }),
 };

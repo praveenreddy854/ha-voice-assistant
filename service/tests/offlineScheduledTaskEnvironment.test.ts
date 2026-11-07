@@ -34,14 +34,16 @@ function createInput(id = "announcement-at-time"): SaveScheduledTaskInput {
   return structuredClone(fixture(id).initial.expected.mutations[0].args) as SaveScheduledTaskInput;
 }
 
-test("all 12 fixtures have exact state assertions, fresh data, and no executable live tools", async () => {
-  assert.equal(scheduledTaskScenarios.length, 12);
-  assert.equal(new Set(scheduledTaskScenarios.map(item => item.id)).size, 12);
+test("all 16 fixtures have exact state assertions, isolated clocks, fresh data and no executable live tools", async () => {
+  assert.equal(scheduledTaskScenarios.length, 16);
+  assert.equal(new Set(scheduledTaskScenarios.map(item => item.id)).size, 16);
   for (const scenario of scheduledTaskScenarios) {
     const before = structuredClone(scenario.initial);
     const first = new ScheduledTaskEnvironment(scenario, dependencies);
     if (scenario.initial.expected.requiresList) await first.execute("list_scheduled_tasks", {});
     if (scenario.id === "recurring-action-dst") await first.execute("find_matching_entities", { query: "Roborock", domain: "vacuum" });
+    if (scenario.id === "timed-action-shutoff") await first.execute("find_matching_entities", { query: "kitchen", domain: "light" });
+    if (scenario.id === "expired-short-relative-deadline") await first.execute("save_scheduled_task", { title: "Short deadline", effect: { kind: "announcement" }, delaySeconds: 5, isRecurring: false, category: "task", priority: "medium" });
     for (const call of scenario.initial.expected.mutations) await first.execute(call.toolName, call.args);
     assert.equal(first.taskSatisfied(scenario.initial.expected.answer), scenario.initial.expected.fulfillable, scenario.id);
     assert.deepEqual(scenario.initial, before, "Running an attempt must not change its fixture");
@@ -49,7 +51,7 @@ test("all 12 fixtures have exact state assertions, fresh data, and no executable
     assert.deepEqual(second.state, before, "Confirmation starts with fresh state and IDs");
     assert.notEqual(first.state.tasks, second.state.tasks);
     assert.deepEqual(first.evidence.map(event => event.id), first.evidence.map((_, index) => `e${index + 1}`));
-    assert.ok(first.evidence.every(event => event.timestamp === scenario.initial.now));
+    assert.ok(first.evidence.every(event => Date.parse(event.timestamp!) >= Date.parse(scenario.initial.now) && Date.parse(event.timestamp!) <= Date.parse(first.state.now)));
     assert.ok(first.evidence.every(event => event.kind !== "image" && event.image === undefined));
   }
 });

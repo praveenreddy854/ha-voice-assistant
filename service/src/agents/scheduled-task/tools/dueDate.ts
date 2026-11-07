@@ -12,7 +12,7 @@ export function dueDateError(dueDate: string, now = new Date()): string | undefi
     return "dueDate must be a valid ISO-8601 timestamp with Z or an explicit timezone offset.";
   }
   if (Date.parse(dueDate) <= now.getTime()) {
-    return `dueDate must be strictly in the future. Current time is ${now.toISOString()}; recalculate from the user's request or ask for clarification. Nothing was saved.`;
+    return `dueDate must be strictly in the future. Current time is ${now.toISOString()}. The requested deadline has passed; do not silently restart its delay or move it forward. Ask the user for a new time. Nothing was saved.`;
   }
   return undefined;
 }

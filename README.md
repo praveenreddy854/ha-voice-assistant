@@ -210,6 +210,8 @@ The backend automatically grades completed live runs in a separate worker. Open 
 
 `ONLINE_EVAL_ENABLED=false` disables this worker. `AI_MODEL_HOME_ASSISTANT` controls downstream device-command translation and defaults to `AI_MODEL_ADVANCED`.
 
+Relative scheduling now uses a fixed server request timestamp. One-shot timed actions persist executable follow-up phases atomically and fire from server timers. See [timed-action semantics](docs/adr/0006-request-anchored-timed-actions.md) and [controlled model comparisons](docs/model-comparisons.md).
+
 ### Backend Service Endpoints
 
 - `GET /` - Operations home with links to evals, telemetry, and performance dashboards

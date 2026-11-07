@@ -26,7 +26,7 @@ export async function createScheduledTaskAdapter(modelOverride?: string): Promis
   if (!model) throw new Error("Configure AI_MODEL_ADVANCED before running evals");
   const systemPromptFor = (state: ScheduledTaskState) =>
     `${renderScheduledTaskSystemPrompt(template, new Date(state.now), state.timeZone)}\n\n${memory.AGENT_MEMORY_SYSTEM_INSTRUCTIONS}`;
-  const fixtureInstructions = "This is an offline scheduling fixture. Use the current date/time and local timezone in the system prompt, not the real wall clock. The fixture clock stays fixed for this entire run, including retries and confirmations.";
+  const fixtureInstructions = "This is an offline scheduling fixture. Use the server request anchor, current date/time and local timezone in the system prompt, not the real wall clock. The request anchor stays fixed across retries; advancing-clock scenarios include processing latency in their tool results.";
   const promptVersion = digest({
     fixtureInstructions, maxIterations: constants.SCHEDULED_TASK_AGENT_MAX_ITERATIONS,
     prompts: scheduledTaskScenarios.map(scenario => ({ id: scenario.id, systemPrompt: systemPromptFor(scenario.initial) })),
@@ -36,7 +36,7 @@ export async function createScheduledTaskAdapter(modelOverride?: string): Promis
   });
 
   return {
-    id: "scheduled_task", version: "scheduled-task-simulator-1", scenarios: scheduledTaskScenarios, model, promptVersion,
+    id: "scheduled_task", version: "scheduled-task-simulator-2", scenarios: scheduledTaskScenarios, model, promptVersion,
     async execute(input: Scenario, signal: AbortSignal): Promise<Assessment> {
       const scenario = input as Scenario<ScheduledTaskState>;
       const environment = new ScheduledTaskEnvironment(scenario, {
@@ -45,11 +45,11 @@ export async function createScheduledTaskAdapter(modelOverride?: string): Promis
       const fixtureMemory = memory.formatMemoryContext(environment.state.memories.map(item => ({
         ...item, pk: "offline-fixture", status: "active" as const, embedding: [], createdAt: item.updatedAt, useCount: 0,
       })));
-      const systemPrompt = [systemPromptFor(environment.state), fixtureMemory].filter(Boolean).join("\n\n");
+      const systemPrompt = () => [renderScheduledTaskSystemPrompt(template, new Date(environment.state.now), environment.state.timeZone, new Date(scenario.initial.now)), memory.AGENT_MEMORY_SYSTEM_INSTRUCTIONS, fixtureMemory].filter(Boolean).join("\n\n");
       const initialMessage = `${fixtureInstructions}\n\n${scenario.request}`;
       environment.record({
         kind: "context",
-        text: JSON.stringify({ systemPrompt, initialMessage, memorySource: "isolated fixture only; no live context or completion hooks" }),
+        text: JSON.stringify({ systemPrompt: systemPrompt(), initialMessage, memorySource: "isolated fixture only; no live context or completion hooks" }),
       });
       return captureTrial({
         agentId: "scheduled_task", request: scenario.request, model, promptVersion,

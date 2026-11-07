@@ -33,7 +33,7 @@ import { fetchAllStates } from "./ha";
 import { startDeviceStateLogging } from "./deviceStateLogger";
 import {
   listActiveScheduledTasks,
-  deleteScheduledTask,
+  deleteScheduledTaskOccurrence,
   deleteRecurrenceFamily,
 } from "./cosmos";
 // Import TV agent to trigger registration via side-effect
@@ -51,7 +51,7 @@ import { onlineSupervisor } from "./evals/online/supervisor";
 import { homePage } from "./homePage";
 import { setupRealtimeChatProxy } from "./realtimeChat";
 import { addAnnouncementClient } from "./announcementBus";
-import { startScheduledTaskFirer } from "./scheduledTaskFirer";
+import { startScheduledTaskFirer, stopScheduledTaskFirer } from "./scheduledTaskFirer";
 import { startOutDirCleaner } from "./outDirCleaner";
 import { startProactiveReminders } from "./proactiveReminders";
 import { startMemoryConsolidation } from "./memory";
@@ -205,7 +205,7 @@ app.delete("/api/scheduled-tasks/:id", (req, res, next) => {
           .status(400)
           .json({ error: "recurrenceFamilyId query param is required" });
       }
-      const ok = await deleteScheduledTask(id, recurrenceFamilyId);
+      const ok = await deleteScheduledTaskOccurrence(id, recurrenceFamilyId);
       res.json({ success: ok });
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
@@ -1240,6 +1240,7 @@ setupRealtimeChatProxy(server);
 
 // Graceful shutdown
 process.on("SIGTERM", async () => {
+  stopScheduledTaskFirer();
   onlineSupervisor.stop();
   evalSupervisor.stop();
   console.log("SIGTERM received, shutting down gracefully...");
@@ -1248,6 +1249,7 @@ process.on("SIGTERM", async () => {
 });
 
 process.on("SIGINT", async () => {
+  stopScheduledTaskFirer();
   onlineSupervisor.stop();
   evalSupervisor.stop();
   console.log("SIGINT received, shutting down gracefully...");

@@ -33,6 +33,7 @@ export type ScheduledTaskEffect =
     };
 
 export interface ScheduledTask {
+  _etag?: string;
   id: string;
   /** Cosmos partition key value. */
   recurrenceFamilyId: string;
@@ -48,13 +49,21 @@ export interface ScheduledTask {
   priority: ScheduledTaskPriority;
   createdAt: string;
   updatedAt: string;
+  /** Durable phases of one one-shot request; each row still has one effect. */
+  sequenceId?: string;
+  sequenceStep?: number;
+  sequenceLength?: number;
+  timing?: { requestReceivedAt: string; delaySeconds: number };
+  /** Durable at-most-once dispatch claim; interrupted claims are audited, never replayed. */
+  firing?: { id: string; claimedAt: string; ownerPid?: number; expiresAt?: string };
 }
 
 export type ScheduledTaskRunOutcome =
   | "succeeded"
   | "failed"
   | "skipped"
-  | "aborted_by_agent";
+  | "aborted_by_agent"
+  | "interrupted";
 
 export interface ScheduledTaskRun {
   id: string;

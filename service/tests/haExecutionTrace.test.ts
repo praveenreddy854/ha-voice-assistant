@@ -6,6 +6,8 @@ import { SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import axios from "axios";
 import { createTrace, getAllTraces, getActiveSessionId, telemetrySpanExporter, withTraceSession } from "../src/tracing/agentTraceStore";
 import { onlineAssessment } from "../src/evals/online/snapshot";
+import { startActiveRun } from "../src/activeRunManager";
+import { getRequestContext, withRequestContext } from "../src/requestContext";
 
 test("HA commands retain downstream model, actual request results and parent attribution, including failures", async t => {
   process.env.AI_MODEL_HOME_ASSISTANT = "synthetic-quality-model";
@@ -53,6 +55,26 @@ test("HA commands retain downstream model, actual request results and parent att
     assert.equal(assessment.agentId, "home_assistant"); assert.match(assessment.promptVersion!, /^ha-template-/);
     assert.equal(assessment.evaluationScope, "execution");
     assert.equal(assessment.taskAssertion, undefined); assert.equal(assessment.coverage, "partial");
+    failed = false;
+    let done!: () => void;
+    const finished = new Promise<void>(resolve => { done = resolve; });
+    const receipt = new Date(Date.now() - 5000).toISOString();
+    const started = withRequestContext(receipt, () => withTraceSession("voice-parent", () => startActiveRun({
+      domain: "home_assistant", prompt: "Turn off test light",
+      execute: async run => {
+        assert.equal(getRequestContext()?.jobId, run.id);
+        assert.equal(getRequestContext()?.receivedAt, receipt);
+        return executeHACommand(run.prompt);
+      },
+      onFinally: () => { done(); },
+    })));
+    await finished; for (let i = 0; i < 4; i++) await Promise.resolve();
+    const job = getAllTraces().find(trace => trace.sessionId === `job-${started.jobId}`)!;
+    assert.equal(job.status, "completed");
+    assert.equal(job.events.find(event => event.type === "job.accepted")?.data?.originSessionId, "voice-parent");
+    const child = job.events.find(event => event.type === "job.child_session.started")?.data?.sessionId;
+    assert.ok(typeof child === "string" && child.startsWith("home-assistant-"));
+    assert.ok(job.events.some(event => event.type === "job.notification.callback_completed"));
   } finally {
     for (const [filename, module] of previous) { if (module) requireModule.cache[filename] = module; else delete requireModule.cache[filename]; }
     await sdk.shutdown();

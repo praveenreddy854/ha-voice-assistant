@@ -1,9 +1,10 @@
-import { randomUUID } from "crypto";
+import { createHash } from "crypto";
 import {
   deleteScheduledTask,
   insertScheduledTaskRun,
   listActiveScheduledTasks,
   upsertScheduledTask,
+  claimScheduledTask,
 } from "./cosmos";
 import { executeHACommand, fetchAllStates } from "./ha";
 import type {
@@ -13,10 +14,9 @@ import type {
   ScheduledTaskRunOutcome,
 } from "./types/scheduledTask";
 import { emitAnnouncement } from "./announcementBus";
+import { onScheduledTasksChanged } from "./scheduledTaskChanges";
+import { ScheduledTaskTimers } from "./scheduledTaskTimers";
 
-const FIRER_INTERVAL_MS = 30_000;
-const activeFires = new Set<string>();
-let firerStarted = false;
 
 interface FireResult {
   outcome: ScheduledTaskRunOutcome;
@@ -45,6 +45,7 @@ function addRecurrence(date: Date, recurrence: RecurrencePattern): Date {
 
 function nextDueDate(task: ScheduledTask, now: Date): string | undefined {
   if (!task.isRecurring || !task.recurringPattern) return undefined;
+  if (!Number.isInteger(task.recurringPattern.interval) || task.recurringPattern.interval <= 0 || !["daily", "weekly", "monthly", "yearly"].includes(task.recurringPattern.type)) throw new Error("Invalid persisted recurrence pattern");
   let next = addRecurrence(new Date(task.dueDate), task.recurringPattern);
   while (next.getTime() <= now.getTime()) {
     next = addRecurrence(next, task.recurringPattern);
@@ -55,19 +56,20 @@ function nextDueDate(task: ScheduledTask, now: Date): string | undefined {
 async function rescheduleOrDelete(task: ScheduledTask, now: Date): Promise<void> {
   const nextDue = nextDueDate(task, now);
   if (!nextDue) {
-    await deleteScheduledTask(task.id, task.recurrenceFamilyId);
+    if (!await deleteScheduledTask(task.id, task.recurrenceFamilyId)) throw new Error("Fired task cleanup failed");
     return;
   }
 
+  const { firing: _claim, _etag: _etag, ...recurring } = task;
   const nextTask: ScheduledTask = {
-    ...task,
-    id: randomUUID(),
+    ...recurring,
+    id: createHash("sha256").update(`${task.id}:${nextDue}`).digest("hex").slice(0, 32),
     dueDate: nextDue,
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),
   };
-  await upsertScheduledTask(nextTask);
-  await deleteScheduledTask(task.id, task.recurrenceFamilyId);
+  if (!await upsertScheduledTask(nextTask)) throw new Error("Next occurrence was not persisted");
+  if (!await deleteScheduledTask(task.id, task.recurrenceFamilyId)) throw new Error("Fired occurrence cleanup failed");
 }
 
 async function fireAnnouncement(task: ScheduledTask): Promise<FireResult> {
@@ -82,7 +84,8 @@ async function fireAction(task: ScheduledTask): Promise<FireResult> {
     return { outcome: "failed", summary: "Invalid action effect" };
   }
 
-  const states = await fetchAllStates();
+  const abortSignal = AbortSignal.timeout(60_000);
+  const states = await fetchAllStates({ abortSignal });
   const entityState = states.find((s) => s.entity_id === effect.entityId);
   const deviceStateAtFire = entityState
     ? {
@@ -104,7 +107,7 @@ async function fireAction(task: ScheduledTask): Promise<FireResult> {
     return { outcome: "skipped", summary, deviceStateAtFire };
   }
 
-  const result = await executeHACommand(effect.command);
+  const result = await executeHACommand(effect.command, undefined, { abortSignal });
   if (!result.success) {
     const summary = `${task.title} failed. ${result.message}`;
     emitAnnouncement(summary);
@@ -116,7 +119,11 @@ async function fireAction(task: ScheduledTask): Promise<FireResult> {
   return { outcome: "succeeded", summary, deviceStateAtFire };
 }
 
-async function fireTask(task: ScheduledTask): Promise<void> {
+async function fireTask(candidate: ScheduledTask): Promise<boolean> {
+  // A cancelled or edited task must not execute from an older timer snapshot.
+  const claim = await claimScheduledTask(candidate.id, candidate.recurrenceFamilyId);
+  if (!claim) return false;
+  const task = claim.task;
   const started = Date.now();
   const now = new Date();
   let outcome: ScheduledTaskRunOutcome = "failed";
@@ -124,7 +131,9 @@ async function fireTask(task: ScheduledTask): Promise<void> {
   let deviceStateAtFire: Record<string, unknown> | undefined;
 
   try {
-    const result =
+    const result: FireResult = claim.alreadyClaimed
+      ? { outcome: "interrupted", summary: "The prior dispatch was interrupted or its cleanup failed; its device effect is unknown and was not replayed" }
+      :
       task.effect.kind === "announcement"
         ? await fireAnnouncement(task)
         : await fireAction(task);
@@ -140,7 +149,7 @@ async function fireTask(task: ScheduledTask): Promise<void> {
   }
 
   const run: ScheduledTaskRun = {
-    id: randomUUID(),
+    id: task.firing!.id,
     recurrenceFamilyId: task.recurrenceFamilyId,
     scheduledTaskId: task.id,
     firedAt: now.toISOString(),
@@ -153,32 +162,25 @@ async function fireTask(task: ScheduledTask): Promise<void> {
 
   await insertScheduledTaskRun(run);
   await rescheduleOrDelete(task, now);
+  return true;
 }
 
-async function scanDueTasks(): Promise<void> {
-  const now = Date.now();
-  const tasks = await listActiveScheduledTasks();
-  const due = tasks.filter((task) => new Date(task.dueDate).getTime() <= now);
-
-  for (const task of due) {
-    if (activeFires.has(task.id)) continue;
-    activeFires.add(task.id);
-    fireTask(task)
-      .catch((err) => {
-        console.error(`[ScheduledTaskFirer] Failed to fire ${task.id}:`, err);
-      })
-      .finally(() => {
-        activeFires.delete(task.id);
-      });
-  }
-}
+const timers = new ScheduledTaskTimers({
+  list: listActiveScheduledTasks, fire: fireTask, changed: onScheduledTasksChanged,
+  error: error => console.error("[ScheduledTaskFirer]", error),
+  async skip(task, summary) {
+    const claim = await claimScheduledTask(task.id, task.recurrenceFamilyId);
+    if (!claim) return false;
+    await insertScheduledTaskRun({ id: claim.task.firing!.id, recurrenceFamilyId: task.recurrenceFamilyId,
+      scheduledTaskId: task.id, firedAt: new Date().toISOString(), effect: task.effect,
+      outcome: claim.alreadyClaimed ? "interrupted" : "skipped", summary });
+    if (!await deleteScheduledTask(task.id, task.recurrenceFamilyId)) throw new Error("Obsolete timed phase cleanup failed");
+    return true;
+  },
+});
 
 export function startScheduledTaskFirer(): void {
-  if (firerStarted) return;
-  firerStarted = true;
-  void scanDueTasks();
-  setInterval(() => {
-    void scanDueTasks();
-  }, FIRER_INTERVAL_MS);
+  timers.start();
   console.log("[ScheduledTaskFirer] Started");
 }
+export function stopScheduledTaskFirer(): void { timers.stop(); }

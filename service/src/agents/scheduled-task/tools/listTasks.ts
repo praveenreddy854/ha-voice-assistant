@@ -36,10 +36,10 @@ export async function execute(_args: ListScheduledTasksInput): Promise<{
   }
 
   const lines = sorted.map((t) => {
-    const eff =
+    const eff = (t.sequenceId ? `sequenceId=${t.sequenceId} phase=${(t.sequenceStep || 0) + 1}/${t.sequenceLength} ` : "") + (
       t.effect.kind === "action"
         ? `action(${t.effect.entityId})`
-        : "announcement";
+        : "announcement");
     const recur = t.isRecurring && t.recurringPattern
       ? `every ${t.recurringPattern.interval} ${t.recurringPattern.type}`
       : "one-shot";

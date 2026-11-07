@@ -52,9 +52,9 @@ test("eval registry enumerates bounded suites without constructing live agents",
   const catalog = await evalAgentCatalog();
   assert.deepEqual(catalog.map(agent => agent.id), [...EVAL_AGENT_IDS]);
   assert.equal(catalog.find(agent => agent.id === "tv")?.scenarioCount, 12);
-  assert.equal(catalog.find(agent => agent.id === "scheduled_task")?.scenarioCount, 12);
+  assert.equal(catalog.find(agent => agent.id === "scheduled_task")?.scenarioCount, 16);
   for (const agent of catalog) {
-    assert.ok(agent.scenarioCount > 0 && agent.scenarioCount <= 12);
+    assert.ok(agent.scenarioCount > 0 && agent.scenarioCount <= 16);
     assert.equal(new Set(agent.scenarios.map(scenario => scenario.id)).size, agent.scenarioCount);
     assert.equal(getEvalAgent(agent.id).id, agent.id);
     assert.equal(getEvalAgent(agent.id).recordedVersion, RECORDED_IMPORT_VERSION);

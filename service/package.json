@@ -17,6 +17,7 @@
     "eval:simulated": "tsx src/evals/worker.ts simulated",
     "eval:recorded": "tsx src/evals/worker.ts recorded",
     "eval:calibrate": "tsx src/evals/worker.ts calibrate",
+    "eval:compare": "tsx src/evals/compare.ts",
     "shortcut:package": "tsx scripts/package-apple-shortcut.ts"
   },
   "keywords": [],

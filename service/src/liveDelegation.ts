@@ -5,6 +5,7 @@ export interface VoiceHistoryItem {
 }
 
 export interface LiveDelegationRequest {
+  receivedAt?: string;
   command: string;
   history: VoiceHistoryItem[];
   signal: AbortSignal;
@@ -84,6 +85,7 @@ export class LiveDelegationController {
     if (this.emptyTimer) clearTimeout(this.emptyTimer);
     this.emptyTimer = undefined;
     this.queued++;
+    const receivedAt = new Date().toISOString();
     this.queue = this.queue.then(async () => {
       if (this.abort.signal.aborted) return;
       const now = Date.now();
@@ -91,7 +93,7 @@ export class LiveDelegationController {
       while (history.length && (history.length > 10 || now - history[0].createdAt > 5 * 60_000)) history.shift();
       let message: string;
       try {
-        message = await this.options.run({ command, history: [...history], signal: this.abort.signal, delegationId: ids[0] });
+        message = await this.options.run({ command, history: [...history], signal: this.abort.signal, delegationId: ids[0], receivedAt });
       } catch (error) {
         if (this.abort.signal.aborted) return;
         message = `The request failed: ${error instanceof Error ? error.message : "Unknown error"}`;

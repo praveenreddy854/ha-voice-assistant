@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { updateScheduledTask } from "../../../cosmos";
 import { dueDateSchema, dueDateError } from "./dueDate";
+import { ScheduledTaskMutationError } from "../../../scheduledTaskChanges";
+import { containsInlineDelay } from "../taskPlan";
 
 const recurrenceSchema = z.object({
   type: z.enum(["daily", "weekly", "monthly", "yearly"]),
@@ -58,6 +60,7 @@ export async function execute(args: UpdateScheduledTaskInput): Promise<{
   toolSuccess: boolean;
 }> {
   const { id, recurrenceFamilyId, patch } = inputSchema.parse(args);
+  if (patch.effect?.kind === "action" && containsInlineDelay(patch.effect.command)) return { observation: "Embedded waits are not executable scheduled phases; cancel and recreate a timed sequence", toolSuccess: false };
   if (patch.dueDate !== undefined) {
     const dateError = dueDateError(patch.dueDate);
     if (dateError) {
@@ -67,7 +70,12 @@ export async function execute(args: UpdateScheduledTaskInput): Promise<{
   if (Object.keys(patch).length === 0) {
     return { observation: "Patch is empty; nothing to update.", toolSuccess: false };
   }
-  const updated = await updateScheduledTask(id, recurrenceFamilyId, patch);
+  let updated;
+  try { updated = await updateScheduledTask(id, recurrenceFamilyId, patch); }
+  catch (error) {
+    if (error instanceof ScheduledTaskMutationError) return { observation: error.message, toolSuccess: false };
+    throw error;
+  }
   if (!updated) {
     return {
       toolSuccess: false,

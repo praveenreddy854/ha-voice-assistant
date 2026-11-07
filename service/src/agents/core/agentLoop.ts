@@ -26,6 +26,7 @@ import type {
 import type { z } from "zod";
 import { AI_MODEL_ADVANCED } from "../../config";
 import { azureProvider } from "../../ai";
+import { getRequestContext, withRequestContext } from "../../requestContext";
 import type { AgentPauseGate } from "./types";
 
 // ============================================================================
@@ -131,6 +132,7 @@ export interface AgentStepResult {
 
 export interface AgentLoopSession {
   id: string;
+  requestReceivedAt: string;
   systemMessages: string[];
   messages: ModelMessage[];
   maxIterations: number;
@@ -279,6 +281,7 @@ export function createAgentLoop(
 
     const session: AgentLoopSession = {
       id: sessionId,
+      requestReceivedAt: getRequestContext()?.receivedAt || new Date().toISOString(),
       systemMessages: sessionSystemMessages,
       messages,
       maxIterations,
@@ -295,6 +298,15 @@ export function createAgentLoop(
   }
 
   async function run(
+    sessionId: string,
+    abortSignal?: AbortSignal,
+    pauseGate?: AgentPauseGate
+  ): Promise<AgentStepResult> {
+    const receivedAt = sessions.get(sessionId)?.requestReceivedAt || getRequestContext()?.receivedAt || new Date().toISOString();
+    return withRequestContext(receivedAt, () => runInRequestContext(sessionId, abortSignal, pauseGate));
+  }
+
+  async function runInRequestContext(
     sessionId: string,
     abortSignal?: AbortSignal,
     pauseGate?: AgentPauseGate

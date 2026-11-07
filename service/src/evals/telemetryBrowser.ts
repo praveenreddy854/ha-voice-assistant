@@ -80,6 +80,26 @@
   }
   // The trace viewer explicitly announces list replacement; badge writes never trigger another render.
   document.addEventListener("telemetry:sessions-rendered", render);
+  const viewer = window as unknown as { loadTraceDetail?: (sessionId: string) => Promise<void> };
+  const requestedSession = new URLSearchParams(window.location.search).get("sessionId");
+  if (requestedSession && /^[a-zA-Z0-9_-]{1,120}$/.test(requestedSession)) void viewer.loadTraceDetail?.(requestedSession);
+  function linkJobs() {
+    document.querySelectorAll<HTMLElement>(".dialog-mono").forEach(block => {
+      if (block.dataset.jobLinked) return;
+      block.dataset.jobLinked = "true";
+      try {
+        const data: unknown = JSON.parse(block.textContent || "");
+        if (!data || typeof data !== "object" || !("jobId" in data) || typeof data.jobId !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(data.jobId)) return;
+        const link = document.createElement("a");
+        link.textContent = "Open background job trace";
+        link.href = `/telemetry?sessionId=${encodeURIComponent(`job-${data.jobId}`)}`;
+        link.style.color = "var(--accent)";
+        block.after(link);
+      } catch { /* Most trace observations are plain text, not job acceptance packets. */ }
+    });
+  }
+  new MutationObserver(linkJobs).observe(document.body, { childList: true, subtree: true });
+  linkJobs();
   document.addEventListener("visibilitychange", () => { if (!document.hidden) void refresh(); });
   render(); void refresh();
   setInterval(() => { if (!document.hidden) void refresh(); }, 5_000);

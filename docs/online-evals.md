@@ -16,7 +16,7 @@ Open `/dashboards/evals/online` from the existing eval dashboard. It shows worke
 
 The new `LOG-*` calibration fixtures are synthetic, reviewed cases derived from observed failure patterns, including expired relative deadlines, missing delayed phases, target loss, correct preference use, unrequested action expansion, and routing-only evidence. Existing nine TV scoring references still cover repeated ineffective methods, honest failure and insufficient execution evidence. Run the existing agent-scoped calibration commands against the actual judge deployment before treating its scores as reliable measurements. Reference agreement is a smoke check, not measured accuracy on a held-out production set.
 
-The approved 16-call GPT-6 Astra smoke calibration matched 14 expectations and exposed a shared routing/execution ambiguity on `LOG-R4`. The final prompt adds explicit scope to address it. That revised prompt has local contract tests but has not had a further paid model calibration; the original result is preserved in [the calibration report](online-eval-calibration.md).
+The initial 16-call GPT-6 Astra smoke calibration matched 14 expectations and exposed a shared routing/execution ambiguity on `LOG-R4`. The revised prompt adds explicit scope. The requested follow-up rechecked that case with both judges in two further synthetic-only calls; both matched. The original results and separate scope recheck are preserved in [the calibration report](online-eval-calibration.md). These checks do not establish general accuracy on unseen cases.
 
 ## Queue and recovery
 

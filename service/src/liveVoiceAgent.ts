@@ -4,6 +4,7 @@ import { createAgentLoop, type ToolDefinition } from "./agents/core/agentLoop";
 import { getPromptMemoryContext, recordMemoryInteraction } from "./memory";
 import { addEvent, addLLMStep, completeTrace, createTrace, trackToolResult, withTraceSession } from "./tracing/agentTraceStore";
 import type { LiveDelegationRequest } from "./liveDelegation";
+import { withRequestContext } from "./requestContext";
 
 export interface LiveVoiceTool {
   type: "function";
@@ -14,6 +15,15 @@ export interface LiveVoiceTool {
 
 /** Use the same AI SDK loop as the specialists, with browser voice history. */
 export async function runLiveVoiceAgent(
+  request: LiveDelegationRequest,
+  instructions: string,
+  tools: LiveVoiceTool[],
+  execute: (name: string, args: Record<string, unknown>) => Promise<string>
+): Promise<string> {
+  return withRequestContext(request.receivedAt || new Date().toISOString(), () => runVoiceRequest(request, instructions, tools, execute));
+}
+
+async function runVoiceRequest(
   request: LiveDelegationRequest,
   instructions: string,
   tools: LiveVoiceTool[],

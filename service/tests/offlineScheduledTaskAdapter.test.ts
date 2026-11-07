@@ -121,6 +121,8 @@ test("scripted model calls exercise all scheduling scenarios with independent fu
       const calls: Call[] = [];
       if (scenario.initial.expected.requiresList) calls.push({ name: "list_scheduled_tasks", args: { reason: "Find the user's requested tasks" } });
       if (scenario.id === "recurring-action-dst") calls.push({ name: "find_matching_entities", args: { query: "Roborock", domain: "vacuum" } });
+      if (scenario.id === "timed-action-shutoff") calls.push({ name: "find_matching_entities", args: { query: "kitchen", domain: "light" } });
+      if (scenario.id === "expired-short-relative-deadline") calls.push({ name: "save_scheduled_task", args: { title: "Short deadline", effect: { kind: "announcement" }, delaySeconds: 5, isRecurring: false, category: "task", priority: "medium" } });
       if (scenario.id === "missing-entity") calls.push({ name: "find_matching_entities", args: { query: "pool pump" } });
       if (scenario.id === "past-date") calls.push({ ...save(), args: { ...save().args, dueDate: "2026-03-06T09:00:00-05:00" } });
       if (scenario.id === "storage-failure") calls.push(save());

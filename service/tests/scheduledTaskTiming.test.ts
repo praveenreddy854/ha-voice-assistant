@@ -32,8 +32,8 @@ test("save/update reject invalid and expired dates before storage and preserve v
   const tasks = new Map<string, ScheduledTask>();
   let writes = 0;
   const container = {
-    items: { upsert: async (task: ScheduledTask) => { writes++; tasks.set(task.id, task); return { resource: task }; } },
-    item: (id: string) => ({ read: async () => ({ resource: tasks.get(id) }) }),
+    items: { upsert: async (task: ScheduledTask) => { writes++; const saved = { ...task, _etag: String(writes) }; tasks.set(task.id, saved); return { resource: saved }; } },
+    item: (id: string) => ({ read: async () => ({ resource: tasks.get(id) }), replace: async (task: ScheduledTask) => { writes++; const saved = { ...task, _etag: String(writes) }; tasks.set(id, saved); return { resource: saved }; } }),
   };
   const init = t.mock.method(Databases.prototype, "createIfNotExists", async () => ({
     database: { containers: { createIfNotExists: async () => ({ container }) } },
@@ -99,6 +99,7 @@ test("one cached scheduling loop refreshes its clock for new runs and external-i
   });
   t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-01T12:00:00Z") });
   const clocks: string[] = [];
+  const anchors: string[] = [];
   let calls = 0;
   t.mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
     const system = messageText(readModelRequest(url, init), "system");
@@ -106,6 +107,9 @@ test("one cached scheduling loop refreshes its clock for new runs and external-i
     assert.ok(clock, "Model must receive current timing context");
     assert.match(system, /America\/New_York/);
     clocks.push(clock);
+    const anchor = /Original server request receipt \(immutable ISO\): (\S+)/.exec(system)?.[1];
+    assert.ok(anchor, "Model must receive the immutable original request timestamp");
+    anchors.push(anchor);
     return ++calls === 2
       ? toolResponse("request_input", {}, `clock-${calls}`)
       : toolResponse("complete_task", { success: true, message: "Synthetic completion" }, `clock-${calls}`);
@@ -121,4 +125,5 @@ test("one cached scheduling loop refreshes its clock for new runs and external-i
   const resumed = await orchestrator.runAgent({ agentType: "scheduled_task", sessionId: second.sessionId, externalInput: { type: "confirmation", data: { answer: "yes" } } });
   assert.equal(resumed.status, "completed");
   assert.deepEqual(clocks, ["2026-09-01T12:00:00.000Z", "2026-09-10T12:00:00.000Z", "2026-09-11T12:00:00.000Z"]);
+  assert.deepEqual(anchors, ["2026-09-01T12:00:00.000Z", "2026-09-10T12:00:00.000Z", "2026-09-10T12:00:00.000Z"]);
 });

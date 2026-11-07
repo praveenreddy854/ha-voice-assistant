@@ -19,6 +19,7 @@ import {
   getPromptMemoryContext,
 } from "./memory";
 import { executeWebSearch } from "./webSearch";
+import { withRequestContext } from "./requestContext";
 
 export interface TextAssistantHistoryItem {
   role: "user" | "assistant";
@@ -26,6 +27,7 @@ export interface TextAssistantHistoryItem {
 }
 
 export interface TextAssistantRunOptions {
+  requestReceivedAt?: string;
   command: string;
   history: TextAssistantHistoryItem[];
   abortSignal: AbortSignal;
@@ -194,6 +196,10 @@ function buildTools(options: TextAssistantRunOptions): ToolDefinition[] {
 export async function runTextAssistant(
   options: TextAssistantRunOptions
 ): Promise<TextAssistantRunResult> {
+  return withRequestContext(options.requestReceivedAt || new Date().toISOString(), () => runTextRequest(options));
+}
+
+async function runTextRequest(options: TextAssistantRunOptions): Promise<TextAssistantRunResult> {
   const memoryContext = await getPromptMemoryContext({
     query: options.command,
     agentType: "text_assistant",

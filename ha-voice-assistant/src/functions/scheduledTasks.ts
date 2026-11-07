@@ -20,6 +20,9 @@ export interface ScheduledTask {
   priority: string;
   createdAt: string;
   updatedAt: string;
+  sequenceId?: string;
+  sequenceStep?: number;
+  sequenceLength?: number;
 }
 
 const BASE_URL = "http://localhost:3005";
@@ -51,7 +54,7 @@ export const cancelScheduledTask = async (
     const response = await fetch(url, { method: "DELETE" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = (await response.json()) as { success: boolean };
-    return { success: true, data: data.success };
+    return { success: data.success, data: data.success, ...(data.success ? {} : { errorMessage: "The task could not be cancelled. Refresh and try again." }) };
   } catch (error) {
     return {
       success: false,

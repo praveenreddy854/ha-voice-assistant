@@ -8,6 +8,7 @@ import type { MemoryScopes, MemoryType, MemoryWriteValidation } from "../../memo
 import type { ScheduledTask } from "../../types/scheduledTask";
 import type { Evidence, Scenario } from "../types";
 import type { ScheduledTaskMemory, ScheduledTaskMutation, ScheduledTaskState } from "./scenarios";
+import { planScheduledTasks } from "../../agents/scheduled-task/taskPlan";
 
 export const SCHEDULED_TASK_SIMULATED_TOOLS = [
   "find_matching_entities", "save_scheduled_task", "list_scheduled_tasks",
@@ -93,7 +94,7 @@ export class ScheduledTaskEnvironment {
   }
 
   record(item: Omit<Evidence, "id">): Evidence {
-    const event = { ...item, id: `e${this.evidence.length + 1}`, timestamp: this.initial.now };
+    const event = { ...item, id: `e${this.evidence.length + 1}`, timestamp: this.state.now };
     this.evidence.push(event);
     return event;
   }
@@ -126,10 +127,16 @@ export class ScheduledTaskEnvironment {
     return this.assertion(finalResponse).taskSatisfied;
   }
 
+  advanceTime(milliseconds: number): void {
+    if (!Number.isFinite(milliseconds) || milliseconds < 0) throw new Error("Invalid fixture clock advance");
+    this.state.now = new Date(Date.parse(this.state.now) + milliseconds).toISOString();
+  }
+
   async execute(name: string, args: Record<string, unknown>): Promise<ScheduledTaskToolResult> {
     const contract = this.contracts.get(name);
     if (!contract) throw new Error(`No simulator implementation for ${name}; live fallback is forbidden`);
     const started = Date.now();
+    this.advanceTime(this.initial.toolLatencyMs || 0);
     let parsed: Record<string, unknown>;
     try {
       parsed = contract.function.inputSchema!.parse(args) as Record<string, unknown>;
@@ -182,7 +189,8 @@ export class ScheduledTaskEnvironment {
     this.listed = true;
     for (const task of tasks) this.observedTasks.add(taskKey(task.id, task.recurrenceFamilyId));
     const lines = tasks.map(task => {
-      const effect = task.effect.kind === "action" ? `action(${task.effect.entityId})` : "announcement";
+      const effect = (task.sequenceId ? `sequenceId=${task.sequenceId} phase=${(task.sequenceStep || 0) + 1}/${task.sequenceLength} ` : "") +
+        (task.effect.kind === "action" ? `action(${task.effect.entityId})` : "announcement");
       const recurrence = task.isRecurring && task.recurringPattern
         ? `every ${task.recurringPattern.interval} ${task.recurringPattern.type}` : "one-shot";
       return `  - id=${task.id} familyId=${task.recurrenceFamilyId} title="${task.title}" due=${task.dueDate} ${effect} ${recurrence} category=${task.category} priority=${task.priority}`;
@@ -194,26 +202,25 @@ export class ScheduledTaskEnvironment {
   }
 
   private saveTask(input: SaveScheduledTaskInput): ScheduledTaskToolResult {
-    const dateError = this.dependencies.dueDateError(input.dueDate, new Date(this.initial.now));
-    if (dateError) return { saved: null, observation: `Cannot save: ${dateError}`, toolSuccess: false };
+    let sequence = this.taskSequence + 1;
+    while (this.state.tasks.some(task => task.id === `eval-task-${sequence}` || task.recurrenceFamilyId === `eval-family-${sequence}`)) sequence++;
+    const plan = planScheduledTasks(input, { now: new Date(this.state.now), receivedAt: this.initial.now,
+      id: `eval-task-${sequence}`, recurrenceFamilyId: `eval-family-${sequence}` });
+    if (!plan.tasks) return { saved: null, observation: `Cannot save: ${plan.error}`, toolSuccess: false };
     if (input.isRecurring && !input.recurringPattern) {
       return { saved: null, observation: "Cannot save: isRecurring is true but recurringPattern was not provided.", toolSuccess: false };
     }
     if (this.state.storage !== "available") {
       return { saved: null, observation: "Cosmos DB is not configured or the upsert failed. Task not saved.", toolSuccess: false };
     }
-    do { this.taskSequence++; } while (this.state.tasks.some(task =>
-      task.id === `eval-task-${this.taskSequence}` || task.recurrenceFamilyId === `eval-family-${this.taskSequence}`));
-    const saved: ScheduledTask = {
-      ...input, id: `eval-task-${this.taskSequence}`, recurrenceFamilyId: `eval-family-${this.taskSequence}`,
-      status: "active", createdAt: this.initial.now, updatedAt: this.initial.now,
-    };
+    this.taskSequence = sequence;
+    const saved = plan.tasks[0];
     if (saved.effect.kind === "action" && !this.observedEntities.has(saved.effect.entityId)) {
       this.policyViolations.push(`Action entity ${saved.effect.entityId} was not resolved before save.`);
     }
-    this.state.tasks.push(saved);
+    this.state.tasks.push(...plan.tasks);
     return {
-      saved, toolSuccess: true,
+      saved, ...(plan.tasks.length > 1 ? { savedTasks: plan.tasks } : {}), toolSuccess: true,
       observation: `Saved ScheduledTask id=${saved.id} title="${saved.title}" effect=${saved.effect.kind}` +
         (saved.effect.kind === "action" ? ` entityId=${saved.effect.entityId}` : "") +
         ` dueDate=${saved.dueDate} recurring=${saved.isRecurring}.`,
@@ -222,7 +229,7 @@ export class ScheduledTaskEnvironment {
 
   private updateTask({ id, recurrenceFamilyId, patch }: UpdateScheduledTaskInput): ScheduledTaskToolResult {
     if (patch.dueDate !== undefined) {
-      const dateError = this.dependencies.dueDateError(patch.dueDate, new Date(this.initial.now));
+      const dateError = this.dependencies.dueDateError(patch.dueDate, new Date(this.state.now));
       if (dateError) return { observation: `Cannot update: ${dateError}`, toolSuccess: false };
     }
     if (Object.keys(patch).length === 0) return { observation: "Patch is empty; nothing to update.", toolSuccess: false };
@@ -232,12 +239,13 @@ export class ScheduledTaskEnvironment {
     }
     this.requireObservedTask(id, recurrenceFamilyId);
     const existing = this.state.tasks[index];
+    if (existing.sequenceId && Object.keys(patch).some(key => ["dueDate", "effect", "isRecurring", "recurringPattern"].includes(key))) return { toolSuccess: false, observation: "Cancel and recreate the timed sequence to change its timing or actions" };
     if (patch.effect?.kind === "action" &&
       (existing.effect.kind !== "action" || existing.effect.entityId !== patch.effect.entityId) &&
       !this.observedEntities.has(patch.effect.entityId)) {
       this.policyViolations.push(`Changed action entity ${patch.effect.entityId} was not resolved before update.`);
     }
-    const updated = { ...existing, ...patch, id, recurrenceFamilyId, createdAt: existing.createdAt, updatedAt: this.initial.now };
+    const updated = { ...existing, ...patch, id, recurrenceFamilyId, createdAt: existing.createdAt, updatedAt: this.state.now };
     this.state.tasks[index] = updated;
     return {
       toolSuccess: true,
@@ -255,8 +263,9 @@ export class ScheduledTaskEnvironment {
     if (this.state.storage === "write_failure") {
       return { observation: "Tool delete_scheduled_task failed during execution. Check its arguments and service availability.", toolSuccess: false };
     }
+    const selected = this.state.tasks.find(task => task.id === id && task.recurrenceFamilyId === recurrenceFamilyId);
     const targets = this.state.tasks.filter(task => task.recurrenceFamilyId === recurrenceFamilyId &&
-      (scope === "family" || task.id === id));
+      (scope === "family" || task.id === id || (selected?.sequenceId && task.sequenceId === selected.sequenceId)));
     if (scope === "occurrence" && targets.length === 0) {
       return { observation: `Failed to delete occurrence id=${id}. The task may already be gone.`, toolSuccess: false };
     }

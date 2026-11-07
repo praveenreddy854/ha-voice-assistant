@@ -153,7 +153,7 @@ const ScheduledTasksPage: React.FC = () => {
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
             <button style={buttonStyle} onClick={() => handleCancel(t)}>
-              Cancel this
+              {t.sequenceId ? "Cancel remaining phases" : "Cancel this"}
             </button>
             {t.isRecurring && (
               <button

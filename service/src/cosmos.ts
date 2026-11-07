@@ -8,6 +8,8 @@ import {
   AZURE_COSMOS_SCHEDULED_TASKS_HISTORY_CONTAINER,
 } from "./config";
 import type { ScheduledTask, ScheduledTaskRun } from "./types/scheduledTask";
+import { scheduledTasksChanged, ScheduledTaskMutationError } from "./scheduledTaskChanges";
+import { randomUUID } from "node:crypto";
 
 let containerPromise: Promise<Container | null> | null = null;
 let scheduledTasksContainerPromise: Promise<Container | null> | null = null;
@@ -129,7 +131,19 @@ export const upsertScheduledTask = async (
   const container = await getScheduledTasksContainer();
   if (!container) return null;
   const { resource } = await container.items.upsert<ScheduledTask>(task);
+  scheduledTasksChanged();
   return (resource as ScheduledTask) ?? task;
+};
+
+/** All phases share one partition, so a failed transaction cannot leave a lone start without its shutoff. */
+export const createScheduledTaskSequence = async (tasks: ScheduledTask[]): Promise<ScheduledTask[] | null> => {
+  const container = await getScheduledTasksContainer();
+  if (!container) return null;
+  if (tasks.length < 2 || tasks.length > 9 || tasks.some(task => task.recurrenceFamilyId !== tasks[0].recurrenceFamilyId)) throw new Error("Invalid scheduled action sequence partition");
+  const response = await container.items.batch(tasks.map(task => ({ operationType: "Create" as const, resourceBody: JSON.parse(JSON.stringify(task)) })), tasks[0].recurrenceFamilyId);
+  if (!response.code || response.code < 200 || response.code >= 300 || response.result?.length !== tasks.length || response.result.some(result => result.statusCode < 200 || result.statusCode >= 300)) throw new Error("Timed action transaction failed; no complete sequence was confirmed");
+  scheduledTasksChanged();
+  return tasks;
 };
 
 export const getScheduledTaskById = async (
@@ -149,6 +163,33 @@ export const getScheduledTaskById = async (
   }
 };
 
+export const claimScheduledTask = async (id: string, family: string, now = new Date()): Promise<{
+  task: ScheduledTask; alreadyClaimed: boolean;
+} | undefined> => {
+  const container = await getScheduledTasksContainer();
+  if (!container) throw new Error("Task storage is unavailable");
+  try {
+    const item = container.item(id, family);
+    const { resource } = await item.read<ScheduledTask & { _etag?: string }>();
+    if (!resource || Date.parse(resource.dueDate) > now.getTime()) return;
+    if (resource.firing) {
+      const owner = resource.firing.ownerPid;
+      if (owner && owner !== process.pid && Date.parse(resource.firing.expiresAt || "") > now.getTime()) {
+        try { process.kill(owner, 0); return; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") return; }
+      }
+      return { task: resource, alreadyClaimed: true };
+    }
+    if (!resource._etag) throw new Error("Task has no concurrency token; refusing unclaimed device execution");
+    const task: ScheduledTask = { ...resource, firing: { id: randomUUID(), claimedAt: now.toISOString(), ownerPid: process.pid, expiresAt: new Date(now.getTime() + 90_000).toISOString() } };
+    await item.replace(task, { accessCondition: { type: "IfMatch", condition: resource._etag } });
+    return { task, alreadyClaimed: false };
+  } catch (error) {
+    if ([404, 412].includes(Number((error as { code?: number }).code))) return;
+    throw error;
+  }
+};
+
 export const updateScheduledTask = async (
   id: string,
   recurrenceFamilyId: string,
@@ -156,6 +197,8 @@ export const updateScheduledTask = async (
 ): Promise<ScheduledTask | null> => {
   const existing = await getScheduledTaskById(id, recurrenceFamilyId);
   if (!existing) return null;
+  if (existing.firing) throw new ScheduledTaskMutationError("This occurrence has already started dispatching; its effect cannot be rescheduled");
+  if (existing.sequenceId && Object.keys(patch).some(key => ["dueDate", "effect", "isRecurring", "recurringPattern"].includes(key))) throw new ScheduledTaskMutationError("Cancel and recreate the timed sequence to change its timing or actions; moving one phase alone is not allowed");
   const updated: ScheduledTask = {
     ...existing,
     ...patch,
@@ -164,7 +207,17 @@ export const updateScheduledTask = async (
     createdAt: existing.createdAt,
     updatedAt: new Date().toISOString(),
   };
-  return upsertScheduledTask(updated);
+  const container = await getScheduledTasksContainer();
+  if (!container) return null;
+  if (!existing._etag) throw new ScheduledTaskMutationError("Task concurrency metadata is unavailable; refresh before editing");
+  try {
+    const { resource } = await container.item(id, recurrenceFamilyId).replace(updated, { accessCondition: { type: "IfMatch", condition: existing._etag } });
+    scheduledTasksChanged();
+    return resource || updated;
+  } catch (error) {
+    if ([404, 412].includes(Number((error as { code?: number }).code))) throw new ScheduledTaskMutationError("The task changed or began firing during this edit; refresh the task list before trying again");
+    throw error;
+  }
 };
 
 export const listActiveScheduledTasks = async (): Promise<ScheduledTask[]> => {
@@ -184,11 +237,30 @@ export const deleteScheduledTask = async (
   if (!container) return false;
   try {
     await container.item(id, recurrenceFamilyId).delete();
+    scheduledTasksChanged();
     return true;
   } catch (err) {
     console.error(`Failed to delete scheduled task ${id}`, err);
     return false;
   }
+};
+
+/** UI/tool occurrence cancellation removes all remaining phases of that occurrence, never another family. */
+export const deleteScheduledTaskOccurrence = async (id: string, recurrenceFamilyId: string): Promise<boolean> => {
+  const task = await getScheduledTaskById(id, recurrenceFamilyId);
+  if (!task) return false;
+  if (!task.sequenceId) return deleteScheduledTask(id, recurrenceFamilyId);
+  const container = await getScheduledTasksContainer();
+  if (!container) return false;
+  const { resources } = await container.items.query<ScheduledTask>({
+    query: "SELECT * FROM c WHERE c.recurrenceFamilyId = @family AND c.sequenceId = @sequence",
+    parameters: [{ name: "@family", value: recurrenceFamilyId }, { name: "@sequence", value: task.sequenceId }],
+  }).fetchAll();
+  if (!resources.length || resources.length > 9) return false;
+  const response = await container.items.batch(resources.map(phase => ({ operationType: "Delete" as const, id: phase.id })), recurrenceFamilyId);
+  const deleted = Boolean(response.code && response.code >= 200 && response.code < 300 && response.result?.length === resources.length && response.result.every(result => result.statusCode >= 200 && result.statusCode < 300));
+  if (deleted) scheduledTasksChanged();
+  return deleted;
 };
 
 export const deleteRecurrenceFamily = async (
@@ -207,6 +279,7 @@ export const deleteRecurrenceFamily = async (
   for (const t of resources) {
     try {
       await container.item(t.id, recurrenceFamilyId).delete();
+      scheduledTasksChanged();
       deleted++;
     } catch (err) {
       // Agent tools must not claim the recurrence stopped after a partial delete.
@@ -221,8 +294,13 @@ export const insertScheduledTaskRun = async (
   run: ScheduledTaskRun
 ): Promise<void> => {
   const container = await getScheduledTasksHistoryContainer();
-  if (!container) return;
-  await container.items.create(run);
+  if (!container) throw new Error("Scheduled task history storage is unavailable");
+  try { await container.items.create(run); }
+  catch (error) {
+    // A dispatch has one immutable outcome. Recovery must not replace a saved
+    // success with an interruption or replay a device action after cleanup fails.
+    if (Number((error as { code?: number }).code) !== 409) throw error;
+  }
 };
 
 export interface DeviceStateRecord {

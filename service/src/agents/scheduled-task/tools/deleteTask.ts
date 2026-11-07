@@ -1,6 +1,6 @@
 import { z } from "zod";
 import {
-  deleteScheduledTask,
+  deleteScheduledTaskOccurrence,
   deleteRecurrenceFamily,
   getScheduledTasksContainer,
 } from "../../../cosmos";
@@ -43,11 +43,11 @@ export async function execute(args: DeleteScheduledTaskInput): Promise<{
           "Cannot delete: scope='occurrence' requires id. Use list_scheduled_tasks to find it.",
       };
     }
-    const ok = await deleteScheduledTask(id, recurrenceFamilyId);
+    const ok = await deleteScheduledTaskOccurrence(id, recurrenceFamilyId);
     return {
       toolSuccess: ok,
       observation: ok
-        ? `Deleted occurrence id=${id} from family ${recurrenceFamilyId}.`
+        ? `Deleted occurrence id=${id} and any remaining timed phases from family ${recurrenceFamilyId}.`
         : `Failed to delete occurrence id=${id}. The task may already be gone.`,
     };
   }

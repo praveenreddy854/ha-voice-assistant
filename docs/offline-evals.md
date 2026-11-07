@@ -2,6 +2,8 @@
 
 The shared implementation in `service/src/evals/` supports TVAgent, ScheduledTaskAgent and the Realtime Voice Agent. Each has a registered adapter, a bounded simulated suite, recorded-run import and agent-specific judge reference cases. This document records the design and remaining refinements; domain terminology lives in [CONTEXT.md](../CONTEXT.md#assistant-evaluation). See [testing instructions](./offline-eval-testing.md) for the dashboard and on-demand commands.
 
+The scheduling suite now has 16 scenarios, including advancing-clock relative deadlines, expired short delays, atomic start/shutoff phases, and cancellation of linked phases. Fixtures keep request receipt fixed while optionally advancing current time per tool call. Controlled model comparisons use identical fixture/prompt/tool versions and frozen judge groups; see [the paired comparison command](model-comparisons.md).
+
 ## Agreed modes and cadence
 
 Both modes are in scope and must remain distinguishable in execution, reports, and aggregate results.

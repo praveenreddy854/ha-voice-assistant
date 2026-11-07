@@ -261,8 +261,14 @@ A `ScheduledTask` whose firing executes a Home Assistant command through a Sched
 **Fire (verb)**:
 The act of executing a `ScheduledTask`'s effect at its due time. Always happens server-side.
 
+**Request receipt**:
+The server timestamp for a complete user request, captured before model processing, job queueing or memory retrieval. Relative scheduling delays are anchored to this immutable timestamp across retries and pauses. An expired positive delay requires a new user instruction; it is not silently restarted. Explicit zero delay means dispatch as soon as the task is persisted.
+
+**Timed action sequence**:
+A one-shot instruction persisted atomically as multiple `ScheduledTask` rows on one resolved entity. Each row has one immediate Action effect and its own absolute due date; `sequenceId` links the phases in one recurrence family. Follow-up offsets are measured from the first scheduled phase. Cancelling any remaining occurrence cancels all remaining phases. Recurring sequences require a separate design and are rejected rather than stored incompletely.
+
 **ScheduledTaskRun**:
-The audit record of a single fire. One row per fire, written to the history container. Includes outcome (`succeeded` / `failed` / `skipped` / `aborted_by_agent`), agent trace, and a snapshot of relevant device state at the moment of firing.
+The audit record of a single fire. One row per dispatch, written to the history container. Includes outcome (`succeeded` / `failed` / `skipped` / `aborted_by_agent` / `interrupted`), agent trace, and a snapshot of relevant device state at the moment of firing. An interrupted dispatch has an unknown device effect and is not automatically replayed. Its durable claim identifies the immutable audit result across cleanup retries.
 
 **Recurrence family**:
 The lineage of `ScheduledTask` records produced by a single recurring instruction. Every occurrence — past, current, future — shares a `recurrenceFamilyId`. This is what "cancel all future tesla-charge tasks" operates on.
@@ -277,7 +283,7 @@ The single Specialist agent that handles ScheduledTask voice flows: creation (pa
 - **Simulated eval** and **Recorded-run eval** are distinct kinds of **Offline assistant eval**.
 - A **Simulated eval** uses a **Simulated assistant environment** appropriate to the assessed agent's task domain.
 - A **Simulated eval** of a complete **TVAgent** task uses a **Simulated TV environment** whose observations depend on the agent's actions.
-- A **Simulated eval** of **ScheduledTaskAgent** uses isolated task storage, entity state and memory with a fixed clock and timezone; it does not fire real effects.
+- A **Simulated eval** of **ScheduledTaskAgent** uses isolated task storage, entity state and memory with a fixed request anchor and timezone. Fixtures may advance their current clock to model processing latency; they do not fire real effects.
 - A **Simulated eval** of the **Realtime Voice Agent** assesses text/tool decisions on the configured Realtime model with simulated delegation and memory. It does not assess microphone input, wake-word detection, transcription or speech quality.
 - A **Recorded-run eval** assesses retained evidence from a finished real assistant run, including one that ended in error, without repeating its device actions.
 - A **Recorded-run eval** can be scheduled or requested on demand without becoming a **Simulated eval**.
