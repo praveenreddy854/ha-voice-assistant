@@ -269,3 +269,5 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ---
 
 **Note**: This is a development project. Ensure proper security measures are in place before deploying to production environments.
+
+See [service console troubleshooting](docs/console-troubleshooting.md) for gesture runtime setup, camera failures, unavailable devices, and translation diagnostics.

@@ -15,6 +15,7 @@ import { delay } from "./agents/common/utils";
 import { createHash, randomUUID } from "node:crypto";
 import { addEvent, addLLMStep, completeTrace, createTrace, getActiveSessionId, trackToolResult, withTraceSession } from "./tracing/agentTraceStore";
 import { getRequestContext } from "./requestContext";
+import { safeErrorDetails } from "./logSanitizer";
 
 function retainHAEvidence(callback: () => void): void {
   try { callback(); } catch { console.error("[HA telemetry] Evidence capture failed"); }
@@ -63,6 +64,7 @@ export async function getHACommandBody(
     { role: "user", content: prompt },
   ];
 
+  let stage = "model_request";
   try {
     const started = Date.now();
     const responseText = await generateCompletion({
@@ -83,13 +85,18 @@ export async function getHACommandBody(
       });
     });
     await waitForRunPermission(options);
+    stage = "response_parse";
     return JSON.parse(responseText) as HassServiceCommandBody;
   } catch (error) {
     if (options?.abortSignal?.aborted) {
       throw options.abortSignal.reason ?? error;
     }
-    console.error("Failed to get Home Assistant command:", error);
-    throw new Error("Failed to process Home Assistant command");
+    const details = { stage, model: AI_MODEL_HOME_ASSISTANT || "unreported", ...safeErrorDetails(error) };
+    console.error("Failed to get Home Assistant command:", details);
+    const sessionId = getActiveSessionId();
+    if (sessionId) retainHAEvidence(() => addEvent(sessionId, "ha.translation.failed", "Home Assistant command translation failed", details));
+    throw new Error("Failed to process Home Assistant command (" + stage +
+      (details.statusCode ? ", HTTP " + details.statusCode : "") + ")");
   }
 }
 
@@ -357,7 +364,7 @@ async function executeHACommandInternal(
       span.setAttribute("ha.command.cancelled", true);
       throw options.abortSignal.reason ?? err;
     }
-    console.error("Error executing HA command:", err);
+    console.error("Error executing HA command:", safeErrorDetails(err));
     span.setAttribute("ha.command.success", false);
     span.setAttribute("ha.command.error", err.message);
     return {
@@ -611,6 +618,20 @@ async function executeSingleHACommandInternal(
 
   if (stateEntityId) {
     return executeHAStateLookup(entityId, originalCommand, options);
+  }
+
+  // Restored/offline switches and lights may accept POSTs without doing anything.
+  // Keep read-only queries above and remote/TV wake paths available.
+  if (/^(switch|light|fan)\./.test(entityId)) {
+    const state = await getHAEntityState(entityId, options);
+    if (state.state === "unavailable" || state.attributes?.restored === true) {
+      return {
+        success: false,
+        message: (state.attributes?.friendly_name || entityId) +
+          " is unavailable in Home Assistant. Restore the device connection before retrying.",
+        data: state,
+      };
+    }
   }
 
   // Prepare the request body

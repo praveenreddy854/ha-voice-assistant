@@ -1,5 +1,6 @@
 import { createAzure } from "@ai-sdk/azure";
 import { generateText } from "ai";
+import { samplingSettings } from "./modelSettings";
 import {
   AZURE_OPENAI_API_KEY,
   AZURE_OPENAI_RESOURCE_NAME,
@@ -93,7 +94,7 @@ export async function generateCompletion(params: {
       messages: params.messages as any,
       abortSignal: params.abortSignal,
       maxOutputTokens: params.maxTokens ?? 1000,
-      ...(params.temperature != null && { temperature: params.temperature }),
+      ...samplingSettings(params.model, params.temperature),
     });
     return result.text;
   }, 2, 500, params.abortSignal);
@@ -144,7 +145,7 @@ export async function generateVisionText(params: {
         },
       ],
       maxOutputTokens: params.maxTokens ?? 500,
-      ...(params.temperature != null && { temperature: params.temperature }),
+      ...samplingSettings(params.model, params.temperature),
     });
     return result.text;
   });

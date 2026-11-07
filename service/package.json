@@ -18,6 +18,7 @@
     "eval:recorded": "tsx src/evals/worker.ts recorded",
     "eval:calibrate": "tsx src/evals/worker.ts calibrate",
     "eval:compare": "tsx src/evals/compare.ts",
+    "gesture:setup": "tsx scripts/setup-gesture.ts",
     "shortcut:package": "tsx scripts/package-apple-shortcut.ts"
   },
   "keywords": [],
