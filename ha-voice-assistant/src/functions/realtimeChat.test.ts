@@ -51,6 +51,7 @@ const makeStream = () => ({
 beforeEach(async () => {
   vi.useFakeTimers();
   vi.resetModules();
+  localStorage.clear();
   FakeWebSocket.instances = [];
   FakeAudioContext.instances = [];
   stopTrack = vi.fn();
@@ -59,10 +60,13 @@ beforeEach(async () => {
   vi.stubGlobal("AudioContext", FakeAudioContext);
   vi.stubGlobal("navigator", { mediaDevices: { getUserMedia } });
   chat = await import("./realtimeChat");
+  // History expiration is exercised on access; ignore its background cleanup.
+  vi.clearAllTimers();
 });
 
 afterEach(() => {
   chat.stopRealtimeChat({ closeAudioOutput: true });
+  vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -187,6 +191,87 @@ async function beginVoice(onDone = vi.fn(), initialText?: string) {
   return { turn, output: FakeAudioContext.instances[0] };
 }
 
+test("a text exchange is restored before the next wake-word command on a new connection", async () => {
+  const first = chat.startRealtimeChat("Turn on the bedroom light");
+  await vi.advanceTimersByTimeAsync(0);
+  FakeWebSocket.instances[0].ready();
+  await vi.advanceTimersByTimeAsync(0);
+  receive({ type: "response_done", fullText: "The bedroom light is on." });
+  await first;
+  chat.stopRealtimeChat();
+
+  const next = chat.startRealtimeVoiceTurn(undefined, undefined, undefined, undefined, undefined, undefined, { initialText: "Turn it off" });
+  await vi.advanceTimersByTimeAsync(0);
+  const socket = FakeWebSocket.instances[1];
+  socket.ready();
+  await vi.advanceTimersByTimeAsync(0);
+  const sent = socket.send.mock.calls.map(([raw]) => JSON.parse(raw));
+  expect(sent[0]).toEqual({ type: "conversation_history", history: [
+    { role: "user", content: "Turn on the bedroom light", createdAt: expect.any(Number) },
+    { role: "assistant", content: "The bedroom light is on.", createdAt: expect.any(Number) },
+  ] });
+  expect(sent.at(-1)).toEqual({ type: "user_text", text: "Turn it off" });
+  chat.stopRealtimeChat();
+  await next;
+});
+
+test("spoken conversation survives a reload with its original timestamps and expires after five minutes", async () => {
+  const startedAt = Date.now();
+  const now = vi.spyOn(Date, "now").mockReturnValue(startedAt);
+  const { turn } = await beginVoice();
+  receive({ type: "user_transcript", text: "What is the weather in Boston?" });
+  receive({ type: "response_done", fullText: "It is sunny in Boston." });
+  await vi.advanceTimersByTimeAsync(0);
+  chat.stopRealtimeChat();
+  await turn;
+  const stored = JSON.parse(localStorage.getItem("voiceAssistantMessageHistory") || "null");
+  expect(stored.messages.map(({ content }: { content: string }) => content)).toEqual([
+    "What is the weather in Boston?", "It is sunny in Boston.",
+  ]);
+
+  await vi.advanceTimersByTimeAsync(4 * 60_000);
+  now.mockReturnValue(startedAt + 4 * 60_000);
+  vi.resetModules();
+  chat = await import("./realtimeChat");
+  vi.clearAllTimers();
+  const next = chat.startRealtimeChat("And tomorrow?");
+  await vi.advanceTimersByTimeAsync(0);
+  FakeWebSocket.instances[1].ready();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(JSON.parse(FakeWebSocket.instances[1].send.mock.calls[0][0])).toEqual({
+    type: "conversation_history",
+    history: stored.messages.map(({ role, content, timestamp }: { role: string; content: string; timestamp: number }) => ({ role, content, createdAt: timestamp })),
+  });
+  chat.stopRealtimeChat();
+  await next;
+
+  await vi.advanceTimersByTimeAsync(60_001);
+  now.mockReturnValue(startedAt + 5 * 60_000 + 1);
+  const expired = chat.startRealtimeChat("What about now?");
+  await vi.advanceTimersByTimeAsync(0);
+  FakeWebSocket.instances[2].ready();
+  await vi.advanceTimersByTimeAsync(0);
+  const restored = JSON.parse(FakeWebSocket.instances[2].send.mock.calls[0][0]);
+  expect(restored).toEqual({ type: "conversation_history", history: [
+    { role: "user", content: "And tomorrow?", createdAt: expect.any(Number) },
+  ] });
+  chat.stopRealtimeChat();
+  await expired;
+});
+
+test("completed spoken exchanges update command context on the same connection", async () => {
+  const { turn } = await beginVoice();
+  receive({ type: "user_transcript", text: "Use the bedroom light" });
+  receive({ type: "response_done", fullText: "Okay, the bedroom light." });
+  await vi.advanceTimersByTimeAsync(0);
+  const updates = FakeWebSocket.instances[0].send.mock.calls.map(([raw]) => JSON.parse(raw)).filter((event) => event.type === "conversation_history");
+  expect(updates.at(-1).history.map((item: { content: string }) => item.content)).toEqual([
+    "Use the bedroom light", "Okay, the bedroom light.",
+  ]);
+  chat.stopRealtimeChat();
+  await turn;
+});
+
 function queueSpeech(seconds: number) {
   receive({ type: "audio_delta", audio: btoa("\0".repeat(24000 * 2 * seconds)) });
 }
@@ -237,6 +322,7 @@ test.each(["assistant_interrupted", "speech_started"])("%s stops every buffered 
   expect(onDone).not.toHaveBeenCalled();
   expect(stopTrack).not.toHaveBeenCalled();
   expect(getUserMedia).toHaveBeenCalledTimes(1);
+  expect(localStorage.getItem("voiceAssistantMessageHistory")).not.toContain("The interrupted answer");
 
   queueSpeech(1);
   receive({ type: "response_done", fullText: "A new answer" });

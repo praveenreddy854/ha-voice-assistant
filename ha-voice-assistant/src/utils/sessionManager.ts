@@ -105,6 +105,14 @@ class MessageHistoryManager {
     }));
   }
 
+  // Preserve message ages when a realtime session reconnects or the page reloads.
+  getSessionHistory(): Array<{ role: 'user' | 'assistant'; content: string; createdAt: number }> {
+    this.cleanupExpiredMessages();
+    return this.messageHistory.messages.map(({ role, content, timestamp }) => ({
+      role, content, createdAt: timestamp,
+    }));
+  }
+
   clearHistory(): void {
     this.messageHistory = {
       messages: [],

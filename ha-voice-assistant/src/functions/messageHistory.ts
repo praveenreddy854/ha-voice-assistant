@@ -33,7 +33,7 @@ export const getMessageHistoryStats = (): MessageHistoryStats => {
   return {
     messageCount: messageHistoryManager.getMessageCount(),
     isActive: messageHistoryManager.isHistoryActive(),
-    expiryTime: "10 minutes"
+    expiryTime: "5 minutes"
   };
 };
 

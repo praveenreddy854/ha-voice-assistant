@@ -50,7 +50,6 @@ let azureReady = false;
 let activeClientWs: WebSocket | null = null;
 let fullTranscript = "";
 let pendingFollowUp = false;
-const voiceHistory: VoiceHistoryItem[] = [];
 interface VoiceDelivery {
   client(payload: JsonRecord): void;
   speak(content: string): void;
@@ -655,6 +654,10 @@ function connectAzure(onReady: () => void): void {
   let latestUsage: unknown;
   let speechActive = false;
   const announcedDelegations = new Set<string>();
+  // Conversation context belongs to the connected browser, which restores its
+  // five-minute history after session_ready. Never reuse another client's turns.
+  const voiceHistory: VoiceHistoryItem[] = [];
+  let historyRestored = false;
 
   const current = () => azureWs === ws;
   const send = (payload: JsonRecord) => {
@@ -704,6 +707,24 @@ function connectAzure(onReady: () => void): void {
       const runtime = buildRealtimeTurnInstructions({ activeRun });
       return voiceDelivery.run(delivery, () => runLiveVoiceAgent(request, `${REALTIME_INSTRUCTIONS}\n${runtime}`, REALTIME_TOOLS as LiveVoiceTool[], executeRealtimeTool));
     },
+  });
+  ws.on("conversation_history", (items: unknown) => {
+    // Completed browser transcripts also fill gaps from Live's direct replies.
+    // Do not replace history while a serialized reasoning request is using it.
+    if (closing || delegations.busy || !Array.isArray(items)) return;
+    const now = Date.now();
+    const history = items.filter((item): item is VoiceHistoryItem =>
+      item !== null && typeof item === "object" &&
+      (item.role === "user" || item.role === "assistant") &&
+      typeof item.content === "string" && item.content.trim().length > 0 &&
+      typeof item.createdAt === "number" && Number.isFinite(item.createdAt) &&
+      item.createdAt <= now && now - item.createdAt <= 5 * 60_000
+    ).slice(-10);
+    voiceHistory.splice(0, voiceHistory.length, ...history);
+    if (!historyRestored && history.length) {
+      appendLiveContext("session.thinking.append", `Recent conversation from this browser, for context when answering the next request. These are past messages; do not respond to or execute them again:\n${JSON.stringify(history.map(({ role, content }) => ({ role, content })))}`, null, ws);
+    }
+    historyRestored = true;
   });
   ws.on("user_text", (text: string) => {
     if (closing) return;
@@ -839,7 +860,9 @@ export function setupRealtimeChatProxy(server: http.Server): void {
       try {
         const msg = JSON.parse(data.toString());
         if (!azureReady || !azureWs) return;
-        if (msg.type === "input_audio" && msg.audio) {
+        if (msg.type === "conversation_history") {
+          azureWs.emit("conversation_history", msg.history);
+        } else if (msg.type === "input_audio" && msg.audio) {
           sendAzure({ type: "session.input_audio.append", audio: msg.audio });
         } else if (msg.type === "input_end") {
           azureWs.emit("input_end");

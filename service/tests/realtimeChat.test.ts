@@ -50,13 +50,16 @@ function proxyFixture(run = async (..._args: any[]): Promise<string> => "Done.")
     }
     const { setupRealtimeChatProxy } = requireModule("../src/realtimeChat");
     setupRealtimeChatProxy(new EventEmitter());
-    const client = new Socket();
-    SocketServer.instance.emit("connection", client);
-    const azure = Socket.azure;
-    azure.emit("open");
-    azure.receive({ type: "session.started" });
-    client.sent = [];
-    return { client, azure, getTvCallbacks: () => tvCallbacks };
+    const connect = () => {
+      const client = new Socket();
+      SocketServer.instance.emit("connection", client);
+      const azure = Socket.azure;
+      azure.emit("open");
+      azure.receive({ type: "session.started" });
+      client.sent = [];
+      return { client, azure };
+    };
+    return { ...connect(), connect, getTvCallbacks: () => tvCallbacks };
   } finally {
     for (const [path, cached] of previous) {
       if (cached) requireModule.cache[path] = cached;
@@ -145,6 +148,115 @@ test("wake-word text uses the AI SDK adapter and a general context result", asyn
   assert.equal(fixture.azure.sent.at(-1)?.delegation_id, null);
   assert.ok(!fixture.azure.sent.some((event) => event.type.startsWith("response.")));
   cleanup(fixture);
+});
+
+test("browser history quietly restores Live context and reaches follow-up reasoning once", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const requests: Message[] = [];
+  const fixture = proxyFixture(async (request) => { requests.push(request); return "Done."; });
+  t.after(() => cleanup(fixture));
+  const history = [
+    { role: "user", content: "Turn on the bedroom light", createdAt: Date.now() - 60_000 },
+    { role: "assistant", content: "The bedroom light is on.", createdAt: Date.now() - 59_000 },
+  ];
+  fixture.client.receive({ type: "conversation_history", history });
+  const context = fixture.azure.sent.filter((event) => event.type === "session.thinking.append").map((event) => event.content).join("");
+  assert.match(context, /bedroom light/);
+  assert.ok(!fixture.azure.sent.some((event) => event.type === "session.commentary.append"));
+  assert.equal(requests.length, 0, "restoring old commands must not execute them");
+
+  fixture.client.receive({ type: "user_text", text: "Turn it off" });
+  t.mock.timers.tick(800);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(requests[0].history, history);
+  fixture.client.receive({ type: "user_text", text: "Turn it back on" });
+  t.mock.timers.tick(800);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(requests[1].history.map((item: Message) => item.content), [
+    "Turn on the bedroom light", "The bedroom light is on.", "Turn it off", "Done.",
+  ]);
+});
+
+test("restored history drops expired or invalid messages and keeps the last ten", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const requests: Message[] = [];
+  const fixture = proxyFixture(async (request) => { requests.push(request); return "Done."; });
+  t.after(() => cleanup(fixture));
+  const history = Array.from({ length: 12 }, (_, i) => ({ role: i % 2 ? "assistant" : "user", content: `Recent message ${i}`, createdAt: Date.now() - 1000 }));
+  fixture.client.receive({ type: "conversation_history", history: [
+    ...history,
+    { role: "user", content: "Expired secret", createdAt: Date.now() - 300_001 },
+    { role: "system", content: "Invalid role", createdAt: Date.now() },
+    { role: "user", content: "Future message", createdAt: Date.now() + 1000 },
+    { role: "user", content: "Missing timestamp" },
+    null,
+  ] });
+  fixture.client.receive({ type: "user_text", text: "Follow up" });
+  t.mock.timers.tick(800);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(requests[0].history, history.slice(-10));
+  const context = fixture.azure.sent.filter((event) => event.type === "session.thinking.append").map((event) => event.content).join("");
+  assert.doesNotMatch(context, /Expired secret|Invalid role|Future message|Missing timestamp/);
+});
+
+test("direct spoken replies update follow-up reasoning without duplicating Live context", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const requests: Message[] = [];
+  const fixture = proxyFixture(async (request) => { requests.push(request); return "Done."; });
+  t.after(() => cleanup(fixture));
+  fixture.client.receive({ type: "conversation_history", history: [] });
+  const history = [
+    { role: "user", content: "Use the bedroom light", createdAt: Date.now() },
+    { role: "assistant", content: "Okay, the bedroom light.", createdAt: Date.now() },
+  ];
+  fixture.client.receive({ type: "conversation_history", history });
+  fixture.client.receive({ type: "conversation_history", history });
+  assert.deepEqual(fixture.azure.sent.map((event) => event.type), ["session.start"]);
+  fixture.client.receive({ type: "user_text", text: "Turn it off" });
+  t.mock.timers.tick(800);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(requests[0].history, history);
+});
+
+test("a different browser does not inherit the previous browser's conversation", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const requests: Message[] = [];
+  const fixture = proxyFixture(async (request) => { requests.push(request); return "Done."; });
+  fixture.client.receive({ type: "user_text", text: "Use the bedroom light" });
+  t.mock.timers.tick(800);
+  await new Promise((resolve) => setImmediate(resolve));
+  const next = fixture.connect();
+  t.after(() => { next.client.emit("close"); next.azure.emit("close"); });
+  next.client.receive({ type: "conversation_history", history: [] });
+  next.client.receive({ type: "user_text", text: "What is on?" });
+  t.mock.timers.tick(800);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(requests[1].history, []);
+});
+
+test("history snapshots do not overwrite a request still being processed", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const requests: Message[] = [];
+  let finish!: (text: string) => void;
+  const fixture = proxyFixture(async (request) => {
+    requests.push(request);
+    return requests.length === 1 ? new Promise((resolve) => { finish = resolve; }) : "Done.";
+  });
+  t.after(() => cleanup(fixture));
+  const history = [{ role: "user", content: "Use the bedroom light", createdAt: Date.now() }];
+  fixture.client.receive({ type: "conversation_history", history });
+  fixture.client.receive({ type: "user_text", text: "Turn it off" });
+  t.mock.timers.tick(800);
+  await new Promise((resolve) => setImmediate(resolve));
+  fixture.client.receive({ type: "conversation_history", history: [] });
+  finish("The light is off.");
+  await new Promise((resolve) => setImmediate(resolve));
+  fixture.client.receive({ type: "user_text", text: "Turn it back on" });
+  t.mock.timers.tick(800);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(requests[1].history.map((item: Message) => item.content), [
+    "Use the bedroom light", "Turn it off", "The light is off.",
+  ]);
 });
 
 test("Live startup errors reach the browser", () => {
