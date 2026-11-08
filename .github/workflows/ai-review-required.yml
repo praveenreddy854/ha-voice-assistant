@@ -1,0 +1,88 @@
+name: Enforce AI review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created, edited, deleted]
+  workflow_dispatch:
+    inputs:
+      pull_request:
+        description: Pull request number to recheck
+        required: true
+        type: string
+
+# This workflow never checks out or executes pull-request code.
+permissions:
+  checks: write
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number || github.event.issue.number || inputs.pull_request }}
+  cancel-in-progress: false
+
+jobs:
+  enforce:
+    name: Evaluate trusted Codex review
+    if: >-
+      github.event_name != 'issue_comment' ||
+      (github.event.issue.pull_request &&
+       (github.event.comment.user.id == 199175422 ||
+        contains(github.event.comment.body, '<!-- codex-pull-request-review-summary -->')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require Codex review for the current commit
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          MANUAL_PR_NUMBER: ${{ inputs.pull_request }}
+        with:
+          script: |
+            // BEGIN REVIEW POLICY (tested without network or credentials)
+            function evaluateReview(comments, headSha) {
+              const trusted = comments.filter(comment =>
+                comment.user?.id === 199175422 &&
+                comment.user?.type === 'Bot' &&
+                comment.user?.login === 'chatgpt-codex-connector[bot]' &&
+                comment.performed_via_github_app?.id === 1144995 &&
+                comment.performed_via_github_app?.slug === 'chatgpt-codex-connector' &&
+                comment.body?.startsWith('<!-- codex-pull-request-review-summary -->')
+              ).sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at) || b.id - a.id);
+              if (!trusted.length) return { state: 'pending', summary: 'Waiting for Codex. Request a review with @codex review.' };
+              const matches = [...trusted[0].body.matchAll(/<!-- codex-review-state:v1 (\{[^\r\n]*\}) -->/g)];
+              if (matches.length !== 1) return { state: 'failure', summary: 'Codex review state is missing or ambiguous. Request a fresh @codex review.' };
+              let review;
+              try { review = JSON.parse(matches[0][1]).code_review; }
+              catch { return { state: 'failure', summary: 'Codex review state is invalid. Request a fresh @codex review.' }; }
+              if (!review || review.commit_sha !== headSha) return { state: 'pending', summary: 'The current pull-request commit has not been reviewed. Request @codex review after the latest push.' };
+              if (review.status !== 'completed') return { state: 'pending', summary: 'Waiting for a completed Codex review of the current commit.' };
+              if (typeof review.has_any_findings !== 'boolean' || typeof review.has_unresolved_findings !== 'boolean' ||
+                  (!review.has_any_findings && review.has_unresolved_findings)) {
+                return { state: 'failure', summary: 'Codex returned incomplete or inconsistent findings metadata. Request a fresh review.' };
+              }
+              if (review.has_unresolved_findings) return { state: 'failure', summary: 'Codex reported unresolved findings. Address them and request another review.' };
+              return { state: 'success', summary: 'Codex reviewed the current commit and reports no unresolved findings.' };
+            }
+            // END REVIEW POLICY
+
+            const pull_number = Number(context.payload.pull_request?.number || context.payload.issue?.number || process.env.MANUAL_PR_NUMBER);
+            if (!Number.isSafeInteger(pull_number) || pull_number <= 0) throw new Error('A positive pull request number is required.');
+            const { owner, repo } = context.repo;
+            const { data: pull } = await github.rest.pulls.get({ owner, repo, pull_number });
+            if (pull.state !== 'open' && context.eventName !== 'workflow_dispatch') { core.info('Pull request is closed; no merge gate is needed.'); return; }
+            const head_sha = pull.head.sha;
+            const name = 'AI Review Gate';
+            const external_id = `${owner}/${repo}#${pull_number}:${head_sha}:codex-review-v1`;
+            const details_url = `${process.env.GITHUB_SERVER_URL}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const { data: check } = await github.rest.checks.create({ owner, repo, name, head_sha, external_id, status: 'in_progress', details_url, output: { title: 'Checking AI review', summary: 'Validating the trusted Codex summary against the current pull-request commit.' } });
+            try {
+              const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: pull_number, per_page: 100 });
+              const result = evaluateReview(comments, head_sha);
+              const pending = result.state === 'pending';
+              await github.rest.checks.update({ owner, repo, check_run_id: check.id, status: pending ? 'in_progress' : 'completed', ...(pending ? {} : { conclusion: result.state }), details_url, output: { title: pending ? 'AI review required' : result.state === 'success' ? 'AI review passed' : 'AI review blocked', summary: result.summary } });
+              core.info(result.summary);
+            } catch (error) {
+              await github.rest.checks.update({ owner, repo, check_run_id: check.id, status: 'completed', conclusion: 'failure', details_url, output: { title: 'AI review validation failed', summary: 'The review could not be verified. Rerun this workflow after the service recovers.' } });
+              throw error;
+            }

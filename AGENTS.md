@@ -30,3 +30,16 @@ The application automatically stops listening after a command to reduces the COG
 1. Stay inside the correct folder (front-end vs back-end).
 2. Front-end never calls Home Assistant directly—use the server API.
 3. Use TypeScript everywhere.
+
+## Code Review Rules
+
+- Preserve the boundary between the React client and server: the client must not call Home Assistant directly or receive provider/device credentials.
+- Device actions must report actual execution failures, unavailable devices, timeouts, and cancellation accurately. Do not report success before completion or leave capture sessions, timers, or child processes running after failure.
+- Keep tokens, RTSP credentials, microphone transcripts, and personal device data out of logs and error responses. Review changes to tool execution and scheduling for authorization and unintended repeated actions.
+- Review regression coverage for changed behavior. Distinguish mocked tests from verified live-device behavior.
+
+## Required AI review
+
+Pull requests into the default branch require the `AI Review Gate` check. It verifies the official Codex bot's machine-readable summary for the exact current PR commit and blocks unresolved findings. After pushing new commits, request `@codex review` if a fresh review does not start automatically.
+
+The enforcement workflow never checks out or executes PR code. Its Codex summary parser fails closed if the summary format changes. Maintainers can recheck a PR using the **Enforce AI review** workflow's **Run workflow** control and a PR number. Run policy fixtures with `node --experimental-strip-types --test .github/tests/ai-review-policy.test.ts`.
