@@ -174,7 +174,10 @@ export class EvalStore {
   }
   async alert(alert: EvalAlert): Promise<void> {
     const previous = (await this.list<EvalAlert>("alerts")).find(a => a.key === alert.key && !a.resolvedAt);
-    if (!previous) await this.write("alerts", alert);
+    // Deduplicate the open issue, not its evidence: a later failure can have a
+    // different cause or batch. Keep the stable ID and show its latest occurrence.
+    if (previous && Date.parse(alert.createdAt) < Date.parse(previous.createdAt)) return;
+    await this.write("alerts", { ...alert, id: previous?.id || alert.id });
   }
   async resolveAlert(key: string): Promise<void> {
     for (const alert of await this.list<EvalAlert>("alerts")) if (alert.key === key && !alert.resolvedAt) {

@@ -189,6 +189,42 @@ test("failed jobs and completed recorded histories retain each agent's identity"
   assert.equal(statuses["scheduled_task-source"].status, "eval_error");
 }));
 
+test("repeated worker failures refresh one open alert with current job evidence", () => withStore(async store => {
+  const stale: EvalAlert = { id: "first-failure", agentId: "realtime", key: "realtime:worker-failure",
+    batchId: "old-batch", kind: "incomplete", createdAt: "2026-09-21T07:03:06.388Z",
+    message: "Batch contains incomplete evals", runIds: ["old-run"] };
+  const other: EvalAlert = { ...stale, id: "tv-failure", agentId: "tv", key: "tv:worker-failure" };
+  await store.alert(stale);
+  await store.alert(other);
+  const job: EvalJob = { id: "current-realtime-job", agentId: "realtime", mode: "simulated", status: "running" };
+  const reason = "Configure AI_MODEL_REALTIME before running Realtime evals";
+  await store.write("jobs", job);
+  await store.failJob(job, reason);
+  const failed = await store.read<EvalJob>("jobs", job.id);
+  const current = await store.read<EvalAlert>("alerts", stale.id);
+  assert.deepEqual(current, { ...stale, batchId: job.id, message: reason, runIds: [], createdAt: failed!.finishedAt });
+  assert.equal((await store.list("alerts")).length, 2);
+  assert.deepEqual(await store.read("alerts", other.id), other);
+  // A delayed report must not replace newer evidence or create a duplicate.
+  await store.alert({ ...stale, id: "delayed-report" });
+  assert.deepEqual(await store.read("alerts", stale.id), current);
+  assert.equal((await store.list("alerts")).length, 2);
+}));
+
+test("a failure after resolution creates a new alert and preserves resolved history", () => withStore(async store => {
+  const alert: EvalAlert = { id: "resolved-failure", agentId: "realtime", key: "realtime:worker-failure",
+    batchId: "old-batch", kind: "incomplete", createdAt: "2026-09-21T07:03:06.388Z", message: "Old failure", runIds: [] };
+  await store.alert(alert);
+  await store.resolveAlert(alert.key);
+  const resolved = await store.read<EvalAlert>("alerts", alert.id);
+  assert.ok(resolved?.resolvedAt);
+  const recurrence = { ...alert, id: "new-failure", batchId: "new-batch", createdAt: "2026-11-09T08:15:04.908Z", message: "New failure" };
+  await store.alert(recurrence);
+  assert.deepEqual(await store.read("alerts", alert.id), resolved);
+  assert.deepEqual(await store.read("alerts", recurrence.id), recurrence);
+  assert.equal((await store.list<EvalAlert>("alerts")).filter(row => !row.resolvedAt).length, 1);
+}));
+
 test("baseline, fidelity and semantic step groups never pool different agents", () => withStore(async store => {
   const tv = run("tv");
   const scheduled = run("scheduled_task", "scheduled", { scheduledDay: "2026-09-15" });
