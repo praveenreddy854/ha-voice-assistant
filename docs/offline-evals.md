@@ -147,7 +147,7 @@ Every new TV, ScheduledTask, and Realtime simulated assessment retains versioned
 | --- | --- |
 | `userTurns` | Fixture user messages actually started. Injected screenshots and tool outputs are not additional user turns. |
 | `assistantTurns` | Returned model responses, including text, tool requests, completion signals, and failed/incomplete native Realtime responses. A transport failure before any response is not an assistant turn. |
-| `modelRequests` | Individual AI SDK provider attempts for TV/ScheduledTask, including SDK retries, or native Realtime `response.create` requests. Session setup and tool-result messages are not model requests. |
+| `modelRequests` | Individual AI SDK provider attempts for all current simulated agents, including SDK retries. Historical native Realtime runs count `response.create` requests. Session setup and tool-result messages are not model requests. |
 | `toolCalls` | Every returned tool invocation, including `complete_task`, invalid/rejected calls, and calls stopped by a limit. Repeated requests are retained; duplicate deliveries of the same Realtime response are counted once. |
 | `toolExecutions` | Invocations that reached an isolated simulator. Completion signals and rejected calls are not simulator executions. |
 | `toolErrors` | Executed tools that threw, were interrupted, or reported `toolSuccess: false` / `success: false`. A failed completion claim is not itself a tool execution failure. |
@@ -173,7 +173,7 @@ Recorded and older simulated evaluations are not backfilled by counting evidence
 
 ## Agreed model and prompt selection
 
-- Daily simulated evals assess the backend's currently configured model and prompts. TVAgent and ScheduledTaskAgent use `AI_MODEL_ADVANCED`; Realtime uses `AI_MODEL_REALTIME` through the native Azure Realtime API, not a substituted chat-completions model. No automatic matrix of alternative models or prompts is run.
+- Daily simulated evals assess the backend's currently configured model and prompts. All three agents use `AI_MODEL_ADVANCED`. Realtime evaluates the production GPT Live delegated AI SDK reasoning contract; it does not open a GPT Live or legacy Realtime connection. No automatic matrix of alternative models or prompts is run.
 - Alternative model or prompt configurations are evaluated on demand through simulated evals. Recorded-run evals continue to assess the configuration used by the original completed run; they cannot test a replacement model's behavior.
 - Resolve and record the effective assessed configuration at batch start, including relevant prompt and skill versions, and keep it fixed for the batch and any confirmation attempts. Do not silently mix configurations if the backend changes during a batch.
 - Retain configuration identifiers with every result. Historical regression comparisons may cross assessed model/prompt versions intentionally; display that change while holding scenario, simulator, and grading conditions comparable. Simulated-to-real fidelity comparisons still align assessed configurations where known.
@@ -450,7 +450,7 @@ The twelve fixtures cover absolute-time announcements, relative time across the 
 
 ### Realtime Voice Agent suite
 
-The twelve Realtime fixtures exercise routing to direct Home Assistant, ScheduledTaskAgent and TV capabilities, clarification and protected/bulk-action confirmation, multi-turn confirmation and paused-run control, conversation, fixture-backed web information and scoped memory. Tool outputs represent accepted asynchronous jobs rather than completed device actions. The actual configured Realtime deployment receives text and production tool contracts, with no microphone input, audio output or live effectful executors. Text/tool quality must not be reported as speech or end-to-end audio quality.
+The twelve Realtime fixtures exercise routing to direct Home Assistant, ScheduledTaskAgent and TV capabilities, clarification and protected/bulk-action confirmation, multi-turn confirmation and paused-run control, conversation, fixture-backed web information and scoped memory. Tool outputs represent accepted asynchronous jobs rather than completed device actions. The configured production reasoning deployment receives text, completed-turn history, fixture memory and shared production prompt/tool contracts. A fresh AI SDK session per turn mirrors production delegation. There is no microphone input, audio output or live effectful executor. GPT Live transport, delegation detection and specialized executor behavior are outside this scope. Text/tool quality must not be reported as speech or end-to-end audio quality.
 
 Only newly retained, terminal Realtime turn traces are discoverable. Earlier voice turns without lifecycle telemetry are not manufactured from partial conversation memory. Recorded traces retain their source model and partial-evidence status; regrading does not execute a new voice or device turn.
 

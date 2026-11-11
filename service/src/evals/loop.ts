@@ -1,5 +1,6 @@
 import type {
   AgentLoop,
+  AgentToolCall,
   AgentLoopConfig,
   AgentStepResult,
   ToolDefinition,
@@ -15,6 +16,10 @@ export interface OfflineLoopOptions {
   model: string;
   maxIterations: number;
   initialMessage: string;
+  history?: Array<{ role: string; content: string }>;
+  systemMessages?: string[];
+  observeModelOutput?(text: string): void;
+  validateToolBatch?(calls: AgentToolCall[]): void;
   signal: AbortSignal;
   telemetry: TrialTelemetry;
   record(item: Omit<Evidence, "id">): unknown;
@@ -68,6 +73,7 @@ export async function runOfflineAgentLoop(options: OfflineLoopOptions): Promise<
           for (const tool of result.content) if (tool.type === "tool-call") {
             telemetry.requestTool(call, response.turn, tool.toolCallId, tool.toolName, tool.input);
           }
+          options.observeModelOutput?.(JSON.stringify(result.content));
           telemetry.endModel(call);
           response.responseTimeMs = call.durationMs;
           return result;
@@ -88,7 +94,7 @@ export async function runOfflineAgentLoop(options: OfflineLoopOptions): Promise<
       });
     },
   });
-  const session = loop.createSession(options.initialMessage);
+  const session = loop.createSession(options.initialMessage, options.history, options.systemMessages);
   telemetry.beginUserTurn();
   const requestModel = async (execute: () => Promise<AgentStepResult>) => {
     options.signal.throwIfAborted();
@@ -135,6 +141,13 @@ export async function runOfflineAgentLoop(options: OfflineLoopOptions): Promise<
           usage: telemetry.usage(), steps, stoppedAtIterationLimit: true,
         };
       }
+      try { options.validateToolBatch?.(result.toolCalls || []); }
+      catch (error) {
+        for (const call of result.toolCalls || []) {
+          telemetry.rejectTool(telemetry.findTool(activeCall!, call.id), error instanceof Error ? error.message : String(error));
+        }
+        throw error;
+      }
       const outputs: ToolResultInput[] = [];
       for (const [index, call] of (result.toolCalls || []).entries()) {
         const name = call.function.name, trace = telemetry.findTool(activeCall!, call.id);
@@ -165,7 +178,7 @@ export async function runOfflineAgentLoop(options: OfflineLoopOptions): Promise<
     }
   } finally {
     try {
-      telemetry.trace.systemMessages = [typeof options.systemPrompt === "function" ? options.systemPrompt() : options.systemPrompt];
+      telemetry.trace.systemMessages = [typeof options.systemPrompt === "function" ? options.systemPrompt() : options.systemPrompt, ...(options.systemMessages || [])];
       telemetry.trace.messages = loop.getMessages(session.id);
     } finally { loop.deleteSession(session.id); }
   }

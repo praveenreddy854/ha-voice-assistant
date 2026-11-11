@@ -1,63 +1,25 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import path from "node:path";
 import test from "node:test";
 import { buildRealtimeInstructions, buildRealtimeTurnInstructions, needsActionConfirmation, REALTIME_TOOLS } from "../src/realtimeAgent";
-import { createRealtimeAdapter, createRealtimeAdapterWithTransport } from "../src/evals/realtime/adapter";
-import { RealtimeEnvironment } from "../src/evals/realtime/environment";
-import { executeRealtimeSession, realtimeDeploymentUrl, realtimeUsage } from "../src/evals/realtime/executor";
+import { buildLiveVoiceSystemPrompt, LIVE_VOICE_MAX_ITERATIONS, liveVoiceToolDefinitions } from "../src/liveVoiceContract";
+import { createRealtimeAdapter, createRealtimeAdapterWithLoop } from "../src/evals/realtime/adapter";
+import { matchesSemanticRequest, RealtimeEnvironment } from "../src/evals/realtime/environment";
+import { executeRealtimeSession, REALTIME_EVAL_LIMITS } from "../src/evals/realtime/executor";
 import { EvalExecutionError, TrialTelemetry } from "../src/evals/telemetry";
-import type { RealtimeExecutionOptions, RealtimeSocket, RealtimeTransport } from "../src/evals/realtime/executor";
 import { realtimeScenarios } from "../src/evals/realtime/scenarios";
 import { installNetworkBoundary } from "../src/evals/network";
 import type { RealtimeGoal } from "../src/evals/realtime/scenarios";
+import { configureTestProviders, readModelRequest, toolResponse } from "./helpers/agentFixtures";
 
+configureTestProviders();
 type Frame = Record<string, any>;
-const config = { resourceName: "fixture-resource", apiVersion: "2025-04-01-preview", apiKey: "fixture-key-not-for-evidence", model: "actual-realtime-deployment" };
-const usage = { input_tokens: 10, output_tokens: 2, total_tokens: 12 };
-const message = (text: string): Frame => ({ type: "message", role: "assistant", content: [{ type: "text", text }] });
+const message = (text: string): Frame => ({ type: "message", content: [{ type: "text", text }] });
 const call = (name: string, args: Frame, id = "call-1"): Frame => ({ type: "function_call", name, call_id: id, arguments: JSON.stringify(args) });
-const done = (id: string, output: Frame[], extra: Frame = {}): Frame => ({ type: "response.done", response: { id, status: "completed", output, usage, ...extra } });
-
-class FakeSocket extends EventEmitter implements RealtimeSocket {
-  readyState = 0;
-  sent: Frame[] = [];
-  closeCalls = 0;
-  terminateCalls = 0;
-  constructor(readonly onSend: (frame: Frame, socket: FakeSocket) => void) { super(); }
-  open(): void { this.readyState = 1; this.emit("open"); }
-  server(frame: Frame): void { this.emit("message", Buffer.from(JSON.stringify(frame))); }
-  send(value: string): void { const frame = JSON.parse(value); this.sent.push(frame); this.onSend(frame, this); }
-  close(code = 1000): void { this.closeCalls++; this.readyState = 3; this.emit("close", code); }
-  terminate(): void { this.terminateCalls++; this.readyState = 3; this.emit("close", 1006); }
-}
-function transportFor(respond: (index: number, socket: FakeSocket, frame: Frame) => void) {
-  const sockets: FakeSocket[] = [];
-  const connections: Array<{ url: string; options: Parameters<RealtimeTransport>[1] }> = [];
-  const transport: RealtimeTransport = (url, options) => {
-    let index = 0;
-    const socket = new FakeSocket((frame, ws) => {
-      if (frame.type === "session.update") ws.server({ type: "session.updated" });
-      if (frame.type === "response.create") respond(index++, ws, frame);
-    });
-    sockets.push(socket); connections.push({ url, options });
-    queueMicrotask(() => socket.open());
-    return socket;
-  };
-  return { transport, sockets, connections };
-}
-function options(transport: RealtimeTransport, extra: Partial<RealtimeExecutionOptions> = {}): RealtimeExecutionOptions {
-  return {
-    transport, url: realtimeDeploymentUrl(config.resourceName, config.apiVersion, config.model),
-    apiKey: config.apiKey, instructions: buildRealtimeInstructions(), turns: [{ text: "Hello." }],
-    signal: new AbortController().signal, beginTurn: () => "", executeTool: () => '{"ok":true}', finishTurn() {},
-    timeoutMs: 500, ...extra,
-  };
-}
 const scenario = (id: string) => realtimeScenarios.find(item => item.id === id)!;
 const environment = (id: string) => { const env = new RealtimeEnvironment(scenario(id)); env.beginTurn(0); return env; };
 
@@ -85,97 +47,6 @@ test("shared production voice prompt and tool schemas match the GPT Live migrati
   assert.match(production, /runLiveVoiceAgent/);
 });
 
-test("default factory reports AI_MODEL_REALTIME, never an advanced chat model", async () => {
-  process.env.AI_MODEL_REALTIME = "fixture-native-realtime";
-  process.env.AI_MODEL_ADVANCED = "must-not-substitute-generic-chat";
-  process.env.AZURE_OPENAI_RESOURCE_NAME = "fixture-resource";
-  process.env.AZURE_OPENAI_API_KEY = config.apiKey;
-  const adapter = await createRealtimeAdapter();
-  assert.equal(adapter.id, "realtime");
-  assert.equal(adapter.model, "fixture-native-realtime");
-  assert.equal((await createRealtimeAdapter("explicit-realtime-deployment")).model, "explicit-realtime-deployment");
-  assert.throws(() => createRealtimeAdapterWithTransport({ ...config, model: "" }, () => { throw new Error("must not connect"); }), /AI_MODEL_REALTIME/);
-});
-
-test("the real ws transport's HTTPS upgrade is subject to the existing worker network boundary", async () => {
-  const original = { request: http.request, get: http.get, secureRequest: https.request, secureGet: https.get, fetch: globalThis.fetch };
-  let upgrades = 0;
-  try {
-    https.request = (() => { upgrades++; throw new Error("Allowed upgrade reached fixture HTTPS transport"); }) as typeof https.request;
-    installNetworkBoundary("fixture-resource.openai.azure.com");
-    const { default: WebSocket } = await import("ws");
-    assert.throws(() => new WebSocket(realtimeDeploymentUrl(config.resourceName, config.apiVersion, config.model)), /Allowed upgrade reached fixture HTTPS transport/);
-    assert.equal(upgrades, 1);
-    assert.throws(() => new WebSocket("wss://home-assistant.example.test/api/websocket"), /Offline eval blocked network/);
-    assert.throws(() => new WebSocket("wss://fixture-resource.openai.azure.com/not-an-openai-path"), /Offline eval blocked network/);
-    assert.equal(upgrades, 1, "blocked destinations must not reach the mocked transport or DNS");
-  } finally {
-    http.request = original.request; http.get = original.get;
-    https.request = original.secureRequest; https.get = original.secureGet;
-    globalThis.fetch = original.fetch;
-  }
-});
-
-test("native Realtime request shape, isolated job acceptance, complete evidence and fresh session per attempt", async t => {
-  t.mock.method(globalThis, "fetch", () => { throw new Error("No live tool fetch is permitted"); });
-  const fake = transportFor((index, ws) => ws.server(done(`response-${index}`, index === 0
-    ? [call("execute_home_assistant_command", { command: "Dim only the kitchen lights to 30 percent." })]
-    : [message("On it")])));
-  const adapter = createRealtimeAdapterWithTransport(config, fake.transport);
-  for (let i = 0; i < 2; i++) {
-    const result = await adapter.execute(scenario("ha-immediate-qualified"), new AbortController().signal);
-    assert.equal(result.taskAssertion, true);
-    assert.equal(result.model, config.model);
-    assert.equal(result.finalResponse, "On it");
-    assert.deepEqual(result.usage, { inputTokens: 20, outputTokens: 4, totalTokens: 24 });
-    assert.equal(result.metrics?.userTurns, 1);
-    assert.equal(result.metrics?.assistantTurns, 2);
-    assert.equal(result.metrics?.modelRequests, 2);
-    assert.equal(result.metrics?.toolCalls, 1);
-    assert.equal(result.metrics?.toolExecutions, 1);
-    assert.equal(result.metrics?.completionCalls, 0);
-    assert.equal(result.metrics?.toolErrors, 0);
-    assert.equal(result.trace?.toolCalls[0].toolCallId, "call-1");
-    assert.doesNotMatch(JSON.stringify(result.trace), /fixture-key-not-for-evidence/);
-    assert.equal(result.coverage, "complete");
-    assert.match(result.expectations!, /Audio, microphone/);
-    assert.deepEqual(new Set(result.evidence.map(item => item.kind)), new Set(["initial", "tool", "context", "final", "assertion"]));
-    const tool = result.evidence.find(item => item.kind === "tool")!;
-    assert.equal(JSON.parse(tool.text).jobId, "fixture-job-1");
-    assert.equal(tool.args?.command, "Dim only the kitchen lights to 30 percent.");
-    assert.match(tool.text, /job started.*On it/);
-    assert.doesNotMatch(JSON.stringify(result.evidence), /fixture-key-not-for-evidence/);
-    const state = JSON.parse(result.evidence[result.evidence.length - 1].text).finalFixtureState;
-    assert.equal(state.devices.find((item: Frame) => item.entityId === "light.kitchen").state, "off");
-  }
-  assert.equal(fake.sockets.length, 2);
-  for (const socket of fake.sockets) {
-    assert.equal(socket.closeCalls, 1);
-    assert.equal(socket.readyState, 3);
-    assert.equal(socket.listenerCount("message"), 0);
-    const session = socket.sent[0].session;
-    assert.deepEqual(session.modalities, ["text"]);
-    assert.equal(session.turn_detection, null);
-    assert.equal(session.input_audio_transcription, null);
-    assert.deepEqual(session.tools, REALTIME_TOOLS);
-    assert.equal(session.voice, undefined);
-    assert.ok(session.max_response_output_tokens > 0);
-    assert.ok(socket.sent.filter(frame => frame.type === "response.create").every(frame => JSON.stringify(frame.response.modalities) === '["text"]'));
-  }
-  const connection = fake.connections[0];
-  const url = new URL(connection.url);
-  assert.equal(url.protocol, "wss:");
-  assert.equal(url.pathname, "/openai/realtime");
-  assert.equal(url.searchParams.get("deployment"), config.model);
-  assert.equal(url.searchParams.get("api-version"), config.apiVersion);
-  assert.deepEqual(connection.options.headers, { "api-key": config.apiKey });
-  assert.equal(connection.options.followRedirects, false);
-  for (const filename of Object.keys(require.cache)) {
-    assert.doesNotMatch(filename, /\/src\/(?:realtimeChat|ha|memory|tvJobManager|activeRunManager)\.[jt]s$/);
-    assert.doesNotMatch(filename, /\/src\/agents\/core\/agentLoop\.[jt]s$/);
-  }
-});
-
 function happyTurn(goal: RealtimeGoal, text: string): Array<Frame[]> {
   if (goal.kind === "delegate") return [[call({ home_assistant: "execute_home_assistant_command", scheduled_task: "run_scheduled_task_agent", tv: "start_tv_agent" }[goal.domain],
     { [goal.domain === "home_assistant" ? "command" : "prompt"]: text, ...(goal.confirmed ? { confirmed: true } : {}) })], [message("On it")]];
@@ -190,28 +61,150 @@ function happyTurn(goal: RealtimeGoal, text: string): Array<Frame[]> {
   return [[call(`${goal.action}_memory`, args)], [message(goal.action === "retrieve" ? "You prefer the bedroom thermostat at 19 degrees Celsius at night." : "I've updated your memory as requested.")]];
 }
 
-test("all twelve stateful fixtures support their expected paths and leave language correctness to the judge", async () => {
+test("default factory uses production reasoning with legacy realtime configuration unset", async () => {
+  delete process.env.AI_MODEL_REALTIME;
+  const adapter = await createRealtimeAdapter();
+  assert.equal(adapter.model, "test-model");
+  assert.equal(adapter.version, "realtime-reasoning-simulator-2");
+  assert.equal((await createRealtimeAdapter("candidate-reasoning-model")).model, "candidate-reasoning-model");
+  assert.throws(() => createRealtimeAdapterWithLoop("", () => assert.fail("must not create loop")), /AI_MODEL_ADVANCED/);
+});
+
+test("all twelve stateful fixtures use serialized AI SDK requests with isolated effects and completed-turn history", async t => {
   assert.equal(realtimeScenarios.length, 12);
-  for (const fixture of realtimeScenarios) {
+  for (const fixture of realtimeScenarios) await t.test(fixture.id, async subtest => {
     const script = fixture.initial.turns.flatMap(turn => happyTurn(turn.goal, turn.text));
-    const fake = transportFor((index, ws) => {
-      const output = script[index].map(item => item.type === "function_call" ? { ...item, call_id: `call-${index}` } : item);
-      ws.server(done(`response-${index}`, output));
+    let requests = 0;
+    const serialized: Frame[] = [];
+    subtest.mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
+      assert.equal(new URL(String(url)).pathname, "/openai/v1/responses");
+      const request = readModelRequest(url, init) as unknown as Frame;
+      serialized.push(request);
+      assert.equal(request.model, "test-model");
+      assert.ok(requests < script.length, "bounded fixture script");
+      const output = script[requests++][0];
+      return output.type === "function_call"
+        ? toolResponse(output.name, JSON.parse(output.arguments), `call-${requests}`)
+        : toolResponse("complete_task", { success: true, message: output.content[0].text }, `complete-${requests}`);
     });
-    const result = await createRealtimeAdapterWithTransport(config, fake.transport).execute(fixture, new AbortController().signal);
-    const assertion = JSON.parse(result.evidence[result.evidence.length - 1].text);
-    assert.deepEqual(assertion.violations, [], fixture.id);
-    assert.notEqual(result.taskAssertion, false, fixture.id);
-    assert.equal(result.metrics?.userTurns, fixture.initial.turns.length, fixture.id);
-    assert.equal(result.metrics?.assistantTurns, script.length, fixture.id);
-    assert.equal(result.metrics?.modelRequests, script.length, fixture.id);
-    assert.equal(result.metrics?.toolCalls, script.flat().filter(item => item.type === "function_call").length, fixture.id);
-    if (fixture.initial.turns.some(turn => !["delegate", "control"].includes(turn.goal.kind))) {
-      assert.equal(result.taskAssertion, undefined, fixture.id);
+    const adapter = await createRealtimeAdapter();
+    const initial = JSON.stringify(fixture.initial);
+    const result = await adapter.execute(fixture, new AbortController().signal);
+    const assertion = JSON.parse(result.evidence.at(-1)!.text);
+    assert.deepEqual(assertion.violations, []);
+    assert.notEqual(result.taskAssertion, false);
+    assert.equal(result.metrics?.userTurns, fixture.initial.turns.length);
+    assert.equal(result.metrics?.modelRequests, script.length);
+    assert.equal(result.metrics?.completionCalls, fixture.initial.turns.length);
+    assert.equal(result.metrics?.toolExecutions, script.length - fixture.initial.turns.length);
+    assert.equal(result.metrics?.unexecutedToolCalls, 0);
+    assert.equal(result.usage?.totalTokens, script.length * 15);
+    assert.equal(JSON.stringify(fixture.initial), initial, "input fixture remains unchanged");
+    assert.equal(result.coverage, "complete");
+    const lastTurnContext = result.evidence.filter(item => item.kind === "initial").map(item => JSON.parse(item.text)).filter(item => "memoryContext" in item).at(-1);
+    if (lastTurnContext.memoryContext) assert.ok(result.trace?.systemMessages?.includes(lastTurnContext.memoryContext));
+    assert.match(result.expectations!, /GPT Live transport/);
+    assert.doesNotMatch(JSON.stringify(result), /test-key|test-token/);
+    const prompt = JSON.stringify(serialized[0]);
+    assert.match(prompt, /Return the exact user-facing reply by calling complete_task/);
+    assert.doesNotMatch(prompt, /initialFixtureState|expectations|allowedNumbers|required.*forbidden|taskSatisfied/);
+    assert.ok(serialized[0].tools.some((tool: Frame) => tool.name === "complete_task"));
+    const names = serialized[0].tools.map((tool: Frame) => tool.name);
+    for (const tool of liveVoiceToolDefinitions(REALTIME_TOOLS)) assert.ok(names.includes(tool.function.name));
+    if (fixture.initial.turns.length > 1) {
+      const lastRequest = JSON.stringify(serialized.at(-1));
+      assert.ok(lastRequest.includes(fixture.initial.turns[0].text));
+      assert.ok(lastRequest.includes(assertion.turnResponses[0]));
     }
+    if (fixture.id === "ha-immediate-qualified") {
+      assert.equal(assertion.finalFixtureState.devices.find((device: Frame) => device.entityId === "light.kitchen").state, "off");
+      assert.equal(assertion.acceptedEffects[0].kind, "start", "acceptance is not physical completion");
+    }
+    if (fixture.initial.turns.some(turn => !["delegate", "control"].includes(turn.goal.kind))) assert.equal(result.taskAssertion, undefined);
+  });
+  for (const filename of Object.keys(require.cache)) {
+    assert.doesNotMatch(filename, /\/src\/(?:realtimeChat|liveVoiceAgent|ha|memory|tvJobManager|activeRunManager)\.[jt]s$/);
   }
 });
 
+test("model-loop seam shares production prompt and step budget and always cleans sessions", async () => {
+  const { createAgentLoop } = await import("../src/agents/core/agentLoop");
+  let deleted = 0;
+  const adapter = createRealtimeAdapterWithLoop("test-model", config => {
+    assert.equal(config.maxIterations, LIVE_VOICE_MAX_ITERATIONS);
+    assert.equal(config.systemPrompt, buildLiveVoiceSystemPrompt(`${new RealtimeEnvironment(scenario("general-chat")).instructions}\n`));
+    const loop = createAgentLoop(config);
+    return { ...loop, run: async () => ({ type: "error", error: "fixture failure" }), deleteSession(id) { deleted++; loop.deleteSession(id); } };
+  });
+  await assert.rejects(adapter.execute(scenario("general-chat"), new AbortController().signal), /fixture failure/);
+  assert.equal(deleted, 1);
+});
+
+test("reasoning failures retain partial tool and provider evidence", async t => {
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
+    readModelRequest(url, init);
+    if (++requests === 1) return toolResponse("execute_home_assistant_command", { command: scenario("ha-immediate-qualified").request });
+    return Response.json({ error: { message: "fixture model unavailable" } }, { status: 400 });
+  });
+  const adapter = await createRealtimeAdapter();
+  await assert.rejects(adapter.execute(scenario("ha-immediate-qualified"), new AbortController().signal), (error: unknown) => {
+    assert.ok(error instanceof EvalExecutionError);
+    assert.equal(error.assessment.coverage, "partial");
+    assert.equal(error.assessment.metrics?.toolExecutions, 1);
+    assert.equal(error.assessment.metrics?.modelErrors, 1);
+    assert.equal(error.assessment.usage?.totalTokens, undefined);
+    assert.equal(error.assessment.evidence.filter(item => item.kind === "tool").length, 1);
+    return true;
+  });
+});
+
+test("missing complete_task and exhausted reasoning never fabricate completion", async t => {
+  const { createAgentLoop } = await import("../src/agents/core/agentLoop");
+  const { MockLanguageModelV4 } = await import("ai/test");
+  const model = new MockLanguageModelV4({ doGenerate: async () => ({
+    content: [{ type: "text", text: "Partial reply" }], finishReason: { unified: "stop", raw: undefined },
+    usage: { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } }, warnings: [],
+  }) });
+  const adapter = createRealtimeAdapterWithLoop("test-model", config => createAgentLoop(config, () => model));
+  await assert.rejects(adapter.execute(scenario("general-chat"), new AbortController().signal), /complete_task|iteration limit/);
+  assert.ok(model.doGenerateCalls.length <= LIVE_VOICE_MAX_ITERATIONS);
+});
+
+test("pre-abort, deadline and invalid turn bounds prevent completion and clean sessions", async () => {
+  const { createAgentLoop } = await import("../src/agents/core/agentLoop");
+  const aborted = new AbortController(); aborted.abort(new Error("cancel eval"));
+  const adapter = createRealtimeAdapterWithLoop("test-model", () => assert.fail("must not create loop"));
+  await assert.rejects(adapter.execute(scenario("general-chat"), aborted.signal), /cancel eval/);
+  let deleted = 0;
+  const telemetry = new TrialTelemetry();
+  await assert.rejects(executeRealtimeSession({
+    model: "test-model", environment: new RealtimeEnvironment(scenario("general-chat")), signal: new AbortController().signal, telemetry, timeoutMs: 10,
+    createLoop: config => {
+      const loop = createAgentLoop(config);
+      return { ...loop, run: async (_id, signal) => new Promise((_, reject) => signal!.addEventListener("abort", () => reject(signal!.reason), { once: true })),
+        deleteSession(id) { deleted++; loop.deleteSession(id); } };
+    },
+  }), /timeout|timed out/i);
+  assert.equal(deleted, 1);
+  assert.equal(telemetry.finish(new Error("timeout")).metrics.stopReason, "timeout");
+  const invalid = structuredClone(scenario("general-chat"));
+  invalid.initial.turns = Array.from({ length: REALTIME_EVAL_LIMITS.turns + 1 }, () => invalid.initial.turns[0]);
+  await assert.rejects(adapter.execute(invalid, new AbortController().signal), /1-6 nonempty/);
+});
+
+test("model transport remains inside the offline network boundary", async () => {
+  const original = { request: http.request, get: http.get, secureRequest: https.request, secureGet: https.get, fetch: globalThis.fetch };
+  try {
+    globalThis.fetch = async () => Response.json({ ok: true });
+    installNetworkBoundary("fixture-resource.openai.azure.com");
+    await globalThis.fetch("https://fixture-resource.openai.azure.com/openai/v1/responses", { method: "POST" });
+    await assert.rejects(globalThis.fetch("http://home-assistant.fixture.invalid/api/services/light/turn_on", { method: "POST" }), /Offline eval blocked network/);
+    await assert.rejects(globalThis.fetch("https://fixture-resource.openai.azure.com/not-openai"), /Offline eval blocked network/);
+  } finally {
+    http.request = original.request; http.get = original.get; https.request = original.secureRequest; https.get = original.secureGet; globalThis.fetch = original.fetch;
+  }
+});
 test("independent assertions reject wrong target, domain, qualifiers, read/write polarity and duplicate effects", async () => {
   for (const [id, name, args] of [
     ["ha-immediate-qualified", "execute_home_assistant_command", { command: "Dim only the bedroom lights to 30 percent." }],
@@ -319,151 +312,72 @@ test("no-tool nonsense is not asserted true; all unsupported simulation paths fa
   await assert.rejects(environment("protected-opening-confirmation").execute("execute_home_assistant_command", { command: "Unlock the front door", confirmed: "true" }), /must be boolean/);
 });
 
-test("response/tool caps validate a whole batch before simulated effects and prevent replay", async () => {
-  for (const [extra, output, error] of [
-    [{ maxResponses: 1 }, [call("await_user_followup", {})], /response limit/],
-    [{ maxToolCalls: 1 }, [call("await_user_followup", {}, "a"), call("await_user_followup", {}, "b")], /tool-call limit/],
-    [{}, [call("await_user_followup", {}, "a"), call("await_user_followup", {}, "a")], /Duplicate Realtime tool call/],
-    [{}, [call("await_user_followup", {}, "a"), call("execute_home_assistant_command", { confirmed: true }, "b")], /command is required/],
-  ] as const) {
-    let effects = 0;
-    const fake = transportFor((_index, ws) => ws.server(done("r", [...output])));
-    await assert.rejects(executeRealtimeSession(options(fake.transport, { ...extra, executeTool: () => { effects++; return "{}"; } })), error);
-    assert.equal(effects, 0);
-    assert.equal(fake.sockets[0].closeCalls, 1);
-  }
-  let effects = 0;
-  const replay = transportFor((index, ws) => ws.server(done(`r${index}`, [call("await_user_followup", {}, "replayed")])));
-  await assert.rejects(executeRealtimeSession(options(replay.transport, { executeTool: () => { effects++; return "{}"; } })), /Duplicate Realtime tool call/);
-  assert.equal(effects, 1);
+
+test("batch validation rejects duplicate calls, caps and malformed arguments before any fixture effect", async t => {
+  for (const [label, calls, pattern] of [
+    ["duplicate", [call("await_user_followup", {}, "same"), call("await_user_followup", {}, "same")], /Duplicate Realtime/],
+    ["cap", Array.from({ length: 33 }, (_, i) => call("await_user_followup", {}, `call-${i}`)), /tool-call limit/],
+    ["invalid", [call("await_user_followup", {}, "valid"), call("execute_home_assistant_command", { command: "Unlock the front door", confirmed: "true" }, "invalid")], /must be boolean/],
+  ] as const) await t.test(label, async subtest => {
+    subtest.mock.method(globalThis, "fetch", async () => {
+      const response = await toolResponse("await_user_followup", {}).json();
+      response.output = calls.map((tool, index) => ({ type: "function_call", id: `item-${index}`, call_id: tool.call_id, name: tool.name, arguments: tool.arguments }));
+      return Response.json(response);
+    });
+    const adapter = await createRealtimeAdapter();
+    await assert.rejects(adapter.execute(scenario("protected-opening-confirmation"), new AbortController().signal), (error: unknown) => {
+      assert.ok(error instanceof EvalExecutionError);
+      assert.match(error.message, pattern);
+      assert.equal(error.assessment.metrics?.toolExecutions, 0);
+      assert.equal(error.assessment.evidence.filter(item => item.kind === "tool").length, 0);
+      return true;
+    });
+  });
 });
 
-test("failed, incomplete, cancelled, empty and malformed Realtime responses never pass", async () => {
-  for (const [frame, expected] of [
-    [done("r", [], { status: "failed" }), /ended with failed/],
-    [done("r", [], { status: "incomplete", status_details: { reason: "max_output_tokens" } }), /incomplete/],
-    [done("r", [], { status: "cancelled" }), /cancelled/],
-    [done("r", []), /without a text answer/],
-    [done("r", [call("made_up_tool", {})]), /Unsupported simulated/],
-    [{ type: "error", error: { message: "deployment does not support Realtime" } }, /Realtime API error/],
-    [{ type: "response.audio.delta", delta: "must-not-be-accepted" }, /unexpectedly received audio/],
-  ] as const) {
-    const fake = transportFor((_index, ws) => ws.server(frame));
-    await assert.rejects(executeRealtimeSession(options(fake.transport)), expected);
-    assert.equal(fake.sockets[0].readyState, 3);
-  }
-  const malformed = transportFor((_index, ws) => ws.emit("message", Buffer.from("{")));
-  await assert.rejects(executeRealtimeSession(options(malformed.transport)), /JSON/);
+test("oversized tool output and completion text are bounded before simulated effects", async t => {
+  for (const name of ["complete_task", "execute_home_assistant_command"]) await t.test(name, async subtest => {
+    const text = "x".repeat(REALTIME_EVAL_LIMITS.outputCharacters + 1);
+    subtest.mock.method(globalThis, "fetch", async () => toolResponse(name, name === "complete_task" ? { success: true, message: text } : { command: text }));
+    await assert.rejects((await createRealtimeAdapter()).execute(scenario("general-chat"), new AbortController().signal), (error: unknown) => {
+      assert.ok(error instanceof EvalExecutionError);
+      assert.match(error.message, /output character limit/);
+      assert.equal(error.assessment.metrics?.toolExecutions, 0);
+      assert.equal(error.assessment.coverage, "partial");
+      return true;
+    });
+  });
 });
 
-test("abort, timeout, dial errors and early closes settle and shut down the socket", async () => {
-  const cancelled = new AbortController();
-  cancelled.abort(new Error("pre-aborted"));
-  await assert.rejects(executeRealtimeSession(options(() => { throw new Error("must not connect"); }, { signal: cancelled.signal })), /pre-aborted/);
+test("cancellation during a fixture tool prevents subsequent calls and model requests", async t => {
+  const { createAgentLoop } = await import("../src/agents/core/agentLoop");
   const controller = new AbortController();
-  const aborting = transportFor(() => controller.abort(new Error("stop eval")));
-  await assert.rejects(executeRealtimeSession(options(aborting.transport, { signal: controller.signal })), /stop eval/);
-  assert.equal(aborting.sockets[0].readyState, 3);
-  const hanging = transportFor(() => {});
-  const telemetry = new TrialTelemetry();
-  await assert.rejects(executeRealtimeSession(options(hanging.transport, { timeoutMs: 10, telemetry })), /timed out/);
-  const timeoutMetrics = telemetry.finish(new Error("Timed out")).metrics;
-  assert.equal(timeoutMetrics.stopReason, "timeout");
-  assert.equal(timeoutMetrics.modelErrors, 1);
-  assert.equal(timeoutMetrics.modelRequests, 1);
-  assert.equal(timeoutMetrics.assistantTurns, 0);
-  assert.equal(hanging.sockets[0].readyState, 3);
-  const closed = transportFor((_index, ws) => ws.close(1006));
-  await assert.rejects(executeRealtimeSession(options(closed.transport)), /closed before completion/);
-  let failedSocket: FakeSocket;
-  await assert.rejects(executeRealtimeSession(options(() => {
-    failedSocket = new FakeSocket(() => {});
-    queueMicrotask(() => failedSocket.emit("error", new Error("fixture dial failure")));
-    return failedSocket;
-  })), /fixture dial failure/);
-  assert.equal(failedSocket!.terminateCalls, 1);
-  const upgrade = transportFor((_index, ws) => ws.emit("unexpected-response", {}, { statusCode: 401 }));
-  await assert.rejects(executeRealtimeSession(options(upgrade.transport)), /upgrade rejected: HTTP 401/);
-});
-
-test("Realtime duplicate completions are counted once and native token subsets are retained", async () => {
-  const fake = transportFor((index, ws) => {
-    const frame = done(`response-${index}`, index === 0
-      ? [call("execute_home_assistant_command", { command: "Dim only the kitchen lights to 30 percent." })]
-      : [message("On it")], {
-        usage: { ...usage, input_token_details: { cached_tokens: 3 }, output_token_details: { reasoning_tokens: 1 } },
-      });
-    ws.server(frame);
-    ws.server(frame);
+  let requests = 0, calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    requests++;
+    const response = await toolResponse("await_user_followup", {}, "first").json();
+    const second = await toolResponse("await_user_followup", {}, "second").json();
+    response.output.push(...second.output);
+    return Response.json(response);
   });
-  const result = await createRealtimeAdapterWithTransport(config, fake.transport)
-    .execute(scenario("ha-immediate-qualified"), new AbortController().signal);
-  assert.equal(result.metrics?.assistantTurns, 2);
-  assert.equal(result.metrics?.toolCalls, 1);
-  assert.equal(result.metrics?.modelRequests, 2);
-  assert.deepEqual(result.usage, { inputTokens: 20, outputTokens: 4, totalTokens: 24, cacheReadTokens: 6, reasoningTokens: 2 });
-  assert.equal(realtimeUsage({ input_tokens: -1 }).inputTokens, undefined);
-});
-
-test("Realtime transport failures keep partial response text, prior tool evidence and honest usage coverage", async () => {
-  const fake = transportFor((index, ws) => {
-    if (index === 0) ws.server(done("tool-response", [
-      call("execute_home_assistant_command", { command: "Dim only the kitchen lights to 30 percent." }),
-    ]));
-    else {
-      ws.server({ type: "response.text.delta", delta: "On" });
-      setImmediate(() => ws.emit("error", new Error("Connection lost")));
-    }
-  });
-  const adapter = createRealtimeAdapterWithTransport(config, fake.transport);
-  await assert.rejects(adapter.execute(scenario("ha-immediate-qualified"), new AbortController().signal), (error: unknown) => {
-    assert.ok(error instanceof EvalExecutionError);
-    const result = error.assessment;
-    assert.equal(result.coverage, "partial");
-    assert.equal(result.metrics?.stopReason, "error");
-    assert.equal(result.metrics?.assistantTurns, 1);
-    assert.equal(result.metrics?.modelRequests, 2);
-    assert.equal(result.metrics?.modelErrors, 1);
-    assert.equal(result.metrics?.toolExecutions, 1);
-    assert.equal(result.usage?.totalTokens, undefined);
-    assert.equal(result.trace?.modelCalls[0].responses[0].usage?.totalTokens, 12);
-    assert.equal(result.trace?.modelCalls[1].partialText, "On");
-    assert.equal(result.evidence.filter(item => item.kind === "tool").length, 1);
-    assert.doesNotMatch(JSON.stringify(result), /fixture-key-not-for-evidence/);
-    return true;
-  });
-  assert.equal(fake.sockets[0].readyState, 3);
-});
-
-test("abort during an isolated tool prevents later outputs, calls and response creation", async () => {
-  const controller = new AbortController();
-  let calls = 0, release: (value: string) => void = () => {};
-  const fake = transportFor((_index, ws) => ws.server(done("r", [
-    call("await_user_followup", {}, "a"), call("await_user_followup", {}, "b"),
-  ])));
-  const execution = executeRealtimeSession(options(fake.transport, {
-    signal: controller.signal,
-    executeTool: () => {
-      calls++;
-      controller.abort(new Error("cancel during tool"));
-      return new Promise<string>(resolve => { release = resolve; });
-    },
-  }));
-  await assert.rejects(execution, /cancel during tool/);
-  release("{}");
-  await new Promise(resolve => setImmediate(resolve));
+  const env = new RealtimeEnvironment(scenario("protected-opening-confirmation"));
+  env.execute = async () => { calls++; controller.abort(new Error("cancel during fixture tool")); return "{}"; };
+  await assert.rejects(executeRealtimeSession({ createLoop: createAgentLoop, model: "test-model", environment: env, signal: controller.signal, telemetry: new TrialTelemetry() }), /cancel during fixture tool/);
   assert.equal(calls, 1);
-  assert.equal(fake.sockets[0].sent.filter(frame => frame.item?.type === "function_call_output").length, 0);
-  assert.equal(fake.sockets[0].sent.filter(frame => frame.type === "response.create").length, 1);
-  assert.equal(fake.sockets[0].readyState, 3);
+  assert.equal(requests, 1);
 });
 
-test("usage stays unknown if any Realtime response omits token counts", async () => {
-  for (const missing of [0, 1]) {
-    const fake = transportFor((index, ws) => ws.server(done(`r${index}`,
-      index === 0 ? [call("await_user_followup", {})] : [message("Which device?")],
-      index === missing ? { usage: undefined } : {})));
-    const result = await executeRealtimeSession(options(fake.transport));
-    assert.deepEqual(result.usage, { inputTokens: undefined, outputTokens: undefined, totalTokens: undefined });
-  }
+test("scope-preserving exclusion from live confirmation passes without permitting negated or widened actions", () => {
+  const fixture = scenario("ha-immediate-qualified");
+  const goal = fixture.initial.turns[0].goal;
+  assert.equal(goal.kind, "delegate");
+  if (goal.kind !== "delegate") assert.fail("Expected routing fixture");
+  assert.equal(fixture.version, "2");
+  assert.equal(matchesSemanticRequest("Set only the kitchen lights (light.kitchen) to 30 percent brightness. Do not change any other lights.", goal.request), true);
+  for (const command of [
+    "Do not dim only the kitchen lights to 30 percent. Do not change any other lights.",
+    "Dim only the bedroom lights to 30 percent. Do not change any other lights.",
+    "Dim only the kitchen lights to 100 percent. Do not change any other lights.",
+    "Dim only the kitchen lights to 30 percent. Do not change any other lights. Turn the bedroom lights on.",
+  ]) assert.equal(matchesSemanticRequest(command, goal.request), false, command);
 });

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import test from "node:test";
 import type { AgentLoopConfig } from "../src/agents/core/agentLoop";
+import { buildLiveVoiceSystemPrompt, LIVE_VOICE_MAX_ITERATIONS, liveVoiceToolDefinitions } from "../src/liveVoiceContract";
 import type { LiveDelegationRequest } from "../src/liveDelegation";
 
 const requireModule = createRequire(__filename);
@@ -61,6 +62,9 @@ test("voice reasoning uses existing model, history, memory, and capability tools
   const result = await fixture.runLiveVoiceAgent(input, "Voice routing instructions", tools, async () => "Done.");
   assert.equal(result, "Done.");
   assert.equal(fixture.config().model, "existing-advanced-deployment");
+  assert.equal(fixture.config().systemPrompt, buildLiveVoiceSystemPrompt("Voice routing instructions"));
+  assert.equal(fixture.config().maxIterations, LIVE_VOICE_MAX_ITERATIONS);
+  assert.deepEqual(fixture.config().tools.map(({ type, function: contract }) => ({ type, function: contract })), liveVoiceToolDefinitions(tools));
   assert.equal(fixture.config().tools[0].function.name, "execute_home_assistant_command");
   assert.deepEqual(fixture.sessionArgs().slice(1), [input.history, ["Use bedroom lights by default."]]);
   assert.equal(fixture.deleted(), true);
