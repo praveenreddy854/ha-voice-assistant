@@ -1,7 +1,7 @@
 import type { Scenario } from "../types";
 import type { RealtimeRunDomain } from "../../realtimeAgent";
 
-export const REALTIME_EVAL_SCOPE = "Semantic text-input/text-output evaluation of the configured native Azure Realtime deployment using production instructions and tool schemas. Audio, microphone, wake words, ASR, VAD, speech rendering, real device execution, specialist execution, scheduling, live web access and production memory persistence are NOT evaluated. Async job acceptance is only a handoff, never proof of device or task completion.";
+export const REALTIME_EVAL_SCOPE = "Semantic text-input/text-output evaluation of production GPT Live delegated AI SDK reasoning using AI_MODEL_ADVANCED, shared production instructions and tool schemas. The GPT Live transport and delegation detection are NOT evaluated. Audio, microphone, wake words, ASR, VAD, speech rendering, real device execution, specialist execution, scheduling, live web access and production memory persistence are NOT evaluated. Async job acceptance is only a handoff, never proof of device or task completion.";
 
 export interface RealtimeMemoryScopes {
   global?: boolean;
@@ -30,6 +30,8 @@ export interface RealtimeFixtureRun {
   status: "paused" | "running" | "cancelled";
 }
 export interface SemanticRequest {
+  /** Exact scope-preserving clauses ignored by this fixture's lexical oracle. */
+  ignoredExclusions?: string[];
   required: string[];
   forbidden?: string[];
   allowedNumbers?: number[];
@@ -79,6 +81,7 @@ const base: Omit<RealtimeState, "turns"> = {
   web: [],
 };
 const kitchenOnly: SemanticRequest = {
+  ignoredExclusions: ["(?:^|[.;]\\s*)do not change any other lights[.!]?(?=\\s*$)"],
   required: ["\\b(kitchen|light\\.kitchen)\\b", "\\b(light|lights)\\b", "\\b(only|just)\\b", "\\b(30|thirty)\\s*(%|percent)"],
   forbidden: ["\\b(bedroom|all|every|whole|entire|not|instead|twice|repeat)\\b", "\\b(turn|switch|shut)\\s+off\\b"],
   allowedNumbers: [30],
@@ -106,7 +109,7 @@ function scenario(
   turns: RealtimeFixtureTurn[], expectations: string, overrides: Partial<RealtimeState> = {},
 ): Scenario<RealtimeState> {
   return {
-    id, version: "1", request: turns[0].text,
+    id, version: id === "ha-immediate-qualified" ? "2" : "1", request: turns[0].text,
     context: { task, target, app: target.includes("TV") ? "YouTube" : "none", startingState },
     expectations: `${expectations}\n${REALTIME_EVAL_SCOPE}`,
     initial: { ...structuredClone(base), ...structuredClone(overrides), turns },

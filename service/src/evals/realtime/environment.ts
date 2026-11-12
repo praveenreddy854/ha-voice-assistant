@@ -33,7 +33,8 @@ interface TurnRecord {
 
 export function matchesSemanticRequest(text: string, expected: SemanticRequest): boolean {
   const words: Record<string, number> = { seven: 7, eighteen: 18, nineteen: 19, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90, hundred: 100 };
-  const canonical = text.replace(/\b(seven|eighteen|nineteen|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)\b/gi, word => String(words[word.toLowerCase()]));
+  const scoped = (expected.ignoredExclusions ?? []).reduce((value, pattern) => value.replace(new RegExp(pattern, "i"), ""), text);
+  const canonical = scoped.replace(/\b(seven|eighteen|nineteen|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)\b/gi, word => String(words[word.toLowerCase()]));
   return expected.required.every(pattern => new RegExp(pattern, "i").test(canonical)) &&
     !(expected.forbidden ?? []).some(pattern => new RegExp(pattern, "i").test(canonical)) &&
     (!expected.allowedNumbers || (canonical.match(/\b\d+(?:\.\d+)?\b/g) ?? []).every(value => expected.allowedNumbers!.includes(Number(value))));
@@ -80,6 +81,7 @@ export class RealtimeEnvironment {
   readonly violations: string[] = [];
   readonly turns: TurnRecord[] = [];
   readonly instructions: string;
+  turnMemoryContext = "";
   private current?: TurnRecord;
   private nextJob = 1;
   private nextMemory = 1;
@@ -110,11 +112,11 @@ export class RealtimeEnvironment {
     if (turn.pauseBefore && this.state.activeRun?.status === "running") this.state.activeRun.status = "paused";
     this.current = { index, initialRun: structuredClone(this.state.activeRun), calls: [], followup: false, spokeBeforeFollowup: false };
     this.turns.push(this.current);
+    this.turnMemoryContext = this.memoryContext(this.findMemories(turn.text));
     const instructions = buildRealtimeTurnInstructions({
       activeRun: this.state.activeRun?.status === "cancelled" ? undefined : this.state.activeRun,
-      memoryContext: this.memoryContext(this.findMemories(turn.text)),
     });
-    this.record({ kind: "initial", text: json({ turn: index, userText: turn.text, responseInstructions: instructions }) });
+    this.record({ kind: "initial", text: json({ turn: index, userText: turn.text, responseInstructions: instructions, memoryContext: this.turnMemoryContext }) });
     return instructions;
   }
 
