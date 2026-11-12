@@ -20,6 +20,8 @@ export interface OfflineLoopOptions {
   systemMessages?: string[];
   observeModelOutput?(text: string): void;
   validateToolBatch?(calls: AgentToolCall[]): void;
+  /** Match production auto-tools, including responses mixed with complete_task. */
+  executeToolsInSdk?: boolean;
   signal: AbortSignal;
   telemetry: TrialTelemetry;
   record(item: Omit<Evidence, "id">): unknown;
@@ -46,6 +48,29 @@ export async function runOfflineAgentLoop(options: OfflineLoopOptions): Promise<
   let activeCall: EvalModelCall | undefined;
   let requestCalls: EvalModelCall[] = [];
   let steps = 0;
+  let toolQueue: Promise<unknown> = Promise.resolve();
+  if (options.executeToolsInSdk) for (const definition of tools as ToolDefinition[]) {
+    definition.execute = (args, execution) => {
+      // Capture the originating request before queuing serialized effects.
+      const trace = telemetry.findTool(activeCall!, execution!.toolCallId);
+      const pending = toolQueue.catch(() => {}).then(async () => {
+        options.signal.throwIfAborted();
+        const output = await telemetry.executeTool(trace, () => options.executeTool(definition.function.name, args), value => value.result);
+        return output.result;
+      });
+      toolQueue = pending;
+      return pending;
+    };
+  }
+  const validateBatch = (calls: AgentToolCall[]) => {
+    try { options.validateToolBatch?.(calls); }
+    catch (error) {
+      for (const call of calls) {
+        telemetry.rejectTool(telemetry.findTool(activeCall!, call.id), error instanceof Error ? error.message : String(error));
+      }
+      throw error;
+    }
+  };
   const loop = options.createLoop({
     systemPrompt: options.systemPrompt,
     tools,
@@ -74,6 +99,11 @@ export async function runOfflineAgentLoop(options: OfflineLoopOptions): Promise<
             telemetry.requestTool(call, response.turn, tool.toolCallId, tool.toolName, tool.input);
           }
           options.observeModelOutput?.(JSON.stringify(result.content));
+          if (options.executeToolsInSdk) validateBatch(result.content.flatMap(part =>
+            part.type === "tool-call" && part.toolName !== "complete_task" ? [{
+              id: part.toolCallId, type: "function" as const,
+              function: { name: part.toolName, arguments: part.input },
+            }] : []));
           telemetry.endModel(call);
           response.responseTimeMs = call.durationMs;
           return result;
@@ -141,13 +171,7 @@ export async function runOfflineAgentLoop(options: OfflineLoopOptions): Promise<
           usage: telemetry.usage(), steps, stoppedAtIterationLimit: true,
         };
       }
-      try { options.validateToolBatch?.(result.toolCalls || []); }
-      catch (error) {
-        for (const call of result.toolCalls || []) {
-          telemetry.rejectTool(telemetry.findTool(activeCall!, call.id), error instanceof Error ? error.message : String(error));
-        }
-        throw error;
-      }
+      if (!options.executeToolsInSdk) validateBatch(result.toolCalls || []);
       const outputs: ToolResultInput[] = [];
       for (const [index, call] of (result.toolCalls || []).entries()) {
         const name = call.function.name, trace = telemetry.findTool(activeCall!, call.id);

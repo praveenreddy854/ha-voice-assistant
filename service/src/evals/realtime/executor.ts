@@ -44,7 +44,7 @@ export async function executeRealtimeSession(options: {
         createLoop: options.createLoop, model: options.model,
         systemPrompt, tools: liveVoiceToolDefinitions(REALTIME_TOOLS),
         maxIterations: LIVE_VOICE_MAX_ITERATIONS,
-        initialMessage: turn.text, history, signal, telemetry,
+        initialMessage: turn.text, history, signal, telemetry, executeToolsInSdk: true,
         systemMessages: environment.turnMemoryContext ? [environment.turnMemoryContext] : [],
         record: item => environment.record(item),
         observeModelOutput(text) {

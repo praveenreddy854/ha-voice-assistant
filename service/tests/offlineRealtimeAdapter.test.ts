@@ -381,3 +381,36 @@ test("scope-preserving exclusion from live confirmation passes without permittin
     "Dim only the kitchen lights to 30 percent. Do not change any other lights. Turn the bedroom lights on.",
   ]) assert.equal(matchesSemanticRequest(command, goal.request), false, command);
 });
+
+test("mixed fixture action and completion executes the action exactly as production does", async t => {
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    assert.equal(++requests, 1);
+    const response = await toolResponse("execute_home_assistant_command", { command: scenario("ha-immediate-qualified").request }, "action").json();
+    const completion = await toolResponse("complete_task", { success: true, message: "On it." }, "completion").json();
+    response.output.push(...completion.output);
+    return Response.json(response);
+  });
+  const result = await (await createRealtimeAdapter()).execute(scenario("ha-immediate-qualified"), new AbortController().signal);
+  assert.equal(result.taskAssertion, true);
+  assert.equal(result.metrics?.toolExecutions, 1);
+  assert.equal(result.metrics?.completionCalls, 1);
+  assert.equal(JSON.parse(result.evidence.at(-1)!.text).acceptedEffects.length, 1);
+});
+
+test("completion cannot hide a repeated action after an earlier accepted job", async t => {
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    const response = await toolResponse("execute_home_assistant_command", { command: scenario("ha-immediate-qualified").request }, `action-${++requests}`).json();
+    assert.ok(requests <= 2);
+    if (requests === 2) {
+      const completion = await toolResponse("complete_task", { success: true, message: "On it." }, "completion").json();
+      response.output.push(...completion.output);
+    }
+    return Response.json(response);
+  });
+  const result = await (await createRealtimeAdapter()).execute(scenario("ha-immediate-qualified"), new AbortController().signal);
+  assert.equal(result.taskAssertion, false);
+  assert.equal(result.metrics?.toolExecutions, 2);
+  assert.equal(JSON.parse(result.evidence.at(-1)!.text).acceptedEffects.length, 2);
+});
