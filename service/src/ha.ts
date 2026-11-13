@@ -407,32 +407,56 @@ function applyMemoryCommandAugmentations(
   originalCommand: string,
   memories: AgentMemoryDocument[]
 ): { body: HassServiceCommandBody; guardSetApplied: boolean } {
-  if (!shouldSetLivingRoomGuardPosition(body, originalCommand, memories)) {
-    return { body, guardSetApplied: false };
+  const commands = Array.isArray(body) ? [...body] : [body];
+  const alreadySetsGuard = commands.some(isLivingRoomGuardPress);
+  const guardSetApplied = !alreadySetsGuard &&
+    shouldSetLivingRoomGuardPosition(body, originalCommand, memories);
+  if (guardSetApplied) {
+    commands.push({
+      url_path: "button/press",
+      entity_id: LIVING_ROOM_GUARD_SET_BUTTON_ENTITY_ID,
+    });
   }
 
-  const commands = Array.isArray(body) ? [...body] : [body];
-  const alreadySetsGuard = commands.some(
-    (command) => command.entity_id === LIVING_ROOM_GUARD_SET_BUTTON_ENTITY_ID
-  );
-  if (!alreadySetsGuard) {
-    commands.push(
-      {
+  // Guarding captures the current position. Preserve the existing settling
+  // interval even when the model supplied the guard call itself. This pause
+  // is a sequencing precaution, not evidence that the camera reached a preset.
+  const plan: HassServiceCommand[] = [];
+  let remainingSettleMs = 0;
+  for (const command of commands) {
+    const urlPath = normalizeHAUrlPath(command.url_path || "");
+    if (isLivingRoomPresetSelection(command)) {
+      remainingSettleMs = GUARD_SET_WAIT_MS;
+    } else if (urlPath === INTERNAL_WAIT_URL_PATH) {
+      const duration = command.service_data?.duration_ms;
+      if (typeof duration === "number" && Number.isFinite(duration)) {
+        remainingSettleMs = Math.max(0, remainingSettleMs - Math.max(0, Math.min(duration, 30000)));
+      }
+    } else if (isLivingRoomGuardPress(command) && remainingSettleMs > 0) {
+      plan.push({
         url_path: INTERNAL_WAIT_URL_PATH,
         entity_id: "__internal_wait__",
         service_data: {
-          duration_ms: GUARD_SET_WAIT_MS,
+          duration_ms: remainingSettleMs,
           reason: "wait for living room camera PTZ preset movement before setting guard position",
         },
-      },
-      {
-        url_path: "button/press",
-        entity_id: LIVING_ROOM_GUARD_SET_BUTTON_ENTITY_ID,
-      }
-    );
+      });
+      remainingSettleMs = 0;
+    }
+    plan.push(command);
   }
 
-  return { body: commands, guardSetApplied: !alreadySetsGuard };
+  return { body: Array.isArray(body) || plan.length > 1 ? plan : plan[0], guardSetApplied };
+}
+
+function isLivingRoomPresetSelection(command: HassServiceCommand): boolean {
+  return command.entity_id === LIVING_ROOM_PTZ_PRESET_ENTITY_ID &&
+    normalizeHAUrlPath(command.url_path || "") === "select/select_option";
+}
+
+function isLivingRoomGuardPress(command: HassServiceCommand): boolean {
+  return command.entity_id === LIVING_ROOM_GUARD_SET_BUTTON_ENTITY_ID &&
+    normalizeHAUrlPath(command.url_path || "") === "button/press";
 }
 
 function shouldSetLivingRoomGuardPosition(
@@ -441,9 +465,7 @@ function shouldSetLivingRoomGuardPosition(
   memories: AgentMemoryDocument[]
 ): boolean {
   const commands = Array.isArray(body) ? body : [body];
-  const selectsLivingRoomPreset = commands.some(
-    (command) => command.entity_id === LIVING_ROOM_PTZ_PRESET_ENTITY_ID
-  );
+  const selectsLivingRoomPreset = commands.some(isLivingRoomPresetSelection);
   if (!selectsLivingRoomPreset) return false;
 
   const normalizedCommand = originalCommand.toLowerCase();
@@ -757,6 +779,13 @@ async function executeMultipleHACommands(
     
     if (!result.success) {
       errors.push(`Step ${i + 1} failed: ${result.message}`);
+      if (isLivingRoomPresetSelection(cmd) && commands.slice(i + 1).some(isLivingRoomGuardPress)) {
+        return {
+          success: false,
+          message: `Camera preset request failed; remaining requests were not sent: ${result.message}`,
+          data: results,
+        };
+      }
       // Continue executing remaining commands even if one fails
       console.warn(`Command ${i + 1} failed, continuing with remaining commands...`);
     }
@@ -777,9 +806,12 @@ async function executeMultipleHACommands(
     };
   }
   
+  const requestCount = commands.filter(command =>
+    normalizeHAUrlPath(command.url_path || "") !== INTERNAL_WAIT_URL_PATH
+  ).length;
   return {
     success: true,
-    message: `All ${commands.length} commands executed successfully for "${originalCommand}"`,
+    message: `Home Assistant accepted ${requestCount} requests; device effects have not been verified.`,
     data: results,
   };
 }
