@@ -182,6 +182,11 @@ export interface AgentRunOptions {
   messageHistory?: Array<{ role: string; content: string }>;
   /** External input data when resuming after a pause. */
   externalInput?: ExternalInputData;
+  /**
+   * Fail with this message and clean up when automatic input fulfillment fails.
+   * Omit for interactive callers that can resume with external input.
+   */
+  externalInputFailureMessage?: string;
   /** Cancels the active model/tool loop when this run is superseded. */
   abortSignal?: AbortSignal;
   /** Suspends the active run without discarding its session or progress. */

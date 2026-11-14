@@ -80,17 +80,12 @@ export function startTvAgentJob(
         agentType: "tv",
         userPrompt: job.prompt,
         maxSteps: 12,
+        // No caller can resume an async job after automatic screenshot capture fails.
+        externalInputFailureMessage:
+          "TV job stalled waiting for a screenshot. Check that RTSP or the camera client is running.",
         abortSignal: job.abortSignal,
         pauseGate: job.pauseGate,
       });
-
-      if (result.status === "awaiting_external_input") {
-        // Async TV jobs assume screenshots are auto-fulfilled (RTSP or browser).
-        // Pausing here means the screenshot pipeline is misconfigured.
-        throw new Error(
-          "TV job stalled waiting for a screenshot. Check that RTSP or the camera client is running."
-        );
-      }
 
       if (result.status === "completed" && result.success) {
         return result.message || "Done";

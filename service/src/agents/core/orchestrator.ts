@@ -35,7 +35,7 @@ import {
 import { getAgent } from "./registry";
 import { delay, resolveMaxSteps } from "../common/utils";
 import { getLatestScreenshot } from "../common/screenshotStore";
-import { isRtspMode, startRtspCapture } from "../common/rtspCapture";
+import { isRtspMode, startRtspCapture, stopRtspCapture } from "../common/rtspCapture";
 import type { ModelMessage } from "ai";
 import {
   createTrace,
@@ -227,6 +227,8 @@ async function cleanupSession(
   }
   session.closed = true;
   sessionStore.delete(session.id);
+  // Automatic screenshot capture belongs to this session, not its parent job.
+  stopRtspCapture(session.id);
 
   const loop = getOrCreateLoop(def);
   loop.deleteSession(session.agentLoopSessionId);
@@ -751,7 +753,7 @@ async function runAgentInRequestContext(options: AgentRunOptions): Promise<Agent
       } else {
         // No input provided — return current awaiting state
         const pending = session.pendingExternalInput;
-        return buildResult(
+        result = buildResult(
           session,
           "awaiting_external_input",
           true,
@@ -769,6 +771,10 @@ async function runAgentInRequestContext(options: AgentRunOptions): Promise<Agent
         options.abortSignal,
         options.pauseGate
       );
+    }
+
+    if (result.status === "awaiting_external_input" && options.externalInputFailureMessage) {
+      return await handleError(session, def, options.externalInputFailureMessage);
     }
 
     // Cleanup on terminal states
