@@ -1,9 +1,10 @@
 import { HOME_ASSISTANT_URL, HOME_ASSISTANT_TOKEN, AI_MODEL_HOME_ASSISTANT } from "./config";
 import fs from "fs";
 import path from "path";
-import { HassServiceCommandBody, HassServiceCommand, HassState } from "./types/ha";
+import { HassServiceCommandBody, HassServiceCommand, HassState, HassTranslationResponse } from "./types/ha";
 import { generateCompletion } from "./ai";
 import axios from "axios";
+import { z } from "zod";
 import {
   formatMemoryContext,
   retrieveMemories,
@@ -37,6 +38,23 @@ const MEDIA_TRANSPORT_SERVICES: Record<string, string> = {
   previous: "media_previous_track",
 };
 
+// Validate the entire translation before normalization or any device request.
+// Refusals must never be mixed into a partially executable command array.
+const translatedCommandSchema: z.ZodType<HassServiceCommand> = z.object({
+  url_path: z.string().refine(value => {
+    const parts = normalizeHAUrlPath(value).split("/");
+    return parts.length === 2 && parts.every(part => part.trim().length > 0);
+  }),
+  entity_id: z.string().trim().min(1),
+  service_data: z.record(z.string(), z.unknown()).optional(),
+}).passthrough().refine(value => !("error" in value) && !("clarification" in value));
+const translationResponseSchema: z.ZodType<HassTranslationResponse> = z.union([
+  z.object({ error: z.literal("no_match") }).strict(),
+  z.object({ clarification: z.string().trim().min(1).max(1000) }).strict(),
+  translatedCommandSchema,
+  z.array(translatedCommandSchema).min(1),
+]);
+
 export interface HAExecutionOptions {
   abortSignal?: AbortSignal;
   pauseGate?: AgentPauseGate;
@@ -54,7 +72,7 @@ export async function getHACommandBody(
   command: string,
   messageHistory?: Array<{ role: string; content: string }>,
   options?: HAExecutionOptions
-): Promise<HassServiceCommandBody> {
+): Promise<HassTranslationResponse> {
   await waitForRunPermission(options);
   const prompt = await getHAPrompt(command, options);
 
@@ -86,7 +104,7 @@ export async function getHACommandBody(
     });
     await waitForRunPermission(options);
     stage = "response_parse";
-    return JSON.parse(responseText) as HassServiceCommandBody;
+    return translationResponseSchema.parse(JSON.parse(responseText));
   } catch (error) {
     if (options?.abortSignal?.aborted) {
       throw options.abortSignal.reason ?? error;
@@ -323,6 +341,14 @@ async function executeHACommandInternal(
       messageHistory,
       options
     );
+    if ("error" in generatedHaBody || "clarification" in generatedHaBody) {
+      const message = "error" in generatedHaBody
+        ? "Could not match the complete request to available Home Assistant controls. No device requests were sent. Specify the device and action, or split the request."
+        : `${generatedHaBody.clarification} No device requests were sent.`;
+      span.setAttribute("ha.command.success", false);
+      span.setAttribute("ha.command.result_message", message);
+      return { success: false, message };
+    }
     const {
       body: normalizedHaBody,
       normalizedCount: mediaTransportNormalizedCount,

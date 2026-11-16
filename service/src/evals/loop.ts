@@ -15,6 +15,7 @@ export interface OfflineLoopOptions {
   tools: ToolDefinition[];
   model: string;
   maxIterations: number;
+  requireToolCall?: boolean;
   initialMessage: string;
   history?: Array<{ role: string; content: string }>;
   systemMessages?: string[];
@@ -76,6 +77,7 @@ export async function runOfflineAgentLoop(options: OfflineLoopOptions): Promise<
     tools,
     model: options.model,
     maxIterations: options.maxIterations,
+    requireToolCall: options.requireToolCall,
     modelMiddleware: {
       specificationVersion: "v4",
       async wrapGenerate({ doGenerate }) {

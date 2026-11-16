@@ -65,6 +65,7 @@ test("voice reasoning uses existing model, history, memory, and capability tools
   assert.equal(fixture.config().systemPrompt, buildLiveVoiceSystemPrompt("Voice routing instructions"));
   assert.equal(fixture.config().maxIterations, LIVE_VOICE_MAX_ITERATIONS);
   assert.deepEqual(fixture.config().tools.map(({ type, function: contract }) => ({ type, function: contract })), liveVoiceToolDefinitions(tools));
+  assert.equal(fixture.config().requireToolCall, true);
   assert.equal(fixture.config().tools[0].function.name, "execute_home_assistant_command");
   assert.deepEqual(fixture.sessionArgs().slice(1), [input.history, ["Use bedroom lights by default."]]);
   assert.equal(fixture.deleted(), true);

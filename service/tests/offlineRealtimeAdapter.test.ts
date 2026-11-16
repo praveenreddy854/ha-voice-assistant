@@ -65,7 +65,7 @@ test("default factory uses production reasoning with legacy realtime configurati
   delete process.env.AI_MODEL_REALTIME;
   const adapter = await createRealtimeAdapter();
   assert.equal(adapter.model, "test-model");
-  assert.equal(adapter.version, "realtime-reasoning-simulator-2");
+  assert.equal(adapter.version, "realtime-reasoning-simulator-3");
   assert.equal((await createRealtimeAdapter("candidate-reasoning-model")).model, "candidate-reasoning-model");
   assert.throws(() => createRealtimeAdapterWithLoop("", () => assert.fail("must not create loop")), /AI_MODEL_ADVANCED/);
 });
@@ -132,6 +132,7 @@ test("model-loop seam shares production prompt and step budget and always cleans
   let deleted = 0;
   const adapter = createRealtimeAdapterWithLoop("test-model", config => {
     assert.equal(config.maxIterations, LIVE_VOICE_MAX_ITERATIONS);
+    assert.equal(config.requireToolCall, true);
     assert.equal(config.systemPrompt, buildLiveVoiceSystemPrompt(`${new RealtimeEnvironment(scenario("general-chat")).instructions}\n`));
     const loop = createAgentLoop(config);
     return { ...loop, run: async () => ({ type: "error", error: "fixture failure" }), deleteSession(id) { deleted++; loop.deleteSession(id); } };
