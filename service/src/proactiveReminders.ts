@@ -1,4 +1,4 @@
-import cron from "node-cron";
+import { cronJobs } from "./cronJobs";
 import {
   AI_MODEL_MINI,
   PROACTIVE_REMINDERS_CRON,
@@ -12,8 +12,6 @@ import {
 } from "./cosmos";
 import { emitAnnouncement } from "./announcementBus";
 import { generateCompletion } from "./ai";
-
-let started = false;
 
 interface Situation {
   entityId: string;
@@ -276,9 +274,6 @@ async function runReminderCheck(): Promise<void> {
 }
 
 export function startProactiveReminders(): void {
-  if (started) return;
-  started = true;
-
   if (!PROACTIVE_REMINDERS_ENABLED) {
     console.info(
       "[ProactiveReminders] Disabled via PROACTIVE_REMINDERS_ENABLED; scheduler will remain idle"
@@ -293,8 +288,10 @@ export function startProactiveReminders(): void {
     return;
   }
 
-  cron.schedule(PROACTIVE_REMINDERS_CRON, () => {
-    void runReminderCheck();
+  cronJobs.register({
+    id: "proactive-reminders",
+    expression: PROACTIVE_REMINDERS_CRON,
+    run: () => runReminderCheck(),
   });
 
   console.info(

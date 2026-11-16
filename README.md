@@ -73,6 +73,49 @@ device states on startup and then on the defined schedule (hourly by default).
 Captured records include the entity ID, friendly name, state, timestamps, and
 full attribute payload to support AI-driven reminders.
 
+### Recurring device monitoring
+
+Device monitoring runs on the service through the existing `node-cron` library.
+The laundry/vacuum-specific endpoints, browser timers and local monitoring toggles
+have been removed. Configure any device using a JSON array of jobs:
+
+```env
+# Optional; absolute path or relative to the service's working directory
+DEVICE_MONITOR_JOBS_FILE=./device-monitor-jobs.json
+```
+
+Copy `service/device-monitor-jobs.example.json` to your own file, set the entity IDs,
+schedules and announcements, then restart the service. Without this setting, no
+device monitor jobs run. Invalid configuration is rejected before registering any
+background work or opening the HTTP listener. Keep local device configuration out
+of version control.
+
+Each job has a unique `id`, `entityId`, `cron`, optional IANA `timezone`, `conditions`
+and an `announcement`. Set `enabled: false` to disable a job. Every condition must
+match; conditions compare `state` or `attributes.<name>` using `equals` or
+`notEquals` against a string, number or boolean. Missing attributes and
+unknown/unavailable devices do not trigger announcements.
+
+Five-field cron expressions run at minute precision; six fields include seconds:
+`* * * * * *` runs every second, `*/30 * * * * *` every 30 seconds, and
+`0 9 * * *` daily at 9 AM in the job's timezone (server timezone when omitted).
+Use `UTC` for second-based polling uninterrupted by daylight-saving changes.
+See the [node-cron syntax reference](https://nodecron.com/cron-syntax.html).
+
+`minStateDurationSeconds` defaults to zero. A positive value requires the current
+state to have lasted that long according to Home Assistant's `last_changed`
+timestamp. Switching off cancels an on-state condition without a pending browser
+timer. `announcementPolicy` defaults to `oncePerState`, which announces once per
+state episode per service process; `everyMatch` announces on every matching cron
+run, useful for daily checks. Episode deduplication resets on service restart.
+
+Monitor reads time out after 10 seconds. Each job skips ticks while a previous run
+is active, and shutdown destroys schedules and aborts monitor reads. These are
+process-local jobs: run one scheduler instance for a household. Missed ticks are
+not replayed. The existing durable, voice-created ScheduledTasks keep their own
+firing path. Announcements use the existing SSE stream and need a connected
+browser for speech playback.
+
 ### Installation & Setup
 
 1. **Clone the repository**

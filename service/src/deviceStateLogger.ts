@@ -1,4 +1,4 @@
-import cron from "node-cron";
+import { cronJobs } from "./cronJobs";
 import { DEVICE_STATE_LOG_CRON } from "./config";
 import { getKnownDeviceStates } from "./ha";
 import {
@@ -6,8 +6,6 @@ import {
   isCosmosConfigured,
   saveDeviceStatesBatch,
 } from "./cosmos";
-
-let schedulerStarted = false;
 
 const buildRecordId = (entityId: string, capturedAtIso: string): string => {
   const sanitizedEntity = entityId.replace(/[^a-zA-Z0-9-_]/g, "_");
@@ -74,12 +72,6 @@ const captureAndPersistStates = async (reason: string): Promise<void> => {
 };
 
 export const startDeviceStateLogging = (): void => {
-  if (schedulerStarted) {
-    return;
-  }
-
-  schedulerStarted = true;
-
   if (!isCosmosConfigured()) {
     console.warn(
       "Azure Cosmos DB credentials are not configured; device state logging scheduler will remain idle"
@@ -87,13 +79,14 @@ export const startDeviceStateLogging = (): void => {
     return;
   }
 
-  cron.schedule(DEVICE_STATE_LOG_CRON, () => {
-    void captureAndPersistStates("scheduled run");
+  cronJobs.register({
+    id: "device-state-log",
+    expression: DEVICE_STATE_LOG_CRON,
+    runOnStart: true,
+    run: (_signal, reason) => captureAndPersistStates(reason === "startup" ? "startup snapshot" : "scheduled run"),
   });
 
   console.info(
     `Home Assistant device state logging scheduler initialised with cron '${DEVICE_STATE_LOG_CRON}'`
   );
-
-  void captureAndPersistStates("startup snapshot");
 };

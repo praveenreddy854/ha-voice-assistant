@@ -1,0 +1,21 @@
+[
+  {
+    "id": "laundry-check",
+    "cron": "* * * * * *",
+    "timezone": "UTC",
+    "entityId": "switch.laundry_switch",
+    "conditions": [{ "field": "state", "operator": "equals", "value": "on" }],
+    "minStateDurationSeconds": 3000,
+    "announcement": "Please check on the laundry. It has probably been running for 50 minutes.",
+    "announcementPolicy": "oncePerState"
+  },
+  {
+    "id": "vacuum-dock-check",
+    "cron": "0 9 * * *",
+    "timezone": "America/New_York",
+    "entityId": "vacuum.replace_with_your_entity",
+    "conditions": [{ "field": "state", "operator": "notEquals", "value": "docked" }],
+    "announcement": "The robot vacuum is not docked. It might be stuck somewhere and needs assistance.",
+    "announcementPolicy": "everyMatch"
+  }
+]

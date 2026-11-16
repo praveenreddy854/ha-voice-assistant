@@ -27,9 +27,10 @@ import {
   HOME_ASSISTANT_TOKEN,
   SPEECH_KEY,
   SPEECH_REGION,
-  VACUUM_CLEANER_ENTITY_ID,
 } from "./config";
-import { fetchAllStates } from "./ha";
+import { fetchAllStates, getHAEntityState } from "./ha";
+import { cronJobs } from "./cronJobs";
+import { loadDeviceMonitorJobs, registerDeviceMonitorJobs } from "./deviceMonitorJobs";
 import { startDeviceStateLogging } from "./deviceStateLogger";
 import {
   listActiveScheduledTasks,
@@ -50,7 +51,7 @@ import { onlineRouter } from "./evals/online/api";
 import { onlineSupervisor } from "./evals/online/supervisor";
 import { homePage } from "./homePage";
 import { setupRealtimeChatProxy } from "./realtimeChat";
-import { addAnnouncementClient } from "./announcementBus";
+import { addAnnouncementClient, emitAnnouncement } from "./announcementBus";
 import { startScheduledTaskFirer, stopScheduledTaskFirer } from "./scheduledTaskFirer";
 import { startOutDirCleaner } from "./outDirCleaner";
 import { startProactiveReminders } from "./proactiveReminders";
@@ -88,6 +89,14 @@ const app = express();
 const port = process.env.PORT || 3005;
 const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || "15mb";
 const appleShortcutSessions = new TextAssistantSessionManager();
+// Reject bad monitor configuration before starting any background jobs or listeners.
+let deviceMonitorJobs: ReturnType<typeof loadDeviceMonitorJobs>;
+try {
+  deviceMonitorJobs = loadDeviceMonitorJobs(process.env.DEVICE_MONITOR_JOBS_FILE);
+} catch {
+  console.error("[DeviceMonitorJobs] Invalid configuration; check DEVICE_MONITOR_JOBS_FILE and the job schema in README.md");
+  process.exit(1);
+}
 
 app.use(
   "/api/integrations/apple-shortcuts",
@@ -149,6 +158,10 @@ startDeviceStateLogging();
 startScheduledTaskFirer();
 startOutDirCleaner();
 startProactiveReminders();
+registerDeviceMonitorJobs(deviceMonitorJobs, cronJobs, {
+  readState: (entityId, signal) => getHAEntityState(entityId, { abortSignal: signal }),
+  announce: emitAnnouncement,
+});
 startMemoryConsolidation();
 evalSupervisor.start();
 onlineSupervisor.start();
@@ -482,75 +495,6 @@ app.get("/api/get-speech-credentials", (req, res, next) => {
     }
   })();
 });
-
-// Endpoint to check laundry switch status
-app.get("/api/laundry-status", (req, res, next) => {
-  (async () => {
-    try {
-      const entityId = "switch.laundry_switch";
-      const response = await axios.get(
-        `${HOME_ASSISTANT_URL}/api/states/${entityId}`,
-        {
-          headers: {
-            Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
-            "Content-Type": "application/json",
-          },
-        }
-      );
-
-      const state = response.data as any;
-      res.json({
-        entity_id: entityId,
-        state: state.state,
-        last_changed: state.last_changed,
-        last_updated: state.last_updated,
-        attributes: state.attributes,
-      });
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      console.error("Error checking laundry status:", err);
-      res.status(500).json({
-        error: "Error checking laundry status",
-        message: err.message,
-      });
-    }
-  })();
-});
-
-// Endpoint to check vacuum status
-app.get("/api/vacuum-status", (req, res, next) => {
-  (async () => {
-    try {
-      const entityId = VACUUM_CLEANER_ENTITY_ID;
-      const response = await axios.get(
-        `${HOME_ASSISTANT_URL}/api/states/${entityId}`,
-        {
-          headers: {
-            Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
-            "Content-Type": "application/json",
-          },
-        }
-      );
-
-      const state = response.data as any;
-      res.json({
-        entity_id: entityId,
-        state: state.state,
-        last_changed: state.last_changed,
-        last_updated: state.last_updated,
-        attributes: state.attributes,
-      });
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      console.error("Error checking vacuum status:", err);
-      res.status(500).json({
-        error: "Error checking vacuum status",
-        message: err.message,
-      });
-    }
-  })();
-});
-
 
 // ============================================================================
 // Teaching Mode API Endpoints
@@ -1240,6 +1184,7 @@ setupRealtimeChatProxy(server);
 
 // Graceful shutdown
 process.on("SIGTERM", async () => {
+  await cronJobs.stop();
   stopScheduledTaskFirer();
   onlineSupervisor.stop();
   evalSupervisor.stop();
@@ -1249,6 +1194,7 @@ process.on("SIGTERM", async () => {
 });
 
 process.on("SIGINT", async () => {
+  await cronJobs.stop();
   stopScheduledTaskFirer();
   onlineSupervisor.stop();
   evalSupervisor.stop();

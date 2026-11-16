@@ -21,29 +21,17 @@ import {
   stopRealtimeChat,
 } from "./functions/realtimeChat";
 import { playPing } from "./functions/chime";
-import { LaundryMonitor, VacuumMonitor } from "./skills";
-import SkillToggles from "./components/SkillToggles";
-import SkillWrapper from "./components/SkillWrapper";
 import TeachingModeUI from "./components/TeachingModeUI";
 import Header, { ActiveView } from "./components/Header";
 import ScheduledTasksPage from "./pages/ScheduledTasksPage";
 import HandGestureDetector from "./skills/gestures/HandGestureDetector";
 import { BASE_URL } from "./functions/httpUtils";
-import {
-  SkillToggleState,
-  loadSkillToggleState,
-  saveSkillToggleState,
-  isSkillEnabled,
-} from "./utils/skillToggle";
 
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isListening, setIsListening] = useState(false);
   const [isWakeWordMode, setIsWakeWordMode] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
-  const [skillState, setSkillState] = useState<SkillToggleState>(
-    loadSkillToggleState()
-  );
   const [isGestureCameraActive, setIsGestureCameraActive] = useState(false);
   const [showTeachingUI, setShowTeachingUI] = useState(false);
   const [activeView, setActiveView] = useState<ActiveView>("main");
@@ -83,24 +71,6 @@ function App() {
     assistantLifecycle.current++;
     stopRealtimeChat({ closeAudioOutput: true });
   }, []);
-
-  useEffect(() => {
-    saveSkillToggleState(skillState);
-  }, [skillState]);
-
-  const handleToggleGlobal = useCallback((enabled: boolean) => {
-    setSkillState((prev) => ({ ...prev, globalEnabled: enabled }));
-  }, []);
-
-  const handleToggleSkill = useCallback(
-    (
-      skill: keyof Omit<SkillToggleState, "globalEnabled">,
-      enabled: boolean
-    ) => {
-      setSkillState((prev) => ({ ...prev, [skill]: enabled }));
-    },
-    []
-  );
 
   const handleRecognizedText = useCallback(async (message: Message) => {
     setMessages((prevMessages) => [...prevMessages, message]);
@@ -516,55 +486,6 @@ function App() {
           >
             📚 Open Teaching Mode
           </button>
-        </div>
-
-        <SkillToggles
-          skillState={skillState}
-          onToggleGlobal={handleToggleGlobal}
-          onToggleSkill={handleToggleSkill}
-        />
-
-        <div
-          className="dashboard-grid"
-          style={{
-            animation: "fadeIn 0.8s ease-out",
-            justifyItems: "stretch",
-          }}
-        >
-          <SkillWrapper
-            skillName="Laundry Monitor"
-            enabled={skillState.laundryMonitor}
-            globalEnabled={skillState.globalEnabled}
-            onToggle={(enabled) => handleToggleSkill("laundryMonitor", enabled)}
-            description="Monitors laundry machine status"
-          >
-            <LaundryMonitor
-              onAnnouncement={
-                isSkillEnabled("laundryMonitor", skillState)
-                  ? handleAnnouncement
-                  : undefined
-              }
-              enabled={isSkillEnabled("laundryMonitor", skillState)}
-            />
-          </SkillWrapper>
-
-          <SkillWrapper
-            skillName="Vacuum Monitor"
-            enabled={skillState.vacuumMonitor}
-            globalEnabled={skillState.globalEnabled}
-            onToggle={(enabled) => handleToggleSkill("vacuumMonitor", enabled)}
-            description="Monitors vacuum cleaner status"
-          >
-            <VacuumMonitor
-              onAnnouncement={
-                isSkillEnabled("vacuumMonitor", skillState)
-                  ? handleAnnouncement
-                  : undefined
-              }
-              enabled={isSkillEnabled("vacuumMonitor", skillState)}
-            />
-          </SkillWrapper>
-
         </div>
       </div>
 
