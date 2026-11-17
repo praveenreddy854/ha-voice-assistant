@@ -1,5 +1,5 @@
 import type { AgentLoop, AgentLoopConfig } from "../../agents/core/agentLoop";
-import { buildLiveVoiceSystemPrompt, liveVoiceToolDefinitions } from "../../liveVoiceContract";
+import { buildLiveVoiceSystemPrompt, LIVE_VOICE_REQUIRE_TOOL_CALL, liveVoiceToolDefinitions } from "../../liveVoiceContract";
 import type { AgentAdapter, Assessment, Scenario } from "../types";
 import { digest } from "../store";
 import { captureTrial } from "../telemetry";
@@ -18,10 +18,11 @@ export function createRealtimeAdapterWithLoop(model: string, createLoop: (config
       activeRun: { id: "fixture-run", domain: "tv", status: "paused" },
       memoryContext: "[per-turn isolated fixture memory]", interruptedAssistantText: "[interrupted speech]",
     }),
+    requireToolCall: LIVE_VOICE_REQUIRE_TOOL_CALL,
     tools: liveVoiceToolDefinitions(REALTIME_TOOLS), limits: REALTIME_EVAL_LIMITS, scope: REALTIME_EVAL_SCOPE,
   });
   return {
-    id: "realtime", version: "realtime-reasoning-simulator-2", scenarios: realtimeScenarios,
+    id: "realtime", version: "realtime-reasoning-simulator-3", scenarios: realtimeScenarios,
     model, promptVersion,
     async execute(input: Scenario, signal: AbortSignal): Promise<Assessment> {
       const scenario = input as Scenario<RealtimeState>;

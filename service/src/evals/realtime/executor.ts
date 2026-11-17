@@ -1,5 +1,5 @@
 import type { AgentLoop, AgentLoopConfig } from "../../agents/core/agentLoop";
-import { buildLiveVoiceSystemPrompt, LIVE_VOICE_MAX_ITERATIONS, liveVoiceToolDefinitions } from "../../liveVoiceContract";
+import { buildLiveVoiceSystemPrompt, LIVE_VOICE_MAX_ITERATIONS, LIVE_VOICE_REQUIRE_TOOL_CALL, liveVoiceToolDefinitions } from "../../liveVoiceContract";
 import { REALTIME_TOOLS } from "../../realtimeAgent";
 import { runOfflineAgentLoop } from "../loop";
 import type { TrialTelemetry } from "../telemetry";
@@ -44,6 +44,7 @@ export async function executeRealtimeSession(options: {
         createLoop: options.createLoop, model: options.model,
         systemPrompt, tools: liveVoiceToolDefinitions(REALTIME_TOOLS),
         maxIterations: LIVE_VOICE_MAX_ITERATIONS,
+        requireToolCall: LIVE_VOICE_REQUIRE_TOOL_CALL,
         initialMessage: turn.text, history, signal, telemetry, executeToolsInSdk: true,
         systemMessages: environment.turnMemoryContext ? [environment.turnMemoryContext] : [],
         record: item => environment.record(item),

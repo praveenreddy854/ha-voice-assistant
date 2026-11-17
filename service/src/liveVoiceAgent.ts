@@ -5,7 +5,7 @@ import { getPromptMemoryContext, recordMemoryInteraction } from "./memory";
 import { addEvent, addLLMStep, completeTrace, createTrace, trackToolResult, withTraceSession } from "./tracing/agentTraceStore";
 import type { LiveDelegationRequest } from "./liveDelegation";
 import { withRequestContext } from "./requestContext";
-import { buildLiveVoiceSystemPrompt, LIVE_VOICE_MAX_ITERATIONS, liveVoiceToolDefinitions, type LiveVoiceTool } from "./liveVoiceContract";
+import { buildLiveVoiceSystemPrompt, LIVE_VOICE_MAX_ITERATIONS, LIVE_VOICE_REQUIRE_TOOL_CALL, liveVoiceToolDefinitions, type LiveVoiceTool } from "./liveVoiceContract";
 export type { LiveVoiceTool } from "./liveVoiceContract";
 
 /** Use the same AI SDK loop as the specialists, with browser voice history. */
@@ -59,6 +59,8 @@ async function runVoiceRequest(
   const loop = createAgentLoop({
     model: AI_MODEL_ADVANCED,
     maxIterations: LIVE_VOICE_MAX_ITERATIONS,
+    // Voice replies, including async acknowledgements, use complete_task.
+    requireToolCall: LIVE_VOICE_REQUIRE_TOOL_CALL,
     systemPrompt: buildLiveVoiceSystemPrompt(instructions),
     tools: definitions,
     onStepFinish: (event) => retain(() => addLLMStep(traceId, {

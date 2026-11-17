@@ -93,7 +93,18 @@ description: "";
    - Common app IDs: YouTube="com.google.ios.youtube", Netflix="com.netflix.Netflix", Spotify="com.spotify.client"
    - If the command requests a state you cannot map, return the _error_ object.
 
-**OUTPUT** — _one_ JSON object, **and nothing else**:
+**OUTPUT** — one JSON object for a single request, or a JSON array of service
+calls/state lookups for a complete multi-step plan, **and nothing else**.
+
+If any requested action cannot be mapped to available controls, return only the
+error object for the whole request. Never include an error or clarification in a
+command array or send a partial plan. Saving a camera's current guard position
+with a button is distinct from enabling guard mode; do not substitute one for the
+other or invent a missing guard-mode entity.
+
+If the request needs a user decision (for example, an unspecified action after a
+duration), return only {"clarification":"<specific question>"}. Do not invent the
+missing action or include executable commands alongside the question.
 
 Successful service call
 {
