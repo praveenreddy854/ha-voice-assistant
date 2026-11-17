@@ -42,6 +42,10 @@ The following operations are traced:
 
 ### 3. **Detailed Logging of Prompts and Responses**
 
+Home Assistant commands retain generated/normalized plans and retrieved memory
+IDs. See the [Home Assistant memory and telemetry reference](../docs/home-assistant-memory.md#telemetry)
+for translation stages, local wait results, and historical augmentation flags.
+
 Each trace contains:
 
 - **Input Prompts**: Complete prompts sent to Azure AI Agents

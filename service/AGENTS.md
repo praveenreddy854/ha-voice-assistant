@@ -86,6 +86,12 @@ history scope per external channel.
 - Translates natural language commands to HA service calls
 - Supports a wide range of domains: lights, switches, media players, remotes, etc.
 
+Device-specific preferences, sequences, aliases, and settling times belong in
+scoped Persistent agent memory. Keep `ha.ts` and the shared translation prompt
+free of household entity IDs and device-specific action augmentation. See
+[../docs/home-assistant-memory.md](../docs/home-assistant-memory.md) for planning,
+validation, bounded waits, and evidence semantics.
+
 ### ScheduledTaskAgent (`src/agents/scheduled-task/`)
 
 Handles ScheduledTask creation, listing, querying, update, cancellation, and server-side action-effect firing.
