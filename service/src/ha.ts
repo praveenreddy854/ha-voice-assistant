@@ -449,13 +449,19 @@ function applyMemoryCommandAugmentations(
   return { body: Array.isArray(body) || plan.length > 1 ? plan : plan[0], guardSetApplied };
 }
 
+function commandTargetsEntity(command: HassServiceCommand, targetEntityId: string): boolean {
+  // Match the POST payload: service_data may replace the top-level target.
+  const entityId: unknown = { entity_id: command.entity_id, ...command.service_data }.entity_id;
+  return Array.isArray(entityId) ? entityId.includes(targetEntityId) : entityId === targetEntityId;
+}
+
 function isLivingRoomPresetSelection(command: HassServiceCommand): boolean {
-  return command.entity_id === LIVING_ROOM_PTZ_PRESET_ENTITY_ID &&
+  return commandTargetsEntity(command, LIVING_ROOM_PTZ_PRESET_ENTITY_ID) &&
     normalizeHAUrlPath(command.url_path || "") === "select/select_option";
 }
 
 function isLivingRoomGuardPress(command: HassServiceCommand): boolean {
-  return command.entity_id === LIVING_ROOM_GUARD_SET_BUTTON_ENTITY_ID &&
+  return commandTargetsEntity(command, LIVING_ROOM_GUARD_SET_BUTTON_ENTITY_ID) &&
     normalizeHAUrlPath(command.url_path || "") === "button/press";
 }
 

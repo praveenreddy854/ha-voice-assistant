@@ -83,6 +83,54 @@ test("preset-to-guard plans retain the settling delay and report transport evide
       await run([{ ...preset, url_path: "/api/services/select/select_option/" }, { ...guard, url_path: "/api/services/button/press/" }]);
       assert.deepEqual(events, ["preset", 300, 15000, 300, "guard"]);
     });
+    await t.test("effective string and array targets retain settling without duplicate guards", async () => {
+      for (const asArray of [false, true]) {
+        const target = (entityId: string) => asArray ? ["select.unrelated", entityId] : entityId;
+        const overriddenPreset = {
+          ...preset, entity_id: "select.other_camera_preset",
+          service_data: { ...preset.service_data, entity_id: target(preset.entity_id) },
+        };
+        const overriddenGuard = {
+          ...guard, entity_id: "button.other_camera_guard",
+          service_data: { entity_id: target(guard.entity_id) },
+        };
+        await run([overriddenPreset, overriddenGuard], true);
+        assert.deepEqual(events, ["preset", 300, 15000, 300, "guard"]);
+        await run(overriddenPreset, true);
+        assert.deepEqual(events, ["preset", 300, 15000, 300, "guard"]);
+      }
+    });
+    await t.test("failed presets with overridden targets stop dependent overridden guards", async () => {
+      presetStatus = 503;
+      try {
+        for (const asArray of [false, true]) {
+          const target = (entityId: string) => asArray ? [entityId] : entityId;
+          const result = await run([
+            { ...preset, entity_id: "select.other_camera_preset", service_data: { option: "1", entity_id: target(preset.entity_id) } },
+            { ...guard, entity_id: "button.other_camera_guard", service_data: { entity_id: target(guard.entity_id) } },
+          ]);
+          assert.equal(result.success, false);
+          assert.match(result.message, /remaining requests were not sent/);
+          assert.deepEqual(events, ["preset"]);
+        }
+      } finally {
+        presetStatus = 200;
+      }
+    });
+    await t.test("overrides away from the camera do not match the original targets", async () => {
+      for (const asArray of [false, true]) {
+        const target = (entityId: string) => asArray ? [entityId] : entityId;
+        await run([
+          { ...preset, service_data: { option: "1", entity_id: target("select.other_camera_preset") } }, guard,
+        ], true);
+        assert.deepEqual(events, ["preset", 300, "guard"]);
+        const otherGuard = { ...guard, service_data: { entity_id: target("button.other_camera_guard") } };
+        await run([preset, otherGuard]);
+        assert.deepEqual(events, ["preset", 300, "guard"]);
+        await run([preset, otherGuard], true);
+        assert.deepEqual(events, ["preset", 300, "guard", 300, 15000, 300, "guard"]);
+      }
+    });
     await t.test("read-only, unrelated and reversed commands do not add a settling delay", async () => {
       for (const input of [
         [{ ...preset, url_path: "states/select.living_room_ptz_preset" }, guard],
