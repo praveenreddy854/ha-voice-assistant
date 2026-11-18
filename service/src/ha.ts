@@ -42,8 +42,16 @@ const MEDIA_TRANSPORT_SERVICES: Record<string, string> = {
 // Refusals must never be mixed into a partially executable command array.
 const translatedCommandSchema: z.ZodType<HassServiceCommand> = z.object({
   url_path: z.string().refine(value => {
-    const parts = normalizeHAUrlPath(value).split("/");
-    return parts.length === 2 && parts.every(part => part.trim().length > 0);
+    const normalized = normalizeHAUrlPath(value);
+    const parts = normalized.split("/");
+    if (parts.length !== 2 || parts.some(part => !part.trim())) return false;
+    // Use execution's decoder during whole-plan validation. A malformed lookup
+    // must not fail only after an earlier command has already sent a request.
+    try {
+      return parts[0] !== "states" || Boolean(stateLookupEntityId(normalized));
+    } catch {
+      return false;
+    }
   }),
   entity_id: z.string().trim().min(1),
   service_data: z.record(z.string(), z.unknown()).optional(),

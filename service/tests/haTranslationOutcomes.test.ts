@@ -67,11 +67,20 @@ test("translation refusals and clarification do not execute device requests", as
         assert.equal(post.mock.callCount(), 0, JSON.stringify(output));
       }
     });
+    await t.test("malformed percent-encoded state lookups reject the batch before its first action", async () => {
+      for (const suffix of ["%", "%2", "%GG", "%E0%A4%A", "%ED%A0%80"]) {
+        output = [command, { url_path: `api/states/${suffix}`, entity_id: command.entity_id }];
+        const result = await executeHACommand("Press the camera button then read its state");
+        assert.equal(result.success, false, suffix);
+        assert.equal(post.mock.callCount(), 0, `No partial button press for ${suffix}`);
+        assert.match(result.message, /response_parse/, suffix);
+      }
+    });
     assert.equal(post.mock.callCount(), 0);
     assert.equal(get.mock.calls.every(call => String(call.arguments[0]).endsWith("/api/states")), true,
       "only inventory reads are permitted for rejected translations");
     await t.test("valid single, batch and state-read translations still execute", async () => {
-      for (output of [command, [command, command], { url_path: "states/button.test_camera_guard", entity_id: command.entity_id }]) {
+      for (output of [command, [command, command], { url_path: "states/button.test_camera_guard", entity_id: command.entity_id }, { url_path: "api/states/%62utton.test_camera_guard", entity_id: command.entity_id }]) {
         assert.equal((await executeHACommand("Control test camera")).success, true);
       }
       assert.equal(post.mock.callCount(), 3);
