@@ -44,6 +44,8 @@ test("HA planning uses scoped memory with generic validated execution", async t 
   let memories: AgentMemoryDocument[] = [];
   let failedEntity: string | undefined;
   let abortDuringWait: AbortController | undefined;
+  let rejectedPost: { entityId: string; error: Error; abort?: AbortController } | undefined;
+  let postResponseData: unknown = [];
   let retrievedQuery = "";
   const actions: string[] = [];
   const modelRequests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
@@ -77,6 +79,8 @@ test("HA planning uses scoped memory with generic validated execution", async t 
     memories = [];
     failedEntity = undefined;
     abortDuringWait = undefined;
+    rejectedPost = undefined;
+    postResponseData = [];
   });
   t.mock.method(console, "log", () => undefined);
   t.mock.method(console, "error", () => undefined);
@@ -86,7 +90,11 @@ test("HA planning uses scoped memory with generic validated execution", async t 
   }));
   t.mock.method(axios, "post", async (_url: string, body: { entity_id: string }) => {
     actions.push(body.entity_id);
-    return { status: body.entity_id === failedEntity ? 503 : 200, data: [] };
+    if (body.entity_id === rejectedPost?.entityId) {
+      rejectedPost.abort?.abort(rejectedPost.error);
+      throw rejectedPost.error;
+    }
+    return { status: body.entity_id === failedEntity ? 503 : 200, data: postResponseData };
   });
   try {
     const { executeHACommand, getHAPrompt } = requireModule("../src/ha") as typeof import("../src/ha");
@@ -163,11 +171,18 @@ test("HA planning uses scoped memory with generic validated execution", async t 
     });
 
     await t.test("state paths and service data cannot replace the validated target", async () => {
-      for (const invalid of [
+      const invalidPlans = [
         { url_path: `states/${device.enable.entity_id}`, entity_id: device.select.entity_id },
-        { ...device.select, service_data: { option: "B", entity_id: "select.unconfigured" } },
-      ]) {
-        plan = invalid;
+        ...["entity_id", "area_id", "device_id", "floor_id", "label_id"].flatMap(selector =>
+          ["unconfigured", ["unconfigured"], null].map(value => ({
+            ...device.select, service_data: { option: "B", [selector]: value },
+          }))
+        ),
+        { ...device.select, service_data: { option: "B", target: { area_id: "unconfigured" } } },
+      ];
+      for (const invalid of invalidPlans) {
+        // A later invalid step must also prevent earlier valid device writes.
+        plan = [device.select, invalid];
         assert.match((await executeHACommand(command)).message, /plan_validation/);
       }
       assert.deepEqual(actions, []);
@@ -228,6 +243,37 @@ test("HA planning uses scoped memory with generic validated execution", async t 
         if (entity === device.select.entity_id) assert.deepEqual(actions, [device.select.entity_id]);
         actions.length = 0;
       }
+    });
+
+    await t.test("rejected later POSTs retain completed-step data and skip remaining actions", async () => {
+      plan = [device.select, device.capture, device.enable];
+      postResponseData = [{ entity_id: device.select.entity_id, state: "B" }];
+      for (const error of [
+        Object.assign(new Error("Synthetic service failure rtsp://user:password@camera.invalid"), { response: { status: 503 } }),
+        Object.assign(new Error("Synthetic request timeout"), { code: "ETIMEDOUT" }),
+      ]) {
+        const request = `Choose position B: ${error.message.startsWith("Synthetic service") ? "service failure" : "timeout"} regression.`;
+        rejectedPost = { entityId: device.capture.entity_id, error };
+        const result = await executeHACommand(request);
+        assert.equal(result.success, false);
+        assert.match(result.message, /Step 2 failed:.*1\/3 commands succeeded; 1 remaining commands skipped/);
+        assert.deepEqual(result.data, [postResponseData, undefined]);
+        assert.deepEqual(actions, [device.select.entity_id, "wait:300", device.capture.entity_id]);
+        const trace = getAllTraces().find(trace => trace.userPrompt === request)!;
+        assert.equal(trace.toolResults.length, 2);
+        assert.equal(trace.toolResults[1].toolSuccess, false);
+        assert.doesNotMatch(result.message + trace.toolResults[1].observation, /user:password/);
+        actions.length = 0;
+      }
+    });
+
+    await t.test("cancellation during a later POST propagates without executing dependents", async () => {
+      plan = [device.select, device.capture, device.enable];
+      const abort = new AbortController();
+      const error = new Error("Synthetic POST cancellation");
+      rejectedPost = { entityId: device.capture.entity_id, error, abort };
+      await assert.rejects(executeHACommand(command, undefined, { abortSignal: abort.signal }), caught => caught === error);
+      assert.deepEqual(actions, [device.select.entity_id, "wait:300", device.capture.entity_id]);
     });
 
     await t.test("cancelling a memory-planned wait never executes later actions", async () => {

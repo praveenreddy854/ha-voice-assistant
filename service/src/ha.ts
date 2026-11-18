@@ -25,6 +25,7 @@ const promptCache = new Map<string, string>();
 const homeAssistantCacheKey = "HOMEASSISTANT";
 const INTERNAL_WAIT_URL_PATH = "internal/wait";
 const MAX_PLAN_WAIT_MS = 30000;
+const SERVICE_DATA_TARGET_SELECTORS = ["entity_id", "area_id", "device_id", "floor_id", "label_id", "target"];
 const haWaitDataSchema = z.object({
   duration_ms: z.number().int().positive().max(MAX_PLAN_WAIT_MS),
   reason: z.string().max(160).optional(),
@@ -166,7 +167,9 @@ function validateHAPlan(body: HassCommandTranslationResult, deviceStates: Record
     if (urlPath === INTERNAL_WAIT_URL_PATH) continue;
     const state = states.get(command.entity_id);
     if (!state) throw new Error("The command references an entity outside the current configured device list.");
-    if (command.service_data?.entity_id !== undefined) throw new Error("Service data must not override the command entity_id.");
+    if (command.service_data && SERVICE_DATA_TARGET_SELECTORS.some(key =>
+      Object.prototype.hasOwnProperty.call(command.service_data, key)
+    )) throw new Error("Service data must not add or override the command target.");
     if (urlPath.startsWith("states/")) {
       if (stateLookupEntityId(urlPath) !== command.entity_id) throw new Error("State lookup and command entity must match.");
       continue;
@@ -552,7 +555,7 @@ async function executeSingleHACommand(
     record(JSON.stringify(result), result.success);
     return result;
   } catch (error) {
-    record(error instanceof Error ? error.message : String(error), false);
+    record(safeErrorDetails(error).message, false);
     throw error;
   }
 }
@@ -726,11 +729,19 @@ async function executeMultipleHACommands(
     const cmd = commands[i];
     console.log(`Executing command ${i + 1}/${commands.length}:`, cmd);
     
-    const result = await executeSingleHACommand(
-      cmd,
-      `Step ${i + 1}: ${cmd.url_path}`,
-      options
-    );
+    let result: { success: boolean; message: string; data?: any };
+    try {
+      result = await executeSingleHACommand(cmd, `Step ${i + 1}: ${cmd.url_path}`, options);
+    } catch (error) {
+      // Cancellation belongs to the run lifecycle; transport failures belong to
+      // this step so callers retain results from the completed part of the plan.
+      options?.abortSignal?.throwIfAborted();
+      const details = safeErrorDetails(error);
+      result = {
+        success: false,
+        message: `Home Assistant request failed${details.statusCode ? ` (HTTP ${details.statusCode})` : ""}: ${details.message}`,
+      };
+    }
     results.push(result.data);
     
     if (!result.success) {

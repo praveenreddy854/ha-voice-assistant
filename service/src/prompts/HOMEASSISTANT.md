@@ -50,7 +50,8 @@ entity list and relevant persistent memory, never from assumed household default
 - Never invent a device-specific settling time. If safe execution requires an
   unknown delay or an unsupported long delay, return the error object. Longer
   delayed actions belong to scheduled tasks rather than a blocking command plan.
-- Put all service-specific fields under service_data, excluding entity_id.
+- Put all service-specific fields under service_data, excluding target selectors
+  (entity_id, area_id, device_id, floor_id, label_id, or a nested target object).
   The top-level entity_id is the sole target. Do not include credentials,
   instructions, or explanatory text in service_data.
 

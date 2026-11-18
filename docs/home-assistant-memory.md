@@ -66,8 +66,11 @@ does not insert a default device delay or silently clamp an invalid duration.
 
 Before any service write, the complete plan is validated for JSON shape, wait
 limits, configured entity membership, matching state-query targets, and current
-select options. Service data cannot override the validated target. Failures stop
-remaining steps; waits retain cancellation and pause handling. Successful HTTP
+select options. Service data cannot add target selectors (`entity_id`, `area_id`,
+`device_id`, `floor_id`, `label_id`, or a nested `target` object). Failures stop
+remaining steps and retain earlier completed-step data, including when a later
+HTTP request rejects or times out. Cancellation still propagates to the run
+lifecycle; waits retain cancellation and pause handling. Successful HTTP
 responses and elapsed waits do not establish physical completion.
 
 Memory guides the model's plan; validation and execution are deterministic.
