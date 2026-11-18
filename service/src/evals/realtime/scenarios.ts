@@ -32,6 +32,8 @@ export interface RealtimeFixtureRun {
 export interface SemanticRequest {
   /** Exact scope-preserving clauses ignored by this fixture's lexical oracle. */
   ignoredExclusions?: string[];
+  /** Full lexical command grammar for fixtures requiring an exact action scope. */
+  allowedRequest?: string;
   required: string[];
   forbidden?: string[];
   allowedNumbers?: number[];
@@ -81,6 +83,9 @@ const base: Omit<RealtimeState, "turns"> = {
   web: [],
 };
 const kitchenOnly: SemanticRequest = {
+  // Accept one positive brightness command, including known scope-preserving paraphrases.
+  // A keyword checklist alone can hide another action before the exclusion suffix.
+  allowedRequest: "(?:please\\s+)?(?:dim|set|adjust)\\s+(?:(?:only|just)\\s+(?:the\\s+)?kitchen lights?|(?:the\\s+)?kitchen lights?\\s+(?:only|just))(?:\\s*\\(light\\.kitchen\\))?\\s+to\\s+(?:30|thirty)\\s*(?:%|percent)(?:\\s+brightness)?[.!]?\\s*",
   ignoredExclusions: ["(?:^|[.;]\\s*)do not change any other lights[.!]?(?=\\s*$)"],
   required: ["\\b(kitchen|light\\.kitchen)\\b", "\\b(light|lights)\\b", "\\b(only|just)\\b", "\\b(30|thirty)\\s*(%|percent)"],
   forbidden: ["\\b(bedroom|all|every|whole|entire|not|instead|twice|repeat)\\b", "\\b(turn|switch|shut)\\s+off\\b"],
@@ -109,7 +114,7 @@ function scenario(
   turns: RealtimeFixtureTurn[], expectations: string, overrides: Partial<RealtimeState> = {},
 ): Scenario<RealtimeState> {
   return {
-    id, version: id === "ha-immediate-qualified" ? "2" : "1", request: turns[0].text,
+    id, version: id === "ha-immediate-qualified" ? "3" : "1", request: turns[0].text,
     context: { task, target, app: target.includes("TV") ? "YouTube" : "none", startingState },
     expectations: `${expectations}\n${REALTIME_EVAL_SCOPE}`,
     initial: { ...structuredClone(base), ...structuredClone(overrides), turns },

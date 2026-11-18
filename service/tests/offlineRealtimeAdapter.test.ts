@@ -65,7 +65,7 @@ test("default factory uses production reasoning with legacy realtime configurati
   delete process.env.AI_MODEL_REALTIME;
   const adapter = await createRealtimeAdapter();
   assert.equal(adapter.model, "test-model");
-  assert.equal(adapter.version, "realtime-reasoning-simulator-3");
+  assert.equal(adapter.version, "realtime-reasoning-simulator-4");
   assert.equal((await createRealtimeAdapter("candidate-reasoning-model")).model, "candidate-reasoning-model");
   assert.throws(() => createRealtimeAdapterWithLoop("", () => assert.fail("must not create loop")), /AI_MODEL_ADVANCED/);
 });
@@ -373,10 +373,18 @@ test("scope-preserving exclusion from live confirmation passes without permittin
   const goal = fixture.initial.turns[0].goal;
   assert.equal(goal.kind, "delegate");
   if (goal.kind !== "delegate") assert.fail("Expected routing fixture");
-  assert.equal(fixture.version, "2");
-  assert.equal(matchesSemanticRequest("Set only the kitchen lights (light.kitchen) to 30 percent brightness. Do not change any other lights.", goal.request), true);
+  assert.equal(fixture.version, "3");
+  for (const command of [
+    "Set only the kitchen lights (light.kitchen) to 30 percent brightness. Do not change any other lights.",
+    "Please adjust just the kitchen lights to thirty percent. Do not change any other lights.",
+    "Set the kitchen lights only to 30%. Do not change any other lights.",
+  ]) assert.equal(matchesSemanticRequest(command, goal.request), true, command);
   for (const command of [
     "Do not dim only the kitchen lights to 30 percent. Do not change any other lights.",
+    "Don't dim only the kitchen lights to 30 percent. Do not change any other lights.",
+    "Never dim only the kitchen lights to 30 percent. Do not change any other lights.",
+    "Dim only the kitchen lights to 30 percent. Turn on the hallway lights. Do not change any other lights.",
+    "Dim only the kitchen lights to 30 percent and turn on the hallway lights. Do not change any other lights.",
     "Dim only the bedroom lights to 30 percent. Do not change any other lights.",
     "Dim only the kitchen lights to 100 percent. Do not change any other lights.",
     "Dim only the kitchen lights to 30 percent. Do not change any other lights. Turn the bedroom lights on.",
@@ -414,4 +422,70 @@ test("completion cannot hide a repeated action after an earlier accepted job", a
   assert.equal(result.taskAssertion, false);
   assert.equal(result.metrics?.toolExecutions, 2);
   assert.equal(JSON.parse(result.evidence.at(-1)!.text).acceptedEffects.length, 2);
+});
+
+
+for (const completionFirst of [false, true]) test(`completion/action ID collisions reject the entire batch (${completionFirst ? "completion first" : "action first"})`, async t => {
+  t.mock.method(globalThis, "fetch", async () => {
+    const action = await toolResponse("execute_home_assistant_command", { command: scenario("ha-immediate-qualified").request }, "same").json();
+    const completion = await toolResponse("complete_task", { success: true, message: "On it." }, "same").json();
+    action.output = completionFirst ? [...completion.output, ...action.output] : [...action.output, ...completion.output];
+    return Response.json(action);
+  });
+  await assert.rejects((await createRealtimeAdapter()).execute(scenario("ha-immediate-qualified"), new AbortController().signal), (error: unknown) => {
+    assert.ok(error instanceof EvalExecutionError);
+    assert.match(error.message, /Duplicate Realtime/);
+    assert.equal(error.assessment.metrics?.toolExecutions, 0);
+    assert.equal(error.assessment.metrics?.rejectedToolCalls, 2);
+    assert.equal(error.assessment.trace?.toolCalls.length, 2);
+    assert.ok(error.assessment.trace?.toolCalls.every(tool => !tool.executed && tool.status === "rejected"));
+    return true;
+  });
+});
+
+test("fresh turn sessions may reuse call IDs while preserving scenario-wide accounting", async t => {
+  const fixture = scenario("paused-run-lifecycle");
+  const script = fixture.initial.turns.flatMap(turn => happyTurn(turn.goal, turn.text));
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    assert.ok(requests < script.length);
+    const output = script[requests++][0];
+    return output.type === "function_call"
+      ? toolResponse(output.name, JSON.parse(output.arguments), "action")
+      : toolResponse("complete_task", { success: true, message: output.content[0].text }, "completion");
+  });
+  const result = await (await createRealtimeAdapter()).execute(fixture, new AbortController().signal);
+  assert.equal(result.taskAssertion, true);
+  assert.equal(result.metrics?.toolExecutions, 3);
+  assert.equal(result.metrics?.completionCalls, 3);
+  assert.equal(result.metrics?.userTurns, 3);
+  assert.equal(result.metrics?.modelRequests, script.length);
+  assert.equal(JSON.parse(result.evidence.at(-1)!.text).acceptedEffects.length, 3);
+});
+
+
+test("completion calls do not consume the effectful budget, which spans fresh turn sessions", async t => {
+  for (const acrossTurns of [false, true]) await t.test(acrossTurns ? "scenario-wide cap" : "completion excluded", async subtest => {
+    let requests = 0;
+    subtest.mock.method(globalThis, "fetch", async () => {
+      requests++;
+      const response = await toolResponse("complete_task", { success: true, message: "On it." }, "completion").json();
+      const count = acrossTurns ? (requests === 1 ? 17 : 16) : 32;
+      const calls = Array.from({ length: count }, (_, index) => ({ type: "function_call", id: `item-${index}`, call_id: `action-${index}`, name: "await_user_followup", arguments: "{}" }));
+      response.output.unshift(...calls);
+      return Response.json(response);
+    });
+    const { createAgentLoop } = await import("../src/agents/core/agentLoop");
+    const env = new RealtimeEnvironment(scenario(acrossTurns ? "paused-run-lifecycle" : "general-chat"));
+    let effects = 0;
+    env.execute = async () => { effects++; return "{}"; };
+    const run = executeRealtimeSession({ createLoop: createAgentLoop, model: "test-model", environment: env, signal: new AbortController().signal, telemetry: new TrialTelemetry() });
+    if (acrossTurns) {
+      await assert.rejects(run, /tool-call limit/);
+      assert.equal(effects, 17, "second session rejected before effects despite fresh IDs");
+    } else {
+      await run;
+      assert.equal(effects, 32, "completion alongside the 32nd fixture call stays within budget");
+    }
+  });
 });

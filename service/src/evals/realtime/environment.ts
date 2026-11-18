@@ -35,7 +35,8 @@ export function matchesSemanticRequest(text: string, expected: SemanticRequest):
   const words: Record<string, number> = { seven: 7, eighteen: 18, nineteen: 19, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90, hundred: 100 };
   const scoped = (expected.ignoredExclusions ?? []).reduce((value, pattern) => value.replace(new RegExp(pattern, "i"), ""), text);
   const canonical = scoped.replace(/\b(seven|eighteen|nineteen|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)\b/gi, word => String(words[word.toLowerCase()]));
-  return expected.required.every(pattern => new RegExp(pattern, "i").test(canonical)) &&
+  return (!expected.allowedRequest || new RegExp(`^${expected.allowedRequest}$`, "i").test(canonical.trim())) &&
+    expected.required.every(pattern => new RegExp(pattern, "i").test(canonical)) &&
     !(expected.forbidden ?? []).some(pattern => new RegExp(pattern, "i").test(canonical)) &&
     (!expected.allowedNumbers || (canonical.match(/\b\d+(?:\.\d+)?\b/g) ?? []).every(value => expected.allowedNumbers!.includes(Number(value))));
 }

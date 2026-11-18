@@ -66,8 +66,12 @@ export async function runOfflineAgentLoop(options: OfflineLoopOptions): Promise<
   const validateBatch = (calls: AgentToolCall[]) => {
     try { options.validateToolBatch?.(calls); }
     catch (error) {
-      for (const call of calls) {
-        telemetry.rejectTool(telemetry.findTool(activeCall!, call.id), error instanceof Error ? error.message : String(error));
+      const ids = new Set(calls.map(call => call.id));
+      // Repeated IDs have distinct evidence records; reject every one of them.
+      for (const tool of telemetry.trace.toolCalls) {
+        if (tool.modelCallId === activeCall!.id && ids.has(tool.toolCallId)) {
+          telemetry.rejectTool(tool, error instanceof Error ? error.message : String(error));
+        }
       }
       throw error;
     }
@@ -102,7 +106,7 @@ export async function runOfflineAgentLoop(options: OfflineLoopOptions): Promise<
           }
           options.observeModelOutput?.(JSON.stringify(result.content));
           if (options.executeToolsInSdk) validateBatch(result.content.flatMap(part =>
-            part.type === "tool-call" && part.toolName !== "complete_task" ? [{
+            part.type === "tool-call" ? [{
               id: part.toolCallId, type: "function" as const,
               function: { name: part.toolName, arguments: part.input },
             }] : []));

@@ -33,11 +33,12 @@ export async function executeRealtimeSession(options: {
   const signal = AbortSignal.any([options.signal, deadline]);
   const history: Array<{ role: string; content: string }> = [];
   const turnResponses: string[] = [];
-  const seenCalls = new Set<string>();
   let toolCalls = 0, characters = 0;
   try {
     for (const [index, turn] of turns.entries()) {
       signal.throwIfAborted();
+      // Each turn starts a fresh provider session; IDs are local to that session.
+      const seenCalls = new Set<string>();
       const context = environment.beginTurn(index);
       const systemPrompt = buildLiveVoiceSystemPrompt(`${environment.instructions}\n${context}`);
       const result = await runOfflineAgentLoop({
@@ -54,7 +55,8 @@ export async function executeRealtimeSession(options: {
         },
         validateToolBatch(calls) {
           // Validate every call before accepting any effect from this response.
-          if (toolCalls + calls.length > REALTIME_EVAL_LIMITS.toolCalls) {
+          const effectfulCalls = calls.filter(call => call.function.name !== "complete_task");
+          if (toolCalls + effectfulCalls.length > REALTIME_EVAL_LIMITS.toolCalls) {
             telemetry.stop("tool_limit");
             throw new Error("Realtime tool-call limit exceeded");
           }
@@ -62,11 +64,13 @@ export async function executeRealtimeSession(options: {
           for (const call of calls) {
             if (seenCalls.has(call.id) || batchIds.has(call.id)) throw new Error(`Duplicate Realtime tool call: ${call.id}`);
             batchIds.add(call.id);
-            const args: unknown = JSON.parse(call.function.arguments);
-            validateRealtimeToolArguments(call.function.name, args as Record<string, unknown>);
+            if (call.function.name !== "complete_task") {
+              const args: unknown = JSON.parse(call.function.arguments);
+              validateRealtimeToolArguments(call.function.name, args as Record<string, unknown>);
+            }
           }
           batchIds.forEach(id => seenCalls.add(id));
-          toolCalls += calls.length;
+          toolCalls += effectfulCalls.length;
         },
         async executeTool(name, args) {
           signal.throwIfAborted();

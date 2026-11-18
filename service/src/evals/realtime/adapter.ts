@@ -22,7 +22,7 @@ export function createRealtimeAdapterWithLoop(model: string, createLoop: (config
     tools: liveVoiceToolDefinitions(REALTIME_TOOLS), limits: REALTIME_EVAL_LIMITS, scope: REALTIME_EVAL_SCOPE,
   });
   return {
-    id: "realtime", version: "realtime-reasoning-simulator-3", scenarios: realtimeScenarios,
+    id: "realtime", version: "realtime-reasoning-simulator-4", scenarios: realtimeScenarios,
     model, promptVersion,
     async execute(input: Scenario, signal: AbortSignal): Promise<Assessment> {
       const scenario = input as Scenario<RealtimeState>;
