@@ -6,6 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import express from "express";
 import { createEvalRouter } from "../src/evals/api";
 import { baselineFor, fidelityPairs } from "../src/evals/analytics";
@@ -209,6 +210,48 @@ test("repeated worker failures refresh one open alert with current job evidence"
   await store.alert({ ...stale, id: "delayed-report" });
   assert.deepEqual(await store.read("alerts", stale.id), current);
   assert.equal((await store.list("alerts")).length, 2);
+}));
+
+test("overlapping refreshes across stores keep the newest evidence and one stable ID", () => withStore(async store => {
+  const initial: EvalAlert = { id: "stable-failure", agentId: "realtime", key: "realtime:worker-failure",
+    batchId: "initial", kind: "incomplete", createdAt: "2026-11-09T08:00:00Z", message: "Initial failure", runIds: [] };
+  await store.alert(initial);
+  const older = { ...initial, id: "older", batchId: "older", createdAt: "2026-11-09T09:00:00Z" };
+  const newer = { ...initial, id: "newer", batchId: "newer", createdAt: "2026-11-09T10:00:00Z" };
+  const other = new EvalStore(path.join(store.directory, "."));
+  const originalWrite = store.write.bind(store);
+  let reachedWrite!: () => void;
+  const writing = new Promise<void>(resolve => { reachedWrite = resolve; });
+  let finishNewer!: () => void;
+  const newerWritten = new Promise<void>(resolve => { finishNewer = resolve; });
+  store.write = async (kind, item) => {
+    if (kind === "alerts") {
+      reachedWrite();
+      // Without serialization, the newer write commits first and this delayed
+      // older write overwrites it. With serialization, newer waits for older.
+      await Promise.race([newerWritten, delay(100)]);
+    }
+    await originalWrite(kind, item);
+  };
+  const refreshingOlder = store.alert(older);
+  await writing;
+  const refreshingNewer = other.alert(newer).finally(finishNewer);
+  await Promise.all([refreshingOlder, refreshingNewer]);
+  assert.deepEqual(await store.list("alerts"), [{ ...newer, id: initial.id }]);
+}));
+
+test("overlapping initial alerts deduplicate and failed updates release their queue", () => withStore(async store => {
+  const alert: EvalAlert = { id: "first", agentId: "realtime", key: "realtime:worker-failure",
+    batchId: "first", kind: "incomplete", createdAt: "2026-11-09T08:00:00Z", message: "Failure", runIds: [] };
+  const other = new EvalStore(store.directory);
+  await Promise.all([store.alert(alert), other.alert({ ...alert, id: "second", createdAt: "2026-11-09T09:00:00Z" })]);
+  assert.equal((await store.list("alerts")).length, 1);
+  const originalWrite = store.write.bind(store);
+  store.write = async () => { throw new Error("Fixture write failure"); };
+  await assert.rejects(store.alert({ ...alert, createdAt: "2026-11-09T10:00:00Z" }), /Fixture write failure/);
+  store.write = originalWrite;
+  await other.resolveAlert(alert.key);
+  assert.ok((await store.list<EvalAlert>("alerts"))[0].resolvedAt);
 }));
 
 test("a failure after resolution creates a new alert and preserves resolved history", () => withStore(async store => {

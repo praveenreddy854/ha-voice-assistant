@@ -5,6 +5,10 @@ import type { EvalAlert, EvalBatch, EvalRun, RecordedEvalAttempt, StepGroup } fr
 import type { EvalJob } from "./worker";
 import { updateRecordedDailyOutcome } from "./scheduling";
 
+// Share queues across store instances (including directory aliases) in this
+// process. Worker processes remain excluded from recovery by worker.lock.
+const alertUpdates = new Map<string, Promise<void>>();
+
 export function digest(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 24);
 }
@@ -173,15 +177,33 @@ export class EvalStore {
     }
   }
   async alert(alert: EvalAlert): Promise<void> {
-    const previous = (await this.list<EvalAlert>("alerts")).find(a => a.key === alert.key && !a.resolvedAt);
-    // Deduplicate the open issue, not its evidence: a later failure can have a
-    // different cause or batch. Keep the stable ID and show its latest occurrence.
-    if (previous && Date.parse(alert.createdAt) < Date.parse(previous.createdAt)) return;
-    await this.write("alerts", { ...alert, id: previous?.id || alert.id });
+    await this.updateAlert(alert.key, async () => {
+      const previous = (await this.list<EvalAlert>("alerts")).find(a => a.key === alert.key && !a.resolvedAt);
+      // Deduplicate the open issue, not its evidence: a later failure can have a
+      // different cause or batch. Keep the stable ID and show its latest occurrence.
+      if (previous && Date.parse(alert.createdAt) < Date.parse(previous.createdAt)) return;
+      await this.write("alerts", { ...alert, id: previous?.id || alert.id });
+    });
   }
   async resolveAlert(key: string): Promise<void> {
-    for (const alert of await this.list<EvalAlert>("alerts")) if (alert.key === key && !alert.resolvedAt) {
-      await this.write("alerts", { ...alert, resolvedAt: new Date().toISOString() } as EvalAlert);
+    await this.updateAlert(key, async () => {
+      for (const alert of await this.list<EvalAlert>("alerts")) if (alert.key === key && !alert.resolvedAt) {
+        await this.write("alerts", { ...alert, resolvedAt: new Date().toISOString() } as EvalAlert);
+      }
+    });
+  }
+  private async updateAlert(key: string, update: () => Promise<void>): Promise<void> {
+    await fs.mkdir(this.directory, { recursive: true });
+    const identity = JSON.stringify([await fs.realpath(this.directory), key]);
+    const previous = alertUpdates.get(identity);
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    alertUpdates.set(identity, pending);
+    await previous;
+    try { await update(); }
+    finally {
+      release();
+      if (alertUpdates.get(identity) === pending) alertUpdates.delete(identity);
     }
   }
   async recoverInterruptedBatches(): Promise<void> {
