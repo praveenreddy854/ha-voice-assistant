@@ -42,6 +42,10 @@ The following operations are traced:
 
 ### 3. **Detailed Logging of Prompts and Responses**
 
+Home Assistant commands retain generated/normalized plans and retrieved memory
+IDs. See the [Home Assistant memory and telemetry reference](../docs/home-assistant-memory.md#telemetry)
+for translation stages, local wait results, and historical augmentation flags.
+
 Each trace contains:
 
 - **Input Prompts**: Complete prompts sent to Azure AI Agents
@@ -121,6 +125,13 @@ JSON from `GET /api/dashboards` (also aliased as
 Traces are written to daily `logs/service-telemetry-YYYY-MM-DD.jsonl` files.
 Each line is a complete OpenTelemetry span in JSON format. The legacy
 `logs/tv-agent-traces.jsonl` file is still read when present.
+
+Background TV jobs cannot resume through the interactive screenshot API. If automatic
+screenshot capture produces no frame, the child agent trace ends with `error` and
+the same failure reported by the job. Its retained model session and session-owned
+RTSP capture are released. Interactive agent requests still remain resumable while
+waiting for external input. A completed routing trace alone does not prove a
+background TV action succeeded.
 
 ### Example Trace Analysis
 

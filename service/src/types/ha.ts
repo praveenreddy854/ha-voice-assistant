@@ -31,3 +31,7 @@ export interface HassServiceCommand {
 
 // Support both single command and array of commands
 export type HassServiceCommandBody = HassServiceCommand | HassServiceCommand[];
+
+export type HassCommandTranslationResult =
+  | HassServiceCommandBody
+  | { error: "no_match" };

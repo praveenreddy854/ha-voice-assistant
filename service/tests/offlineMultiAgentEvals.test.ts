@@ -6,6 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import express from "express";
 import { createEvalRouter } from "../src/evals/api";
 import { baselineFor, fidelityPairs } from "../src/evals/analytics";
@@ -187,6 +188,84 @@ test("failed jobs and completed recorded histories retain each agent's identity"
   const statuses = sessionEvaluations(await recordedHistories(store));
   assert.equal(statuses["realtime-source"].latestAttempt?.agentId, "realtime");
   assert.equal(statuses["scheduled_task-source"].status, "eval_error");
+}));
+
+test("repeated worker failures refresh one open alert with current job evidence", () => withStore(async store => {
+  const stale: EvalAlert = { id: "first-failure", agentId: "realtime", key: "realtime:worker-failure",
+    batchId: "old-batch", kind: "incomplete", createdAt: "2026-09-21T07:03:06.388Z",
+    message: "Batch contains incomplete evals", runIds: ["old-run"] };
+  const other: EvalAlert = { ...stale, id: "tv-failure", agentId: "tv", key: "tv:worker-failure" };
+  await store.alert(stale);
+  await store.alert(other);
+  const job: EvalJob = { id: "current-realtime-job", agentId: "realtime", mode: "simulated", status: "running" };
+  const reason = "Configure AI_MODEL_REALTIME before running Realtime evals";
+  await store.write("jobs", job);
+  await store.failJob(job, reason);
+  const failed = await store.read<EvalJob>("jobs", job.id);
+  const current = await store.read<EvalAlert>("alerts", stale.id);
+  assert.deepEqual(current, { ...stale, batchId: job.id, message: reason, runIds: [], createdAt: failed!.finishedAt });
+  assert.equal((await store.list("alerts")).length, 2);
+  assert.deepEqual(await store.read("alerts", other.id), other);
+  // A delayed report must not replace newer evidence or create a duplicate.
+  await store.alert({ ...stale, id: "delayed-report" });
+  assert.deepEqual(await store.read("alerts", stale.id), current);
+  assert.equal((await store.list("alerts")).length, 2);
+}));
+
+test("overlapping refreshes across stores keep the newest evidence and one stable ID", () => withStore(async store => {
+  const initial: EvalAlert = { id: "stable-failure", agentId: "realtime", key: "realtime:worker-failure",
+    batchId: "initial", kind: "incomplete", createdAt: "2026-11-09T08:00:00Z", message: "Initial failure", runIds: [] };
+  await store.alert(initial);
+  const older = { ...initial, id: "older", batchId: "older", createdAt: "2026-11-09T09:00:00Z" };
+  const newer = { ...initial, id: "newer", batchId: "newer", createdAt: "2026-11-09T10:00:00Z" };
+  const other = new EvalStore(path.join(store.directory, "."));
+  const originalWrite = store.write.bind(store);
+  let reachedWrite!: () => void;
+  const writing = new Promise<void>(resolve => { reachedWrite = resolve; });
+  let finishNewer!: () => void;
+  const newerWritten = new Promise<void>(resolve => { finishNewer = resolve; });
+  store.write = async (kind, item) => {
+    if (kind === "alerts") {
+      reachedWrite();
+      // Without serialization, the newer write commits first and this delayed
+      // older write overwrites it. With serialization, newer waits for older.
+      await Promise.race([newerWritten, delay(100)]);
+    }
+    await originalWrite(kind, item);
+  };
+  const refreshingOlder = store.alert(older);
+  await writing;
+  const refreshingNewer = other.alert(newer).finally(finishNewer);
+  await Promise.all([refreshingOlder, refreshingNewer]);
+  assert.deepEqual(await store.list("alerts"), [{ ...newer, id: initial.id }]);
+}));
+
+test("overlapping initial alerts deduplicate and failed updates release their queue", () => withStore(async store => {
+  const alert: EvalAlert = { id: "first", agentId: "realtime", key: "realtime:worker-failure",
+    batchId: "first", kind: "incomplete", createdAt: "2026-11-09T08:00:00Z", message: "Failure", runIds: [] };
+  const other = new EvalStore(store.directory);
+  await Promise.all([store.alert(alert), other.alert({ ...alert, id: "second", createdAt: "2026-11-09T09:00:00Z" })]);
+  assert.equal((await store.list("alerts")).length, 1);
+  const originalWrite = store.write.bind(store);
+  store.write = async () => { throw new Error("Fixture write failure"); };
+  await assert.rejects(store.alert({ ...alert, createdAt: "2026-11-09T10:00:00Z" }), /Fixture write failure/);
+  store.write = originalWrite;
+  await other.resolveAlert(alert.key);
+  assert.ok((await store.list<EvalAlert>("alerts"))[0].resolvedAt);
+}));
+
+test("a failure after resolution creates a new alert and preserves resolved history", () => withStore(async store => {
+  const alert: EvalAlert = { id: "resolved-failure", agentId: "realtime", key: "realtime:worker-failure",
+    batchId: "old-batch", kind: "incomplete", createdAt: "2026-09-21T07:03:06.388Z", message: "Old failure", runIds: [] };
+  await store.alert(alert);
+  await store.resolveAlert(alert.key);
+  const resolved = await store.read<EvalAlert>("alerts", alert.id);
+  assert.ok(resolved?.resolvedAt);
+  const recurrence = { ...alert, id: "new-failure", batchId: "new-batch", createdAt: "2026-11-09T08:15:04.908Z", message: "New failure" };
+  await store.alert(recurrence);
+  assert.deepEqual(await store.read("alerts", alert.id), resolved);
+  assert.deepEqual(await store.read("alerts", recurrence.id), recurrence);
+  assert.equal((await store.list<EvalAlert>("alerts")).filter(row => !row.resolvedAt).length, 1);
 }));
 
 test("baseline, fidelity and semantic step groups never pool different agents", () => withStore(async store => {
