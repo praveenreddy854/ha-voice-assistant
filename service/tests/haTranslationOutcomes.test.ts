@@ -26,7 +26,8 @@ test("translation refusals and clarification do not execute device requests", as
   }
   t.mock.method(console, "error", () => undefined);
   const get = t.mock.method(axios, "get", async (url: string) => ({ status: 200, data: url.endsWith("/api/states")
-    ? [] : { entity_id: command.entity_id, state: "unknown", attributes: {} } }));
+    ? [{ entity_id: command.entity_id, state: "unknown", attributes: {} }]
+    : { entity_id: command.entity_id, state: "unknown", attributes: {} } }));
   const post = t.mock.method(axios, "post", async () => ({ status: 200, data: [] }));
   try {
     const { executeHACommand } = requireModule("../src/ha") as typeof import("../src/ha");

@@ -8,7 +8,6 @@ import { z } from "zod";
 import {
   formatMemoryContext,
   retrieveMemories,
-  type AgentMemoryDocument,
 } from "./memory";
 import { getTracer } from "./tracing";
 import type { AgentPauseGate } from "./agents/core/types";
@@ -24,29 +23,19 @@ function retainHAEvidence(callback: () => void): void {
 
 const promptCache = new Map<string, string>();
 const homeAssistantCacheKey = "HOMEASSISTANT";
-const LIVING_ROOM_PTZ_PRESET_ENTITY_ID = "select.living_room_ptz_preset";
-const LIVING_ROOM_GUARD_SET_BUTTON_ENTITY_ID =
-  "button.living_room_guard_set_current_position";
 const INTERNAL_WAIT_URL_PATH = "internal/wait";
-const GUARD_SET_WAIT_MS = 15000;
-const MEDIA_TRANSPORT_SERVICES: Record<string, string> = {
-  pause: "media_pause",
-  play: "media_play",
-  play_pause: "media_play_pause",
-  stop: "media_stop",
-  next: "media_next_track",
-  previous: "media_previous_track",
-};
-
-// Validate the entire translation before normalization or any device request.
-// Refusals must never be mixed into a partially executable command array.
-const translatedCommandSchema: z.ZodType<HassServiceCommand> = z.object({
-  url_path: z.string().refine(value => {
+const MAX_PLAN_WAIT_MS = 30000;
+const SERVICE_DATA_TARGET_SELECTORS = ["entity_id", "area_id", "device_id", "floor_id", "label_id", "target"];
+const haWaitDataSchema = z.object({
+  duration_ms: z.number().int().positive().max(MAX_PLAN_WAIT_MS),
+  reason: z.string().max(160).optional(),
+}).strict();
+const haCommandSchema: z.ZodType<HassServiceCommand> = z.object({
+  url_path: z.string().trim().min(1).refine(value => {
     const normalized = normalizeHAUrlPath(value);
     const parts = normalized.split("/");
     if (parts.length !== 2 || parts.some(part => !part.trim())) return false;
-    // Use execution's decoder during whole-plan validation. A malformed lookup
-    // must not fail only after an earlier command has already sent a request.
+    // Reject malformed state lookups before an earlier action can execute.
     try {
       return parts[0] !== "states" || Boolean(stateLookupEntityId(normalized));
     } catch {
@@ -55,13 +44,37 @@ const translatedCommandSchema: z.ZodType<HassServiceCommand> = z.object({
   }),
   entity_id: z.string().trim().min(1),
   service_data: z.record(z.string(), z.unknown()).optional(),
-}).passthrough().refine(value => !("error" in value) && !("clarification" in value));
-const translationResponseSchema: z.ZodType<HassTranslationResponse> = z.union([
+}).passthrough().superRefine((command, context) => {
+  if ("error" in command || "clarification" in command) {
+    context.addIssue({ code: "custom", message: "A command cannot contain a translation outcome." });
+  }
+  if (normalizeHAUrlPath(command.url_path) !== INTERNAL_WAIT_URL_PATH) return;
+  if (command.entity_id !== "__internal_wait__" || !haWaitDataSchema.safeParse(command.service_data).success) {
+    context.addIssue({ code: "custom", message: "Wait steps require __internal_wait__ and an integer duration_ms from 1 to 30000." });
+  }
+});
+const haTranslationSchema: z.ZodType<HassTranslationResponse> = z.union([
+  haCommandSchema,
+  z.array(haCommandSchema).min(1),
   z.object({ error: z.literal("no_match") }).strict(),
   z.object({ clarification: z.string().trim().min(1).max(1000) }).strict(),
-  translatedCommandSchema,
-  z.array(translatedCommandSchema).min(1),
-]);
+]).superRefine((body, context) => {
+  if (!Array.isArray(body) && ("error" in body || "clarification" in body)) return;
+  const commands = Array.isArray(body) ? body : [body];
+  const totalWaitMs = commands.reduce((total, command) => total +
+    (normalizeHAUrlPath(command.url_path) === INTERNAL_WAIT_URL_PATH ? Number(command.service_data?.duration_ms) : 0), 0);
+  if (totalWaitMs > MAX_PLAN_WAIT_MS) {
+    context.addIssue({ code: "custom", message: "Command plans may wait at most 30000ms in total. Use a scheduled task for longer delays." });
+  }
+});
+const MEDIA_TRANSPORT_SERVICES: Record<string, string> = {
+  pause: "media_pause",
+  play: "media_play",
+  play_pause: "media_play_pause",
+  stop: "media_stop",
+  next: "media_next_track",
+  previous: "media_previous_track",
+};
 
 export interface HAExecutionOptions {
   abortSignal?: AbortSignal;
@@ -79,10 +92,12 @@ async function waitForRunPermission(
 export async function getHACommandBody(
   command: string,
   messageHistory?: Array<{ role: string; content: string }>,
-  options?: HAExecutionOptions
+  options?: HAExecutionOptions,
+  memoryContext = ""
 ): Promise<HassTranslationResponse> {
   await waitForRunPermission(options);
-  const prompt = await getHAPrompt(command, options);
+  const deviceStates = await getDeviceStates(undefined, options);
+  const prompt = renderHAPrompt(command, deviceStates, memoryContext);
 
   // Combine message history with current prompt
   const messages = [
@@ -112,7 +127,13 @@ export async function getHACommandBody(
     });
     await waitForRunPermission(options);
     stage = "response_parse";
-    return translationResponseSchema.parse(JSON.parse(responseText));
+    const body = haTranslationSchema.parse(JSON.parse(responseText));
+    stage = "plan_validation";
+    if (Array.isArray(body) || !("error" in body || "clarification" in body)) {
+      validateHAPlan(body, deviceStates);
+      validateHAPlan(normalizeMediaTransportCommands(body).body, deviceStates);
+    }
+    return body;
   } catch (error) {
     if (options?.abortSignal?.aborted) {
       throw options.abortSignal.reason ?? error;
@@ -127,6 +148,14 @@ export async function getHACommandBody(
 }
 
 export async function getHAPrompt(command: string, options?: HAExecutionOptions): Promise<string> {
+  return renderHAPrompt(command, await getDeviceStates(undefined, options));
+}
+
+function renderHAPrompt(
+  command: string,
+  deviceStates: Record<string, HassState[]>,
+  memoryContext = ""
+): string {
   if (!promptCache.has(homeAssistantCacheKey)) {
     const prompt = fs.readFileSync(
       path.join(__dirname, "prompts", "HOMEASSISTANT.md"),
@@ -135,11 +164,39 @@ export async function getHAPrompt(command: string, options?: HAExecutionOptions)
     promptCache.set(homeAssistantCacheKey, prompt);
   }
 
-  // Cache only the template; device state and entity options must stay current.
-  const deviceStates = await getDeviceStates(undefined, options);
+  // Cache only the template; current devices and scoped memory are per request.
+  const values: Record<string, string> = {
+    Devices: JSON.stringify(deviceStates, null, 2),
+    Memory: memoryContext || "No relevant persistent memory.",
+    UserCommand: command,
+  };
   return promptCache.get(homeAssistantCacheKey)!
-    .replace("{{{Devices}}}", () => JSON.stringify(deviceStates, null, 2))
-    .replace("{{{UserCommand}}}", () => command);
+    .replace(/\{\{\{(Devices|Memory|UserCommand)\}\}\}/g, (_match, key: string) => values[key]);
+}
+
+function validateHAPlan(body: HassTranslationResponse, deviceStates: Record<string, HassState[]>): void {
+  if (!Array.isArray(body) && ("error" in body || "clarification" in body)) return;
+  const states = new Map(Object.values(deviceStates).flat().map(state => [state.entity_id, state]));
+  for (const command of Array.isArray(body) ? body : [body]) {
+    const urlPath = normalizeHAUrlPath(command.url_path);
+    if (urlPath === INTERNAL_WAIT_URL_PATH) continue;
+    const state = states.get(command.entity_id);
+    if (!state) throw new Error("The command references an entity outside the current configured device list.");
+    if (command.service_data && SERVICE_DATA_TARGET_SELECTORS.some(key =>
+      Object.prototype.hasOwnProperty.call(command.service_data, key)
+    )) throw new Error("Service data must not add or override the command target.");
+    if (urlPath.startsWith("states/")) {
+      if (stateLookupEntityId(urlPath) !== command.entity_id) throw new Error("State lookup and command entity must match.");
+      continue;
+    }
+    if (!/^[a-z][a-z0-9_]*\/[a-z][a-z0-9_]*$/.test(urlPath)) throw new Error("Invalid Home Assistant service path.");
+    if (urlPath === "select/select_option") {
+      const option = command.service_data?.option;
+      if (typeof option !== "string" || !Array.isArray(state.attributes.options) || !state.attributes.options.includes(option)) {
+        throw new Error("The selected option is not available in the current device options.");
+      }
+    }
+  }
 }
 
 export async function fetchAllStates(
@@ -338,34 +395,41 @@ async function executeHACommandInternal(
 
   try {
     await waitForRunPermission(options);
-    const memory = await buildMemoryAwareCommand(command);
+    const memories = await retrieveMemories({
+      query: command, agentType: "realtime", limit: 10,
+      preferCache: false, useEmbedding: false,
+    });
+    const memoryContext = formatMemoryContext(memories);
     await waitForRunPermission(options);
-    span.setAttribute("ha.memory.context_present", Boolean(memory.context));
-    span.setAttribute("ha.memory.ids", memory.memories.map((item) => item.id).join(","));
+    span.setAttribute("ha.memory.context_present", Boolean(memoryContext));
+    span.setAttribute("ha.memory.ids", memories.map((item) => item.id).join(","));
 
     // Get the HA command body using the existing LLM function
     const generatedHaBody = await getHACommandBody(
-      memory.command,
+      command,
       messageHistory,
-      options
+      options,
+      memoryContext
     );
-    if ("error" in generatedHaBody || "clarification" in generatedHaBody) {
+    if (!Array.isArray(generatedHaBody) && ("error" in generatedHaBody || "clarification" in generatedHaBody)) {
       const message = "error" in generatedHaBody
-        ? "Could not match the complete request to available Home Assistant controls. No device requests were sent. Specify the device and action, or split the request."
+        ? "Could not match the complete request to available Home Assistant controls. No matching Home Assistant device or supported action was found; no device requests were sent. Specify the device and action, or split the request."
         : `${generatedHaBody.clarification} No device requests were sent.`;
+      span.setAttribute("ha.command.generated_body", JSON.stringify(generatedHaBody));
       span.setAttribute("ha.command.success", false);
       span.setAttribute("ha.command.result_message", message);
-      return { success: false, message };
+      const traceId = getActiveSessionId();
+      if (traceId) retainHAEvidence(() => addEvent(traceId, "ha.translation.resolved", "Home Assistant command translation outcome", {
+        generated: generatedHaBody, plan: generatedHaBody,
+        memoryIds: memories.map(item => item.id),
+        outcome: "error" in generatedHaBody ? "no_match" : "clarification",
+      }));
+      return { success: false, message, data: generatedHaBody };
     }
     const {
-      body: normalizedHaBody,
+      body: haBody,
       normalizedCount: mediaTransportNormalizedCount,
     } = normalizeMediaTransportCommands(generatedHaBody);
-    const { body: haBody, guardSetApplied } = applyMemoryCommandAugmentations(
-      normalizedHaBody,
-      command,
-      memory.memories
-    );
 
     span.setAttribute("ha.command.generated_body", JSON.stringify(generatedHaBody));
     span.setAttribute("ha.command.final_body", JSON.stringify(haBody));
@@ -373,10 +437,9 @@ async function executeHACommandInternal(
       "ha.command.media_transport_normalized_count",
       mediaTransportNormalizedCount
     );
-    span.setAttribute("ha.guard_set_current_position.applied", guardSetApplied);
     const traceId = getActiveSessionId();
     if (traceId) retainHAEvidence(() => addEvent(traceId, "ha.translation.resolved", "Generated and normalized command plan", {
-      generated: generatedHaBody, plan: haBody, guardSetApplied, memoryIds: memory.memories.map(item => item.id),
+      generated: generatedHaBody, plan: haBody, memoryIds: memories.map(item => item.id),
     }));
     
     // Handle array of commands (multi-step operations)
@@ -408,102 +471,6 @@ async function executeHACommandInternal(
   } finally {
     span.end();
   }
-}
-
-async function buildMemoryAwareCommand(command: string): Promise<{
-  command: string;
-  context: string;
-  memories: AgentMemoryDocument[];
-}> {
-  const memories = await retrieveMemories({
-    query: command,
-    agentType: "realtime",
-    limit: 10,
-    preferCache: false,
-    useEmbedding: false,
-  });
-  const context = formatMemoryContext(memories);
-  if (!context) return { command, context, memories };
-  return {
-    command: [
-      command,
-      "",
-      "Persistent memory to apply while translating this Home Assistant command:",
-      context,
-    ].join("\n"),
-    context,
-    memories,
-  };
-}
-
-function applyMemoryCommandAugmentations(
-  body: HassServiceCommandBody,
-  originalCommand: string,
-  memories: AgentMemoryDocument[]
-): { body: HassServiceCommandBody; guardSetApplied: boolean } {
-  if (!shouldSetLivingRoomGuardPosition(body, originalCommand, memories)) {
-    return { body, guardSetApplied: false };
-  }
-
-  const commands = Array.isArray(body) ? [...body] : [body];
-  const alreadySetsGuard = commands.some(
-    (command) => command.entity_id === LIVING_ROOM_GUARD_SET_BUTTON_ENTITY_ID
-  );
-  if (!alreadySetsGuard) {
-    commands.push(
-      {
-        url_path: INTERNAL_WAIT_URL_PATH,
-        entity_id: "__internal_wait__",
-        service_data: {
-          duration_ms: GUARD_SET_WAIT_MS,
-          reason: "wait for living room camera PTZ preset movement before setting guard position",
-        },
-      },
-      {
-        url_path: "button/press",
-        entity_id: LIVING_ROOM_GUARD_SET_BUTTON_ENTITY_ID,
-      }
-    );
-  }
-
-  return { body: commands, guardSetApplied: !alreadySetsGuard };
-}
-
-function shouldSetLivingRoomGuardPosition(
-  body: HassServiceCommandBody,
-  originalCommand: string,
-  memories: AgentMemoryDocument[]
-): boolean {
-  const commands = Array.isArray(body) ? body : [body];
-  const selectsLivingRoomPreset = commands.some(
-    (command) => command.entity_id === LIVING_ROOM_PTZ_PRESET_ENTITY_ID
-  );
-  if (!selectsLivingRoomPreset) return false;
-
-  const normalizedCommand = originalCommand.toLowerCase();
-  const commandMentionsPresetCamera =
-    normalizedCommand.includes("living room") &&
-    normalizedCommand.includes("camera") &&
-    normalizedCommand.includes("preset");
-
-  const hasGuardPresetMemory = memories.some((memory) => {
-    const haystack = [
-      memory.text,
-      ...(memory.scopes.deviceNames || []),
-      ...(memory.scopes.roomNames || []),
-      ...(memory.scopes.tags || []),
-    ]
-      .join(" ")
-      .toLowerCase();
-    return (
-      haystack.includes("living room") &&
-      haystack.includes("camera") &&
-      haystack.includes("preset") &&
-      haystack.includes("guard")
-    );
-  });
-
-  return commandMentionsPresetCamera && hasGuardPresetMemory;
 }
 
 /**
@@ -595,7 +562,9 @@ async function executeSingleHACommand(
   const started = Date.now(), traceId = getActiveSessionId();
   const record = (observation: string, success: boolean) => {
     if (traceId) retainHAEvidence(() => trackToolResult(traceId, {
-      toolCallId: randomUUID(), toolName: "home_assistant_request", args: { ...haBody },
+      toolCallId: randomUUID(),
+      toolName: normalizeHAUrlPath(haBody.url_path) === INTERNAL_WAIT_URL_PATH ? "wait" : "home_assistant_request",
+      args: { ...haBody },
       observation, toolSuccess: success, durationMs: Date.now() - started,
     }));
   };
@@ -604,7 +573,7 @@ async function executeSingleHACommand(
     record(JSON.stringify(result), result.success);
     return result;
   } catch (error) {
-    record(error instanceof Error ? error.message : String(error), false);
+    record(safeErrorDetails(error).message, false);
     throw error;
   }
 }
@@ -617,10 +586,7 @@ async function executeSingleHACommandInternal(
   await waitForRunPermission(options);
   const urlPath = normalizeHAUrlPath(haBody.url_path || "");
   if (urlPath === INTERNAL_WAIT_URL_PATH) {
-    const durationMs =
-      typeof haBody.service_data?.duration_ms === "number"
-        ? Math.max(0, Math.min(haBody.service_data.duration_ms, 30000))
-        : 0;
+    const { duration_ms: durationMs, reason } = haWaitDataSchema.parse(haBody.service_data);
     if (durationMs > 0) {
       await delay(durationMs, options?.abortSignal);
       await waitForRunPermission(options);
@@ -628,7 +594,7 @@ async function executeSingleHACommandInternal(
     return {
       success: true,
       message: `Waited ${durationMs}ms`,
-      data: { durationMs, reason: haBody.service_data?.reason },
+      data: { durationMs, reason },
     };
   }
 
@@ -775,40 +741,40 @@ async function executeMultipleHACommands(
   console.log(`Executing ${commands.length} HA commands in sequence for: ${originalCommand}`);
   
   const results: any[] = [];
-  const errors: string[] = [];
   
   for (let i = 0; i < commands.length; i++) {
     await waitForRunPermission(options);
     const cmd = commands[i];
     console.log(`Executing command ${i + 1}/${commands.length}:`, cmd);
     
-    const result = await executeSingleHACommand(
-      cmd,
-      `Step ${i + 1}: ${cmd.url_path}`,
-      options
-    );
+    let result: { success: boolean; message: string; data?: any };
+    try {
+      result = await executeSingleHACommand(cmd, `Step ${i + 1}: ${cmd.url_path}`, options);
+    } catch (error) {
+      // Cancellation belongs to the run lifecycle; transport failures belong to
+      // this step so callers retain results from the completed part of the plan.
+      options?.abortSignal?.throwIfAborted();
+      const details = safeErrorDetails(error);
+      result = {
+        success: false,
+        message: `Home Assistant request failed${details.statusCode ? ` (HTTP ${details.statusCode})` : ""}: ${details.message}`,
+      };
+    }
     results.push(result.data);
     
     if (!result.success) {
-      errors.push(`Step ${i + 1} failed: ${result.message}`);
-      // Continue executing remaining commands even if one fails
-      console.warn(`Command ${i + 1} failed, continuing with remaining commands...`);
+      const skipped = commands.length - i - 1;
+      return {
+        success: false,
+        message: `Step ${i + 1} failed: ${result.message}. ${i}/${commands.length} commands succeeded; ${skipped} remaining commands skipped.`,
+        data: results,
+      };
     }
     
     // Add a small delay between commands to allow the device to process
     if (i < commands.length - 1) {
       await delay(300, options?.abortSignal);
     }
-  }
-  
-  if (errors.length > 0) {
-    return {
-      success: errors.length < commands.length, // Partial success if some commands succeeded
-      message: errors.length === commands.length 
-        ? `All ${commands.length} commands failed: ${errors.join('; ')}`
-        : `${commands.length - errors.length}/${commands.length} commands succeeded. Errors: ${errors.join('; ')}`,
-      data: results,
-    };
   }
   
   return {

@@ -35,7 +35,9 @@ physical action completed. Remote and TV wake paths remain available.
 New Home Assistant execution traces retain ha.translation.failed events with
 the translation stage, configured model, sanitized error message, and HTTP
 status when supplied by the provider. model_request identifies a provider
-failure; response_parse identifies invalid command JSON. These diagnostics
+failure; response_parse identifies invalid command JSON or wait limits;
+plan_validation identifies a stale/unconfigured entity, mismatched state-query
+target, or unsupported current select option. These diagnostics
 avoid retaining provider request objects and credentials. Inspect /telemetry
 on the service for new traces; previously unrecorded errors cannot be
 reconstructed retrospectively.
@@ -43,6 +45,37 @@ reconstructed retrospectively.
 Reasoning-model text and vision calls omit unsupported temperature settings.
 Sampling remains available for conventional chat models and custom deployment
 names, using recognizable model families from the installed AI SDK.
+
+### Living room camera presets and guard mode
+
+The November 17 telemetry review found `{"error":"no_match"}` translation
+responses for preset requests that also enabled guard mode. The translator's
+filtered device list contained the preset selector and guard-position button,
+but omitted `switch.living_room_guard_return`, although Home Assistant exposed
+that switch with state `off`. A successful preset-only request on November 15
+used the selector, a 15-second settling wait, and the guard-position button.
+
+Include all required controls in the running service's `HOME_ASSISTANT_DEVICES`
+list (preserve its other configured entries):
+
+```env
+HOME_ASSISTANT_DEVICES=select.living_room_ptz_preset,button.living_room_guard_set_current_position,switch.living_room_guard_return
+```
+
+Restart the service after updating its environment and deploying the code and
+prompt. Saving a guard position does not enable automatic guard return; the
+switch is a separate action. Device-specific sequencing and settling times
+belong in [scoped persistent memory](home-assistant-memory.md), not in the
+executor or shared translation prompt. Existing applicable preferences are
+retrieved for each command; update their guidance with the required timing to
+replace the former hardcoded 15-second delay.
+
+The executor reports `no_match` as an unresolved device/action, validates the
+entire generated plan against the current configured entities and select
+options before executing its first step, supports explicit bounded local waits,
+and stops at the first failed step. It does not infer or append device-specific
+actions or delays. Partial execution is a failed request, not successful
+completion. A wait does not verify the physical position.
 
 ## Deployment verification
 

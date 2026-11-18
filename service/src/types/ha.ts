@@ -36,3 +36,5 @@ export type HassServiceCommandBody = HassServiceCommand | HassServiceCommand[];
 export type HassTranslationResponse = HassServiceCommandBody
   | { error: "no_match" }
   | { clarification: string };
+
+export type HassCommandTranslationResult = HassTranslationResponse;

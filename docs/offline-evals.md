@@ -488,3 +488,13 @@ The [local data audit](./offline-eval-data-audit.md) supports starting recorded-
 - Notifications currently use persistent dashboard alerts. External delivery has no selected destination.
 - Recorded runs are selected through the multi-select session dialog, or by session ID through the CLI/API. Missing metadata or evidence remains unknown; historic system-only prompt hashes cannot claim equivalence with full simulated prompt/skill/tool manifests.
 - Fidelity comparisons are conservative: incompatible or unknown configurations remain unmatched. No aggregate simulation-accuracy score is inferred from unmatched data.
+
+### Repeated alerts
+
+An unresolved alert is deduplicated by key (including the agent identity). Repeated
+failures refresh that alert's message, batch/run references and occurrence time
+while retaining its ID. Older delayed reports do not replace newer evidence.
+Resolved alerts remain in history; a later recurrence creates a new alert.
+Job records retain individual worker attempts, including failures before any
+scenario produces a run summary. Inspect these jobs when a suite has no recent
+results; passing suites do not establish coverage for a failed worker.
