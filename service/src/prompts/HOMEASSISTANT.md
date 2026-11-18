@@ -73,6 +73,10 @@ Local wait:
 Error:
 {"error":"no_match"}
 
+If a user decision is required to safely complete an otherwise actionable
+request, return only {"clarification":"<specific question>"}. Do not invent the
+missing detail or include executable commands alongside the question.
+
 ## Examples
 
 Example entity IDs below are illustrative. Use only IDs in the actual devices.

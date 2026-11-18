@@ -69,6 +69,8 @@ export interface AgentLoopConfig {
   tools: ToolDefinition[];
   maxIterations?: number;
   model?: string;
+  /** Require a tool call on each provider step, including the completion handoff. */
+  requireToolCall?: boolean;
   /** Optional observation middleware; offline evals retain raw calls before tool validation. */
   modelMiddleware?: LanguageModelMiddleware;
   /** Called after each LLM step for logging/tracking. */
@@ -350,6 +352,7 @@ export function createAgentLoop(
       const result = await generateText<typeof aiTools, AgentToolContext>({
         model: config.modelMiddleware ? wrapLanguageModel({ model: languageModel, middleware: config.modelMiddleware }) : languageModel,
         tools: aiTools,
+        toolChoice: config.requireToolCall ? "required" : "auto",
         system: systemPrompt,
         messages: session.messages,
         abortSignal,

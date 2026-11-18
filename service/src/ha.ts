@@ -1,10 +1,10 @@
 import { HOME_ASSISTANT_URL, HOME_ASSISTANT_TOKEN, AI_MODEL_HOME_ASSISTANT } from "./config";
 import fs from "fs";
 import path from "path";
-import { HassServiceCommandBody, HassServiceCommand, HassState, HassCommandTranslationResult } from "./types/ha";
-import { z } from "zod";
+import { HassServiceCommandBody, HassServiceCommand, HassState, HassTranslationResponse } from "./types/ha";
 import { generateCompletion } from "./ai";
 import axios from "axios";
+import { z } from "zod";
 import {
   formatMemoryContext,
   retrieveMemories,
@@ -30,22 +30,37 @@ const haWaitDataSchema = z.object({
   duration_ms: z.number().int().positive().max(MAX_PLAN_WAIT_MS),
   reason: z.string().max(160).optional(),
 }).strict();
-const haCommandSchema = z.object({
-  url_path: z.string().trim().min(1),
+const haCommandSchema: z.ZodType<HassServiceCommand> = z.object({
+  url_path: z.string().trim().min(1).refine(value => {
+    const normalized = normalizeHAUrlPath(value);
+    const parts = normalized.split("/");
+    if (parts.length !== 2 || parts.some(part => !part.trim())) return false;
+    // Reject malformed state lookups before an earlier action can execute.
+    try {
+      return parts[0] !== "states" || Boolean(stateLookupEntityId(normalized));
+    } catch {
+      return false;
+    }
+  }),
   entity_id: z.string().trim().min(1),
   service_data: z.record(z.string(), z.unknown()).optional(),
 }).passthrough().superRefine((command, context) => {
+  if ("error" in command || "clarification" in command) {
+    context.addIssue({ code: "custom", message: "A command cannot contain a translation outcome." });
+  }
   if (normalizeHAUrlPath(command.url_path) !== INTERNAL_WAIT_URL_PATH) return;
   if (command.entity_id !== "__internal_wait__" || !haWaitDataSchema.safeParse(command.service_data).success) {
     context.addIssue({ code: "custom", message: "Wait steps require __internal_wait__ and an integer duration_ms from 1 to 30000." });
   }
 });
-const haTranslationSchema = z.union([
+const haTranslationSchema: z.ZodType<HassTranslationResponse> = z.union([
   haCommandSchema,
   z.array(haCommandSchema).min(1),
-  z.object({ error: z.literal("no_match") }),
+  z.object({ error: z.literal("no_match") }).strict(),
+  z.object({ clarification: z.string().trim().min(1).max(1000) }).strict(),
 ]).superRefine((body, context) => {
-  const commands = Array.isArray(body) ? body : "error" in body ? [] : [body];
+  if (!Array.isArray(body) && ("error" in body || "clarification" in body)) return;
+  const commands = Array.isArray(body) ? body : [body];
   const totalWaitMs = commands.reduce((total, command) => total +
     (normalizeHAUrlPath(command.url_path) === INTERNAL_WAIT_URL_PATH ? Number(command.service_data?.duration_ms) : 0), 0);
   if (totalWaitMs > MAX_PLAN_WAIT_MS) {
@@ -79,7 +94,7 @@ export async function getHACommandBody(
   messageHistory?: Array<{ role: string; content: string }>,
   options?: HAExecutionOptions,
   memoryContext = ""
-): Promise<HassCommandTranslationResult> {
+): Promise<HassTranslationResponse> {
   await waitForRunPermission(options);
   const deviceStates = await getDeviceStates(undefined, options);
   const prompt = renderHAPrompt(command, deviceStates, memoryContext);
@@ -114,8 +129,8 @@ export async function getHACommandBody(
     stage = "response_parse";
     const body = haTranslationSchema.parse(JSON.parse(responseText));
     stage = "plan_validation";
-    validateHAPlan(body, deviceStates);
-    if (Array.isArray(body) || !("error" in body)) {
+    if (Array.isArray(body) || !("error" in body || "clarification" in body)) {
+      validateHAPlan(body, deviceStates);
       validateHAPlan(normalizeMediaTransportCommands(body).body, deviceStates);
     }
     return body;
@@ -159,8 +174,8 @@ function renderHAPrompt(
     .replace(/\{\{\{(Devices|Memory|UserCommand)\}\}\}/g, (_match, key: string) => values[key]);
 }
 
-function validateHAPlan(body: HassCommandTranslationResult, deviceStates: Record<string, HassState[]>): void {
-  if (!Array.isArray(body) && "error" in body) return;
+function validateHAPlan(body: HassTranslationResponse, deviceStates: Record<string, HassState[]>): void {
+  if (!Array.isArray(body) && ("error" in body || "clarification" in body)) return;
   const states = new Map(Object.values(deviceStates).flat().map(state => [state.entity_id, state]));
   for (const command of Array.isArray(body) ? body : [body]) {
     const urlPath = normalizeHAUrlPath(command.url_path);
@@ -396,15 +411,18 @@ async function executeHACommandInternal(
       options,
       memoryContext
     );
-    if (!Array.isArray(generatedHaBody) && "error" in generatedHaBody) {
-      const message = "No matching Home Assistant device or supported action was found. Check that the requested device controls are available to the assistant.";
+    if (!Array.isArray(generatedHaBody) && ("error" in generatedHaBody || "clarification" in generatedHaBody)) {
+      const message = "error" in generatedHaBody
+        ? "Could not match the complete request to available Home Assistant controls. No matching Home Assistant device or supported action was found; no device requests were sent. Specify the device and action, or split the request."
+        : `${generatedHaBody.clarification} No device requests were sent.`;
       span.setAttribute("ha.command.generated_body", JSON.stringify(generatedHaBody));
       span.setAttribute("ha.command.success", false);
       span.setAttribute("ha.command.result_message", message);
       const traceId = getActiveSessionId();
-      if (traceId) retainHAEvidence(() => addEvent(traceId, "ha.translation.resolved", "No matching Home Assistant command plan", {
+      if (traceId) retainHAEvidence(() => addEvent(traceId, "ha.translation.resolved", "Home Assistant command translation outcome", {
         generated: generatedHaBody, plan: generatedHaBody,
         memoryIds: memories.map(item => item.id),
+        outcome: "error" in generatedHaBody ? "no_match" : "clarification",
       }));
       return { success: false, message, data: generatedHaBody };
     }

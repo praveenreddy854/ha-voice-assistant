@@ -39,7 +39,7 @@ export const evalAgents: Record<EvalAgentId, EvalAgentRegistration> = {
   realtime: {
     id: "realtime",
     name: "Realtime Voice Agent",
-    description: "Text/tool decisions on the configured Realtime deployment: routing, confirmations, follow-ups, run control and memory. Audio quality is not assessed.",
+    description: "Production delegated AI SDK reasoning: routing, confirmations, follow-ups, run control and fixture memory. GPT Live transport and audio quality are not assessed.",
     recordedExpectations: "Assess routing and preservation of the user's target and qualifiers, confirmations, follow-up signaling and scoped memory. A protected opening or bulk destructive action needs actual user confirmation. An accepted async job warrants 'On it', not a claim that the device action finished. Do not require a specialist's eventual completion during this voice turn. Missing audio cannot establish speech or microphone quality.",
     scenarios: async () => (await import("./realtime/scenarios")).realtimeScenarios,
     createAdapter: async model => (await import("./realtime/adapter")).createRealtimeAdapter(model),
