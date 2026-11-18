@@ -1,0 +1,53 @@
+name: Enforce Copilot approval
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+# This job uses only GitHub review metadata and never executes pull request code.
+permissions:
+  pull-requests: read
+
+jobs:
+  copilot-approval:
+    name: copilot-pull-request-reviewer
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify Copilot approved the pull request head
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const pull_number = context.payload.pull_request.number;
+            const expectedHead = context.payload.pull_request.head.sha;
+
+            const reviews = await github.paginate(github.rest.pulls.listReviews, {
+              owner, repo, pull_number, per_page: 100,
+            });
+            const { data: pull } = await github.rest.pulls.get({
+              owner, repo, pull_number,
+            });
+            if (pull.head.sha !== expectedHead) {
+              core.setFailed('This run is for a previous revision. Check the run for the latest push.');
+              return;
+            }
+
+            const latestReview = reviews.filter(review =>
+              review.user?.id === 175728472 &&
+              review.user?.login === 'copilot-pull-request-reviewer[bot]' &&
+              review.user?.type === 'Bot' &&
+              review.commit_id === expectedHead &&
+              review.submitted_at
+            ).sort((left, right) =>
+              Date.parse(right.submitted_at) - Date.parse(left.submitted_at) ||
+              right.id - left.id
+            )[0];
+
+            if (latestReview?.state !== 'APPROVED') {
+              core.setFailed('The latest Copilot review of this commit must be an approval.');
+              return;
+            }
+            core.info('Copilot approved the current pull request commit.');
