@@ -185,3 +185,29 @@ for (const observe of [false, true]) test(`keeps all automatic tool history exac
     loop.deleteSession(session.id);
   }
 });
+
+for (const required of [false, true]) test(`provider tool calls are ${required ? "required for voice" : "automatic by default"} through the completion handoff`, async () => {
+  const { createAgentLoop } = await import("../src/agents/core/agentLoop");
+  const model = new MockLanguageModelV4({ doGenerate: [
+    toolCall("route-1", "route_request"),
+    toolCall("complete-1", "complete_task", { success: true, message: "On it." }),
+  ] });
+  let routes = 0;
+  const loop = createAgentLoop({
+    systemPrompt: "Route once, then acknowledge using complete_task.", model: "test", maxIterations: 3,
+    ...(required ? { requireToolCall: true } : {}),
+    tools: [{ type: "function", function: { name: "route_request", parameters: { type: "object", properties: {} } },
+      execute: async () => { routes++; return { accepted: true, jobId: "synthetic-job" }; } }],
+  }, () => model);
+  const session = loop.createSession("Move the test camera");
+  try {
+    const result = await loop.run(session.id);
+    assert.equal(result.type, "complete");
+    assert.equal(result.message, "On it.");
+    assert.equal(routes, 1, "finalization does not replay the routed action");
+    assert.equal(model.doGenerateCalls.length, 2);
+    for (const call of model.doGenerateCalls) {
+      assert.deepEqual(call.toolChoice, { type: required ? "required" : "auto" });
+    }
+  } finally { loop.deleteSession(session.id); }
+});
