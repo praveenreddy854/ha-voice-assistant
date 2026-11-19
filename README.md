@@ -116,6 +116,10 @@ not replayed. The existing durable, voice-created ScheduledTasks keep their own
 firing path. Announcements use the existing SSE stream and need a connected
 browser for speech playback.
 
+Proactive reminder summaries also have a 10-second model deadline, then use the
+existing deterministic reminder fallback. Shutdown cancels model requests and
+suppresses announcements; cancelled evaluations leave the episode eligible.
+
 ### Installation & Setup
 
 1. **Clone the repository**
