@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import test from "node:test";
-import { describeDeviceMonitorConfigError, loadDeviceMonitorJobs, parseDeviceMonitorJobs, registerDeviceMonitorJobs } from "../src/deviceMonitorJobs";
+import { Databases } from "@azure/cosmos";
+import { describeDeviceMonitorConfigError, parseDeviceMonitorJobs, registerDeviceMonitorJobs } from "../src/deviceMonitorJobs";
 import { z } from "zod";
 import type { CronJob } from "../src/cronJobs";
 import type { HassState } from "../src/types/ha";
@@ -43,16 +41,13 @@ function fixture(overrides: Record<string, unknown> = {}) {
   };
 }
 
-test("no monitors run by default; JSON configuration and the example validate", t => {
-  assert.deepEqual(loadDeviceMonitorJobs(), []);
-  assert.equal(loadDeviceMonitorJobs(path.join(__dirname, "../device-monitor-jobs.example.json")).length, 2);
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "device-monitor-jobs-"));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  const file = path.join(directory, "jobs.json");
-  fs.writeFileSync(file, JSON.stringify([input]));
-  assert.equal(loadDeviceMonitorJobs(file)[0].cron, "* * * * * *");
-  fs.writeFileSync(file, "not json");
-  assert.throws(() => loadDeviceMonitorJobs(file));
+test("no Cosmos credentials means no device monitors and no database access", async t => {
+  process.env.AZURE_COSMOS_ENDPOINT = "";
+  process.env.AZURE_COSMOS_KEY = "";
+  const connect = t.mock.method(Databases.prototype, "createIfNotExists", () => assert.fail("Unexpected Cosmos connection"));
+  const { loadDeviceMonitorJobs } = await import("../src/cosmos");
+  assert.deepEqual(await loadDeviceMonitorJobs(), []);
+  assert.equal(connect.mock.callCount(), 0);
 });
 
 test("configuration rejects invalid cron, timezone, IDs, conditions and duplicate IDs", () => {
@@ -64,12 +59,9 @@ test("configuration rejects invalid cron, timezone, IDs, conditions and duplicat
   assert.throws(() => parseDeviceMonitorJobs([input, input]), /Duplicate job ID/);
 });
 
-test("startup diagnostics distinguish filesystem, JSON and schema failures without exposing values", () => {
+test("startup diagnostics report Cosmos status and schema failures without exposing values", () => {
   const secret = "private-household-device-and-announcement";
-  assert.deepEqual(describeDeviceMonitorConfigError(Object.assign(new Error(`/private/${secret}`), { code: "ENOENT", path: secret })), { type: "Error", code: "ENOENT" });
-  try { JSON.parse(`{"${secret}": invalid}`); } catch (error) {
-    assert.deepEqual(describeDeviceMonitorConfigError(error), { type: "SyntaxError" });
-  }
+  assert.deepEqual(describeDeviceMonitorConfigError(Object.assign(new Error(secret), { code: 403 })), { type: "Error", statusCode: 403 });
   try {
     parseDeviceMonitorJobs([{ ...input, timezone: secret, conditions: [{ field: secret, operator: "equals", value: secret }], [secret]: secret }]);
     assert.fail("Expected invalid configuration");

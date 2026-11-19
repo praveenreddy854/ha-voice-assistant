@@ -77,18 +77,17 @@ full attribute payload to support AI-driven reminders.
 
 Device monitoring runs on the service through the existing `node-cron` library.
 The laundry/vacuum-specific endpoints, browser timers and local monitoring toggles
-have been removed. Configure any device using a JSON array of jobs:
+have been removed. Device monitor definitions live in the `cron-jobs` container
+in `AZURE_COSMOS_DATABASE` (override its name with `AZURE_COSMOS_CRON_JOBS_CONTAINER`).
+With Cosmos configured, the service creates the container if needed, partitioned
+by `/id`. It never seeds jobs. Without Cosmos credentials or with an empty
+container, no device monitors run.
 
-```env
-# Optional; absolute path or relative to the service's working directory
-DEVICE_MONITOR_JOBS_FILE=./device-monitor-jobs.json
-```
-
-Copy `service/device-monitor-jobs.example.json` to your own file, set the entity IDs,
-schedules and announcements, then restart the service. Without this setting, no
-device monitor jobs run. Invalid configuration is rejected before registering any
-background work or opening the HTTP listener. Keep local device configuration out
-of version control.
+Use Cosmos DB Data Explorer to add, edit or delete **one item per job**, then
+restart the service to apply changes. If you used the earlier JSON file, insert
+each array entry as its own item before restarting; the service no longer reads
+the file. The startup read and validation must succeed before background jobs or
+the HTTP listener start.
 
 Each job has a unique `id`, `entityId`, `cron`, optional IANA `timezone`, `conditions`
 and an `announcement`. Set `enabled: false` to disable a job. Every condition must

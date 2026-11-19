@@ -1,6 +1,7 @@
 import { CosmosClient, Container, PartitionKeyKind } from "@azure/cosmos";
 import {
   AZURE_COSMOS_CONTAINER,
+  AZURE_COSMOS_CRON_JOBS_CONTAINER,
   AZURE_COSMOS_DATABASE,
   AZURE_COSMOS_ENDPOINT,
   AZURE_COSMOS_KEY,
@@ -10,6 +11,7 @@ import {
 import type { ScheduledTask, ScheduledTaskRun } from "./types/scheduledTask";
 import { scheduledTasksChanged, ScheduledTaskMutationError } from "./scheduledTaskChanges";
 import { randomUUID } from "node:crypto";
+import { parseDeviceMonitorJobs, type DeviceMonitorJob } from "./deviceMonitorJobs";
 
 let containerPromise: Promise<Container | null> | null = null;
 let scheduledTasksContainerPromise: Promise<Container | null> | null = null;
@@ -50,6 +52,25 @@ const getCosmosClient = (): CosmosClient => {
   }
   return cosmosClient;
 };
+
+export async function loadDeviceMonitorJobs(): Promise<DeviceMonitorJob[]> {
+  if (!AZURE_COSMOS_ENDPOINT && !AZURE_COSMOS_KEY) return [];
+  if (!AZURE_COSMOS_ENDPOINT || !AZURE_COSMOS_KEY || !AZURE_COSMOS_DATABASE) {
+    throw new Error("Incomplete Cosmos DB configuration for cron jobs");
+  }
+
+  const options = { abortSignal: AbortSignal.timeout(30_000) };
+  const { database } = await getCosmosClient().databases.createIfNotExists(
+    { id: AZURE_COSMOS_DATABASE }, options
+  );
+  const { container } = await database.containers.createIfNotExists({
+    id: AZURE_COSMOS_CRON_JOBS_CONTAINER,
+    partitionKey: { kind: PartitionKeyKind.Hash, paths: ["/id"] },
+  }, options);
+  const { resources } = await container.items.query<Record<string, unknown>>("SELECT * FROM c", options).fetchAll();
+  // Ignore only Cosmos-managed metadata; unknown application fields must still fail validation.
+  return parseDeviceMonitorJobs(resources.map(({ _rid, _self, _etag, _attachments, _ts, ...job }) => job));
+}
 
 const initializeContainer = async (): Promise<Container> => {
   if (!isCosmosConfigured()) {

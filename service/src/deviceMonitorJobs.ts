@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import cron from "node-cron";
 import { z } from "zod";
 import { isValidTimezone, type CronJobScheduler } from "./cronJobs";
@@ -34,12 +33,6 @@ export function parseDeviceMonitorJobs(input: unknown): DeviceMonitorJob[] {
   return jobsSchema.parse(input);
 }
 
-/** No device-specific jobs are installed unless a configuration file is supplied. */
-export function loadDeviceMonitorJobs(filePath?: string): DeviceMonitorJob[] {
-  if (!filePath) return [];
-  return parseDeviceMonitorJobs(JSON.parse(fs.readFileSync(filePath, "utf8")));
-}
-
 /** Startup diagnostics identify invalid fields without exposing device/config values. */
 export function describeDeviceMonitorConfigError(error: unknown): Record<string, unknown> {
   if (error instanceof z.ZodError) {
@@ -50,11 +43,9 @@ export function describeDeviceMonitorConfigError(error: unknown): Record<string,
       path: issue.path.map(part => typeof part === "number" ? part : fields.has(String(part)) ? part : "[redacted]"),
     })) };
   }
-  if (error instanceof SyntaxError) return { type: "SyntaxError" };
   const code = (error as { code?: unknown } | null)?.code;
-  if (typeof code === "string" && new Set(["ENOENT", "EACCES", "EPERM", "EISDIR", "ENOTDIR",
-    "ELOOP", "EMFILE", "ENFILE", "EIO", "ENAMETOOLONG", "EINVAL"]).has(code)) {
-    return { type: "Error", code };
+  if (typeof code === "number" && Number.isInteger(code) && code >= 400 && code <= 599) {
+    return { type: "Error", statusCode: code };
   }
   return { type: error instanceof Error ? "Error" : "UnknownError" };
 }

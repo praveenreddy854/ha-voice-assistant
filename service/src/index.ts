@@ -30,9 +30,10 @@ import {
 } from "./config";
 import { fetchAllStates, getHAEntityState } from "./ha";
 import { cronJobs } from "./cronJobs";
-import { describeDeviceMonitorConfigError, loadDeviceMonitorJobs, registerDeviceMonitorJobs } from "./deviceMonitorJobs";
+import { describeDeviceMonitorConfigError, registerDeviceMonitorJobs } from "./deviceMonitorJobs";
 import { startDeviceStateLogging } from "./deviceStateLogger";
 import {
+  loadDeviceMonitorJobs,
   listActiveScheduledTasks,
   deleteScheduledTaskOccurrence,
   deleteRecurrenceFamily,
@@ -89,14 +90,6 @@ const app = express();
 const port = process.env.PORT || 3005;
 const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || "15mb";
 const appleShortcutSessions = new TextAssistantSessionManager();
-// Reject bad monitor configuration before starting any background jobs or listeners.
-let deviceMonitorJobs: ReturnType<typeof loadDeviceMonitorJobs>;
-try {
-  deviceMonitorJobs = loadDeviceMonitorJobs(process.env.DEVICE_MONITOR_JOBS_FILE);
-} catch (error) {
-  console.error("[DeviceMonitorJobs] Invalid configuration; check DEVICE_MONITOR_JOBS_FILE and the job schema in README.md", describeDeviceMonitorConfigError(error));
-  process.exit(1);
-}
 
 app.use(
   "/api/integrations/apple-shortcuts",
@@ -153,23 +146,6 @@ app.get("/traces", (_req, res) => {
 app.get("/dashboards", (_req, res) => {
   res.sendFile(path.join(__dirname, "./tracing/dashboardViewer.html"));
 });
-
-startDeviceStateLogging();
-startScheduledTaskFirer();
-startOutDirCleaner();
-startProactiveReminders();
-registerDeviceMonitorJobs(deviceMonitorJobs, cronJobs, {
-  readState: (entityId, signal) => getHAEntityState(entityId, { abortSignal: signal }),
-  announce: emitAnnouncement,
-});
-startMemoryConsolidation();
-evalSupervisor.start();
-onlineSupervisor.start();
-
-// Start gesture monitor for fist-to-pause TV control (RTSP mode only)
-if (isRtspMode()) {
-  startGestureMonitor();
-}
 
 app.get("/", (_req, res) => {
   res.type("html").send(homePage);
@@ -1173,32 +1149,49 @@ app.post("/api/teaching/cleanup", (req, res, next) => {
   })();
 });
 
-const server = app.listen(port, () => {
-  console.log(`Server running on http://localhost:${port}`);
-  console.log(`Visit http://localhost:${port} to access the application`);
-  console.log(`Telemetry Viewer: http://localhost:${port}/telemetry`);
-  console.log(`Telemetry Dashboards: http://localhost:${port}/dashboards`);
+let shuttingDown = false;
+
+async function startService(): Promise<void> {
+  const jobs = await loadDeviceMonitorJobs();
+  if (shuttingDown) return;
+  registerDeviceMonitorJobs(jobs, cronJobs, {
+    readState: (entityId, signal) => getHAEntityState(entityId, { abortSignal: signal }),
+    announce: emitAnnouncement,
+  });
+  startDeviceStateLogging();
+  startScheduledTaskFirer();
+  startOutDirCleaner();
+  startProactiveReminders();
+  startMemoryConsolidation();
+  evalSupervisor.start();
+  onlineSupervisor.start();
+  if (isRtspMode()) startGestureMonitor();
+
+  const server = app.listen(port, () => {
+    console.log(`Server running on http://localhost:${port}`);
+    console.log(`Visit http://localhost:${port} to access the application`);
+    console.log(`Telemetry Viewer: http://localhost:${port}/telemetry`);
+    console.log(`Telemetry Dashboards: http://localhost:${port}/dashboards`);
+  });
+  setupRealtimeChatProxy(server);
+}
+
+void startService().catch(error => {
+  if (shuttingDown) return;
+  console.error("Service startup failed; check Cosmos DB settings and cron-job documents", describeDeviceMonitorConfigError(error));
+  process.exit(1);
 });
 
-setupRealtimeChatProxy(server);
-
-// Graceful shutdown
-process.on("SIGTERM", async () => {
+async function shutdown(signal: NodeJS.Signals): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
   await cronJobs.stop();
   stopScheduledTaskFirer();
   onlineSupervisor.stop();
   evalSupervisor.stop();
-  console.log("SIGTERM received, shutting down gracefully...");
+  console.log(`${signal} received, shutting down gracefully...`);
   await shutdownTracing();
   process.exit(0);
-});
-
-process.on("SIGINT", async () => {
-  await cronJobs.stop();
-  stopScheduledTaskFirer();
-  onlineSupervisor.stop();
-  evalSupervisor.stop();
-  console.log("SIGINT received, shutting down gracefully...");
-  await shutdownTracing();
-  process.exit(0);
-});
+}
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
