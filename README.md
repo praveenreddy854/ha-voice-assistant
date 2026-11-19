@@ -56,7 +56,7 @@ Text and vision helpers allow extra output tokens for reasoning and treat respon
 
 Reasoning is applied to text, JSON, vision, and delegated agent requests. Offline TV, scheduling and Realtime reasoning model overrides and `OFFLINE_EVAL_JUDGE_MODEL`, `ONLINE_EVAL_JUDGE_MODEL`, and `ONLINE_EVAL_REVIEW_MODEL` also accept JSON settings. GPT Live, native Realtime audio, transcription, and embedding deployment settings continue to use plain names.
 
-The online eval worker validates judge and reviewer model settings at startup. Invalid settings stop the worker without consuming queued evaluations.
+The online eval worker records its enrollment cutoff and recovers interrupted attempts before validating judge and reviewer model settings. Invalid settings stop the worker without consuming queued evaluations.
 
 ```env
 HOME_ASSISTANT_URL=http://your-ha-instance:8123

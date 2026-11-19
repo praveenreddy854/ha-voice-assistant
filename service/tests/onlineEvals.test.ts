@@ -40,7 +40,7 @@ async function fixture(fn: (store: EvalStore, engine: OnlineEvalEngine) => Promi
 }
 const cutoff = "2026-11-07T00:00:00Z";
 
-test("invalid judge or reviewer settings stop startup without changing queued records", async t => {
+test("invalid judge or reviewer settings preserve enrollment and recover interrupted attempts without consuming the queue", async t => {
   const settings = { ONLINE_EVAL_ENABLED: "true", ONLINE_EVAL_DIR: "", ONLINE_EVAL_JUDGE_MODEL: "", ONLINE_EVAL_REVIEW_MODEL: "" };
   const previous = Object.keys(settings).map(key => [key, process.env[key]] as const);
   t.after(() => {
@@ -50,16 +50,31 @@ test("invalid judge or reviewer settings stop startup without changing queued re
     }
   });
   await fixture(async (store, engine) => {
-    await engine.discover([trace()], cutoff);
+    const interruptedId = onlineRecordId(trace("interrupted"));
+    await engine.discover([trace(), trace("interrupted")], cutoff);
     const id = onlineRecordId(trace());
     const queued = await store.read<OnlineRecord>("records", id);
     assert.equal(queued?.status, "queued");
+    const interrupted = await store.read<OnlineRecord>("records", interruptedId);
+    assert.ok(interrupted);
+    await store.write<OnlineRecord>("records", { ...interrupted, status: "running" });
+    const start = Date.now();
+    let enabledAt: string | undefined;
     for (const invalidKey of ["ONLINE_EVAL_JUDGE_MODEL", "ONLINE_EVAL_REVIEW_MODEL"] as const) {
       Object.assign(process.env, settings, {
         ONLINE_EVAL_DIR: engine.config.directory, ONLINE_EVAL_JUDGE_MODEL: "valid-deployment", [invalidKey]: "{",
       });
       await assert.rejects(runOnlineWorker(AbortSignal.timeout(500)), new RegExp(`${invalidKey} must be`));
       assert.deepEqual(await store.read<OnlineRecord>("records", id), queued);
+      const enrollment = await store.read<{ enabledAt: string }>("state", "enrollment");
+      assert.ok(enrollment);
+      const enrolledAt = Date.parse(enrollment.enabledAt);
+      assert.ok(enrolledAt >= start && enrolledAt <= Date.now());
+      enabledAt ??= enrollment.enabledAt;
+      assert.equal(enrollment.enabledAt, enabledAt);
+      const recovered = await store.read<OnlineRecord>("records", interruptedId);
+      assert.equal(recovered?.status, "eval_error");
+      assert.match(recovered?.error ?? "", /explicit retry required/);
       assert.equal(await store.workerIsActive(), false);
       const state = await store.read<{ error?: string; stopped?: boolean }>("state", "worker");
       assert.equal(state?.stopped, true);

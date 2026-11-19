@@ -42,11 +42,13 @@ export async function runOnlineWorker(signal: AbortSignal): Promise<void> {
   let timer: ReturnType<typeof setInterval> | undefined;
   let failure: string | undefined;
   try {
-    const judges = await loadJudges();
-    const engine = new OnlineEvalEngine(store, config, async () => judges);
-    timer = setInterval(() => { void heartbeat().catch(error => console.error("[Online eval heartbeat]", error)); }, 10_000);
+    let judges: Promise<OnlineJudges> | undefined;
+    const getJudges = () => judges ??= loadJudges();
+    const engine = new OnlineEvalEngine(store, config, getJudges);
     const enrollment = await engine.enroll();
     await engine.recover();
+    await getJudges();
+    timer = setInterval(() => { void heartbeat().catch(error => console.error("[Online eval heartbeat]", error)); }, 10_000);
     // Import only the read-side trace store; never initialize the agent or telemetry SDK here.
     const { getAllTraces } = await import("../../tracing/agentTraceStore");
     while (!signal.aborted) {
