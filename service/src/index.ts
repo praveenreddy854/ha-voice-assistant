@@ -30,7 +30,7 @@ import {
 } from "./config";
 import { fetchAllStates, getHAEntityState } from "./ha";
 import { cronJobs } from "./cronJobs";
-import { loadDeviceMonitorJobs, registerDeviceMonitorJobs } from "./deviceMonitorJobs";
+import { describeDeviceMonitorConfigError, loadDeviceMonitorJobs, registerDeviceMonitorJobs } from "./deviceMonitorJobs";
 import { startDeviceStateLogging } from "./deviceStateLogger";
 import {
   listActiveScheduledTasks,
@@ -93,8 +93,8 @@ const appleShortcutSessions = new TextAssistantSessionManager();
 let deviceMonitorJobs: ReturnType<typeof loadDeviceMonitorJobs>;
 try {
   deviceMonitorJobs = loadDeviceMonitorJobs(process.env.DEVICE_MONITOR_JOBS_FILE);
-} catch {
-  console.error("[DeviceMonitorJobs] Invalid configuration; check DEVICE_MONITOR_JOBS_FILE and the job schema in README.md");
+} catch (error) {
+  console.error("[DeviceMonitorJobs] Invalid configuration; check DEVICE_MONITOR_JOBS_FILE and the job schema in README.md", describeDeviceMonitorConfigError(error));
   process.exit(1);
 }
 

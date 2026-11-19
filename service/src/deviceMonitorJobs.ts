@@ -40,6 +40,25 @@ export function loadDeviceMonitorJobs(filePath?: string): DeviceMonitorJob[] {
   return parseDeviceMonitorJobs(JSON.parse(fs.readFileSync(filePath, "utf8")));
 }
 
+/** Startup diagnostics identify invalid fields without exposing device/config values. */
+export function describeDeviceMonitorConfigError(error: unknown): Record<string, unknown> {
+  if (error instanceof z.ZodError) {
+    const fields = new Set(["id", "enabled", "cron", "timezone", "entityId", "conditions",
+      "field", "operator", "value", "minStateDurationSeconds", "announcement", "announcementPolicy"]);
+    return { type: "ZodError", issues: error.issues.slice(0, 20).map(issue => ({
+      code: issue.code,
+      path: issue.path.map(part => typeof part === "number" ? part : fields.has(String(part)) ? part : "[redacted]"),
+    })) };
+  }
+  if (error instanceof SyntaxError) return { type: "SyntaxError" };
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && new Set(["ENOENT", "EACCES", "EPERM", "EISDIR", "ENOTDIR",
+    "ELOOP", "EMFILE", "ENFILE", "EIO", "ENAMETOOLONG", "EINVAL"]).has(code)) {
+    return { type: "Error", code };
+  }
+  return { type: error instanceof Error ? "Error" : "UnknownError" };
+}
+
 interface MonitorDependencies {
   readState(entityId: string, signal: AbortSignal): Promise<HassState>;
   announce(message: string): void;

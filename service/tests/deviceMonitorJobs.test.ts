@@ -3,7 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { loadDeviceMonitorJobs, parseDeviceMonitorJobs, registerDeviceMonitorJobs } from "../src/deviceMonitorJobs";
+import { describeDeviceMonitorConfigError, loadDeviceMonitorJobs, parseDeviceMonitorJobs, registerDeviceMonitorJobs } from "../src/deviceMonitorJobs";
+import { z } from "zod";
 import type { CronJob } from "../src/cronJobs";
 import type { HassState } from "../src/types/ha";
 
@@ -61,6 +62,29 @@ test("configuration rejects invalid cron, timezone, IDs, conditions and duplicat
     { minStateDurationSeconds: -1 }, { announcementPolicy: "invalid" }, { typo: true },
   ]) assert.throws(() => parseDeviceMonitorJobs([{ ...input, ...overrides }]));
   assert.throws(() => parseDeviceMonitorJobs([input, input]), /Duplicate job ID/);
+});
+
+test("startup diagnostics distinguish filesystem, JSON and schema failures without exposing values", () => {
+  const secret = "private-household-device-and-announcement";
+  assert.deepEqual(describeDeviceMonitorConfigError(Object.assign(new Error(`/private/${secret}`), { code: "ENOENT", path: secret })), { type: "Error", code: "ENOENT" });
+  try { JSON.parse(`{"${secret}": invalid}`); } catch (error) {
+    assert.deepEqual(describeDeviceMonitorConfigError(error), { type: "SyntaxError" });
+  }
+  try {
+    parseDeviceMonitorJobs([{ ...input, timezone: secret, conditions: [{ field: secret, operator: "equals", value: secret }], [secret]: secret }]);
+    assert.fail("Expected invalid configuration");
+  } catch (error) {
+    const details = describeDeviceMonitorConfigError(error);
+    assert.deepEqual(details.type, "ZodError");
+    assert.match(JSON.stringify(details), /timezone|conditions/);
+    assert.doesNotMatch(JSON.stringify(details), new RegExp(secret));
+  }
+  const custom = new z.ZodError([{ code: "custom", path: [2, "conditions", 0, secret], message: secret }]);
+  assert.deepEqual(describeDeviceMonitorConfigError(custom), {
+    type: "ZodError", issues: [{ code: "custom", path: [2, "conditions", 0, "[redacted]"] }],
+  });
+  assert.deepEqual(describeDeviceMonitorConfigError(Object.assign(new Error(secret), { code: secret })), { type: "Error" });
+  assert.deepEqual(describeDeviceMonitorConfigError(secret), { type: "UnknownError" });
 });
 
 test("state-duration checks use HA timestamps, cancel on off, and announce once per episode", async () => {
