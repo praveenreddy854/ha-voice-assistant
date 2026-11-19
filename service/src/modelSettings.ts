@@ -40,6 +40,15 @@ export function isValidModelOverride(value: string): boolean {
   } catch { return false; }
 }
 
+export function modelSettingsIdentity(value: string | undefined, reasoningEffort?: ReasoningEffort, setting = "model"): string | undefined {
+  const settings = parseModelSettings(value, setting);
+  if (!settings) return undefined;
+  const effectiveEffort = settings.reasoningEffort ?? reasoningEffort;
+  return effectiveEffort === undefined
+    ? settings.model
+    : JSON.stringify({ model: settings.model, reasoningEffort: effectiveEffort });
+}
+
 export function reasoningSettings(reasoningEffort?: ReasoningEffort) {
   // Azure deployment aliases may hide the model family from the SDK. An explicit
   // effort must reach the deployment even when its name is not recognized.

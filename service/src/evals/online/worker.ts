@@ -1,4 +1,5 @@
 import dotenv from "dotenv";
+import { modelSettingsIdentity } from "../../modelSettings";
 import { setTimeout as delay } from "node:timers/promises";
 import { EvalStore } from "../store";
 import { installNetworkBoundary } from "../network";
@@ -21,12 +22,14 @@ export async function runOnlineWorker(signal: AbortSignal): Promise<void> {
     const judgeReasoningEffort = process.env.ONLINE_EVAL_JUDGE_MODEL || process.env.OFFLINE_EVAL_JUDGE_MODEL
       ? undefined : settings.AI_MODEL_ADVANCED_REASONING_EFFORT;
     const reviewerReasoningEffort = process.env.ONLINE_EVAL_REVIEW_MODEL ? undefined : judgeReasoningEffort;
-    if (!judgeModel || !reviewerModel || !settings.AZURE_OPENAI_RESOURCE_NAME) throw new Error("Configure online eval judge models and the Azure model endpoint");
+    const judgeIdentity = modelSettingsIdentity(judgeModel, judgeReasoningEffort);
+    const reviewerIdentity = modelSettingsIdentity(reviewerModel, reviewerReasoningEffort);
+    if (!judgeModel || !reviewerModel || !judgeIdentity || !reviewerIdentity || !settings.AZURE_OPENAI_RESOURCE_NAME) throw new Error("Configure online eval judge models and the Azure model endpoint");
     // Model calls only. No live tools, web fetches, or historical device replays.
     installNetworkBoundary(`${settings.AZURE_OPENAI_RESOURCE_NAME}.openai.azure.com`);
     const { createLlmJudge } = await import("../judge");
     return {
-      judgeModel, reviewerModel, primary: await createLlmJudge(judgeModel, [], "", judgeReasoningEffort),
+      judgeModel: judgeIdentity, reviewerModel: reviewerIdentity, primary: await createLlmJudge(judgeModel, [], "", judgeReasoningEffort),
       reviewer: await createLlmJudge(reviewerModel, [], ONLINE_REVIEW_INSTRUCTIONS, reviewerReasoningEffort),
     };
   })());

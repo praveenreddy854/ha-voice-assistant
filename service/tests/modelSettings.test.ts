@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import test from "node:test";
 import dotenv from "dotenv";
-import { parseModelSettings, REASONING_EFFORTS } from "../src/modelSettings";
+import { modelSettingsIdentity, parseModelSettings, REASONING_EFFORTS } from "../src/modelSettings";
 
 const requireModule = createRequire(__filename);
 const modelKeys = ["AI_MODEL_NANO", "AI_MODEL_MINI", "AI_MODEL_ADVANCED", "AI_MODEL_HOME_ASSISTANT"] as const;
@@ -35,6 +35,14 @@ test("JSON model settings accept API reasoning levels and preserve provider defa
   assert.deepEqual(parseModelSettings(" deployment "), { model: "deployment" });
   assert.equal(parseModelSettings("  "), undefined);
   assert.equal(parseModelSettings(undefined), undefined);
+});
+
+test("model settings identity includes the effective reasoning effort canonically", () => {
+  assert.equal(modelSettingsIdentity("deployment"), "deployment");
+  assert.equal(modelSettingsIdentity("deployment", "high"), '{"model":"deployment","reasoningEffort":"high"}');
+  assert.equal(modelSettingsIdentity('{"reasoningEffort":"low","model":"deployment"}'), '{"model":"deployment","reasoningEffort":"low"}');
+  assert.equal(modelSettingsIdentity("deployment", undefined), "deployment");
+  assert.equal(modelSettingsIdentity(undefined, "high"), undefined);
 });
 
 test("malformed JSON, invalid fields, and CSV values are rejected with the setting name", () => {

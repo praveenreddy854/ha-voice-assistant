@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { isValidModelOverride, parseModelSettings } from "../modelSettings";
+import { isValidModelOverride, modelSettingsIdentity, parseModelSettings } from "../modelSettings";
 import { EvalStore, digest, processIsRunning } from "./store";
 import { EvalRunner } from "./runner";
 import { getEvalAgent } from "./registry";
@@ -84,11 +84,13 @@ if (require.main === module) {
     (await import("./network")).installNetworkBoundary(`${config.AZURE_OPENAI_RESOURCE_NAME}.openai.azure.com`);
     const { createLlmJudge, GRADER_VERSION } = await import("./judge");
     const judgeModel = process.env.OFFLINE_EVAL_JUDGE_MODEL || config.AI_MODEL_ADVANCED;
-    if (!judgeModel) throw new Error("Configure the eval judge model");
+    const judgeReasoningEffort = process.env.OFFLINE_EVAL_JUDGE_MODEL ? undefined : config.AI_MODEL_ADVANCED_REASONING_EFFORT;
+    const judgeIdentity = modelSettingsIdentity(judgeModel, judgeReasoningEffort, "OFFLINE_EVAL_JUDGE_MODEL");
+    if (!judgeModel || !judgeIdentity) throw new Error("Configure the eval judge model");
     const controller = new AbortController();
     process.once("SIGTERM", () => controller.abort()); process.once("SIGINT", () => controller.abort());
     const report = await compareModels({ agentId: registration.id, baselineModel, candidateModel, scenarioIds: scenarioIds.length ? scenarioIds : undefined }, new EvalStore(), {
-      createAdapter: model => registration.createAdapter(model), judge: await createLlmJudge(judgeModel, [], "", process.env.OFFLINE_EVAL_JUDGE_MODEL ? undefined : config.AI_MODEL_ADVANCED_REASONING_EFFORT), judgeModel, graderVersion: GRADER_VERSION,
+      createAdapter: model => registration.createAdapter(model), judge: await createLlmJudge(judgeModel, [], "", judgeReasoningEffort), judgeModel: judgeIdentity, graderVersion: GRADER_VERSION,
     }, controller.signal);
     console.log(JSON.stringify({ id: report.id, status: report.status, pairs: report.pairs }, null, 2));
     if (report.status !== "completed") process.exitCode = 1;

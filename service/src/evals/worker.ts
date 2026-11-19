@@ -1,5 +1,5 @@
 import dotenv from "dotenv";
-import { isValidModelOverride } from "../modelSettings";
+import { isValidModelOverride, modelSettingsIdentity } from "../modelSettings";
 import { randomUUID } from "node:crypto";
 import { EvalStore } from "./store";
 import { installNetworkBoundary } from "./network";
@@ -48,14 +48,16 @@ export async function runWorker(job: EvalJob, store = new EvalStore()): Promise<
       import("./judge"), import("./runner"), import("./references"),
     ]);
     const judgeModel = process.env.OFFLINE_EVAL_JUDGE_MODEL || config.AI_MODEL_ADVANCED;
-    if (!judgeModel) throw new Error("Configure OFFLINE_EVAL_JUDGE_MODEL or AI_MODEL_ADVANCED");
+    const judgeReasoningEffort = process.env.OFFLINE_EVAL_JUDGE_MODEL ? undefined : config.AI_MODEL_ADVANCED_REASONING_EFFORT;
+    const judgeIdentity = modelSettingsIdentity(judgeModel, judgeReasoningEffort, "OFFLINE_EVAL_JUDGE_MODEL");
+    if (!judgeModel || !judgeIdentity) throw new Error("Configure OFFLINE_EVAL_JUDGE_MODEL or AI_MODEL_ADVANCED");
     const scenarios = await registration.scenarios();
-    const judge = await createLlmJudge(judgeModel, scenarios.map(s => s.context), "", process.env.OFFLINE_EVAL_JUDGE_MODEL ? undefined : config.AI_MODEL_ADVANCED_REASONING_EFFORT);
+    const judge = await createLlmJudge(judgeModel, scenarios.map(s => s.context), "", judgeReasoningEffort);
     if (job.mode === "calibrate") {
-      const result = await calibrateJudge(store, judge, judgeModel, GRADER_VERSION, controller.signal, registration.id);
+      const result = await calibrateJudge(store, judge, judgeIdentity, GRADER_VERSION, controller.signal, registration.id);
       if (!result.passed) throw new Error("Judge disagreed with the selected agent's reference cases; inspect calibration results");
     } else {
-      const runner = new EvalRunner(store, judge, judgeModel, GRADER_VERSION);
+      const runner = new EvalRunner(store, judge, judgeIdentity, GRADER_VERSION);
       let batch: EvalBatch;
       if (job.mode === "recorded") {
         if (!job.sessionIds?.length) throw new Error("Select completed session IDs for recorded evaluation");
