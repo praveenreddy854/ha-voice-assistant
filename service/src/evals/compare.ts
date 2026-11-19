@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { isValidModelOverride, modelSettingsIdentity, parseModelSettings } from "../modelSettings";
+import { isValidModelOverride, modelSettingsIdentity } from "../modelSettings";
 import { EvalStore, digest, processIsRunning } from "./store";
 import { EvalRunner } from "./runner";
 import { getEvalAgent } from "./registry";
@@ -18,8 +18,12 @@ export interface ModelComparison {
 export async function compareModels(input: ComparisonInput, store: EvalStore, dependencies: {
   createAdapter(model: string): Promise<AgentAdapter>; judge: Judge; judgeModel: string; graderVersion: string;
 }, signal: AbortSignal): Promise<ModelComparison> {
-  if (![input.baselineModel, input.candidateModel].every(isValidModelOverride)
-    || JSON.stringify(parseModelSettings(input.baselineModel)) === JSON.stringify(parseModelSettings(input.candidateModel))) {
+  if (![input.baselineModel, input.candidateModel].every(isValidModelOverride)) {
+    throw new Error("Choose two distinct valid model settings");
+  }
+  const baselineModel = modelSettingsIdentity(input.baselineModel);
+  const candidateModel = modelSettingsIdentity(input.candidateModel);
+  if (!baselineModel || !candidateModel || baselineModel === candidateModel) {
     throw new Error("Choose two distinct valid model settings");
   }
   const repeats = input.repeats ?? 1;
@@ -36,12 +40,12 @@ export async function compareModels(input: ComparisonInput, store: EvalStore, de
     for (const previous of await store.list<ModelComparison>("model-comparisons")) if (previous.status === "running") {
       await store.write("model-comparisons", { ...previous, status: "incomplete", finishedAt: new Date().toISOString(), error: "Comparison worker interrupted; no model calls were resumed automatically" });
     }
-    const baseline = await dependencies.createAdapter(input.baselineModel), candidate = await dependencies.createAdapter(input.candidateModel);
+    const baseline = await dependencies.createAdapter(baselineModel), candidate = await dependencies.createAdapter(candidateModel);
     const manifest = (adapter: AgentAdapter) => digest({ id: adapter.id, version: adapter.version, promptVersion: adapter.promptVersion, scenarios: adapter.scenarios });
-    if (baseline.id !== input.agentId || candidate.id !== input.agentId || baseline.model !== input.baselineModel || candidate.model !== input.candidateModel || manifest(baseline) !== manifest(candidate)) throw new Error("Models must share identical agent, prompt/tool versions, requests, fixture state and clocks");
+    if (baseline.id !== input.agentId || candidate.id !== input.agentId || baseline.model !== baselineModel || candidate.model !== candidateModel || manifest(baseline) !== manifest(candidate)) throw new Error("Models must share identical agent, prompt/tool versions, requests, fixture state and clocks");
     const selected = input.scenarioIds || baseline.scenarios.map(scenario => scenario.id);
     if (!selected.length || new Set(selected).size !== selected.length || selected.some(id => !baseline.scenarios.some(scenario => scenario.id === id))) throw new Error("Unknown or duplicate scenario selection");
-    report = { id: randomUUID(), input: { ...input, repeats }, manifest: manifest(baseline), graderVersion: dependencies.graderVersion, judgeModel: dependencies.judgeModel,
+    report = { id: randomUUID(), input: { ...input, baselineModel, candidateModel, repeats }, manifest: manifest(baseline), graderVersion: dependencies.graderVersion, judgeModel: dependencies.judgeModel,
       startedAt: new Date().toISOString(), status: "running", pairs: [] };
     await store.write("model-comparisons", report);
     const groups = (await store.list<StepGroup>("groups")).filter(group => group.agentId === input.agentId);

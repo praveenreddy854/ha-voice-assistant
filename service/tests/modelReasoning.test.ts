@@ -59,6 +59,10 @@ test("nano, mini, and advanced text/JSON/vision calls send separate effort to th
   assert.equal(requests.at(-1)!.reasoning?.effort, "high");
   await generateCompletion({ model: "gpt-5.4", messages });
   assert.equal(requests.at(-1)!.max_output_tokens, 26_000);
+  await generateCompletion({ model: "gpt-5.1-chat", messages, maxTokens: 120 });
+  assert.equal(requests.at(-1)!.max_output_tokens, 120);
+  await generateVisionText({ model: "gpt-5.1-chat-latest", prompt: "screen", imageBase64: "AA==", imageContentType: "image/png" });
+  assert.equal(requests.at(-1)!.max_output_tokens, 500);
 });
 
 test("short text and vision calls reserve reasoning tokens and reject incomplete output", async t => {

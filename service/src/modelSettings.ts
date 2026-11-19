@@ -63,12 +63,10 @@ export function reasoningSettings(reasoningEffort?: ReasoningEffort) {
   };
 }
 
-// Match the installed OpenAI provider's reasoning-family defaults. Chat variants
-// keep sampling support; Azure deployment aliases without a known family retain
-// their caller-supplied settings.
+// Only infer reasoning from known families; GPT chat variants have smaller output caps.
 function isReasoningModel(model: string): boolean {
   const gpt = /^gpt-(\d+)(?:\.\d+)?(?:-(.+))?$/.exec(model);
-  const chat = /^gpt-\d+-chat(?:-|$)/.test(model);
+  const chat = /^chat(?:-|$)/.test(gpt?.[2] ?? "");
   return /^o\d+(?:-|$)/.test(model) || (!!gpt && Number(gpt[1]) >= 5 && !chat);
 }
 

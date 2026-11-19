@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { compareModels, type ModelComparison } from "../src/evals/compare";
 import { EvalStore } from "../src/evals/store";
+import { modelSettingsIdentity } from "../src/modelSettings";
 import type { AgentAdapter, Assessment, Judge } from "../src/evals/types";
 
 const scenarios = ["first", "second"].map(id => ({ id, version: "1", request: id, expectations: "Fixture state determines fulfillment", initial: { clock: "fixed", count: 0 }, context: { task: id, target: "fixture", app: "fixture", startingState: "fixture" } }));
@@ -43,13 +44,25 @@ test("comparisons accept different efforts on one deployment and reject equivale
   const baselineModel = '{"model":"same-deployment","reasoningEffort":"low"}';
   const candidateModel = '{"model":"same-deployment","reasoningEffort":"high"}';
   const calls: string[] = [];
-  const dependencies = { createAdapter: async (model: string) => adapter(model, calls), judge, judgeModel: "judge", graderVersion: "grader" };
-  const report = await compareModels({ agentId: "tv", baselineModel, candidateModel, scenarioIds: ["first"] }, store, dependencies, new AbortController().signal);
+  const dependencies = { createAdapter: async (model: string) => adapter(modelSettingsIdentity(model)!, calls), judge, judgeModel: "judge", graderVersion: "grader" };
+  const report = await compareModels({ agentId: "tv", baselineModel: '{ "reasoningEffort": "low", "model": "same-deployment" }',
+    candidateModel: '{"model": "same-deployment", "reasoningEffort": "high"}', scenarioIds: ["first"] }, store, dependencies, new AbortController().signal);
   assert.equal(report.status, "completed");
-  assert.equal(calls.length, 2);
+  assert.deepEqual(calls, [`${baselineModel}:first`, `${candidateModel}:first`]);
+  assert.equal(report.input.baselineModel, baselineModel);
+  assert.equal(report.input.candidateModel, candidateModel);
   await assert.rejects(compareModels({ agentId: "tv", baselineModel: "same-deployment", candidateModel: '{"model":"same-deployment"}' }, store, dependencies, new AbortController().signal), /distinct valid model settings/);
   await assert.rejects(compareModels({ agentId: "tv", baselineModel, candidateModel: '{"reasoningEffort":"low", "model":"same-deployment"}' }, store, dependencies, new AbortController().signal), /distinct valid model settings/);
   assert.equal(calls.length, 2, "Equivalent settings must be rejected before model execution");
+}));
+
+test("comparisons accept JSON settings with only a deployment name", async () => fixture(async store => {
+  const dependencies = { createAdapter: async (model: string) => adapter(modelSettingsIdentity(model)!, []), judge, judgeModel: "judge", graderVersion: "grader" };
+  const plain = await compareModels({ agentId: "tv", baselineModel: '{"model":"same-deployment"}',
+    candidateModel: '{"model":"same-deployment","reasoningEffort":"high"}', scenarioIds: ["first"] },
+  store, dependencies, new AbortController().signal);
+  assert.equal(plain.status, "completed");
+  assert.equal(plain.input.baselineModel, "same-deployment");
 }));
 
 test("different prompts or fixtures fail before either model is called", async () => fixture(async store => {
