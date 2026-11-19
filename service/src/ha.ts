@@ -8,7 +8,6 @@ import { z } from "zod";
 import {
   formatMemoryContext,
   retrieveMemories,
-  type AgentMemoryDocument,
 } from "./memory";
 import { getTracer } from "./tracing";
 import type { AgentPauseGate } from "./agents/core/types";
@@ -24,10 +23,7 @@ function retainHAEvidence(callback: () => void): void {
 
 const promptCache = new Map<string, string>();
 const homeAssistantCacheKey = "HOMEASSISTANT";
-const LIVING_ROOM_PTZ_PRESET_ENTITY_ID = "select.living_room_ptz_preset";
-const LIVING_ROOM_GUARD_SET_BUTTON_ENTITY_ID = "button.living_room_guard_set_current_position";
 const INTERNAL_WAIT_URL_PATH = "internal/wait";
-const GUARD_SET_WAIT_MS = 15000;
 const MAX_PLAN_WAIT_MS = 30000;
 const SERVICE_DATA_TARGET_SELECTORS = ["entity_id", "area_id", "device_id", "floor_id", "label_id", "target"];
 const haWaitDataSchema = z.object({
@@ -97,8 +93,7 @@ export async function getHACommandBody(
   command: string,
   messageHistory?: Array<{ role: string; content: string }>,
   options?: HAExecutionOptions,
-  memoryContext = "",
-  memories: AgentMemoryDocument[] = []
+  memoryContext = ""
 ): Promise<HassTranslationResponse> {
   await waitForRunPermission(options);
   const deviceStates = await getDeviceStates(undefined, options);
@@ -134,12 +129,11 @@ export async function getHACommandBody(
     stage = "response_parse";
     const body = haTranslationSchema.parse(JSON.parse(responseText));
     stage = "plan_validation";
-    if (!Array.isArray(body) && ("error" in body || "clarification" in body)) return body;
-    validateHAPlan(body, deviceStates);
-    const normalizedBody = normalizeMediaTransportCommands(body).body;
-    const { body: augmentedBody } = applyMemoryCommandAugmentations(normalizedBody, command, memories);
-    validateHAPlan(augmentedBody, deviceStates);
-    return augmentedBody;
+    if (Array.isArray(body) || !("error" in body || "clarification" in body)) {
+      validateHAPlan(body, deviceStates);
+      validateHAPlan(normalizeMediaTransportCommands(body).body, deviceStates);
+    }
+    return body;
   } catch (error) {
     if (options?.abortSignal?.aborted) {
       throw options.abortSignal.reason ?? error;
@@ -415,8 +409,7 @@ async function executeHACommandInternal(
       command,
       messageHistory,
       options,
-      memoryContext,
-      memories
+      memoryContext
     );
     if (!Array.isArray(generatedHaBody) && ("error" in generatedHaBody || "clarification" in generatedHaBody)) {
       const message = "error" in generatedHaBody
@@ -478,105 +471,6 @@ async function executeHACommandInternal(
   } finally {
     span.end();
   }
-}
-
-
-function applyMemoryCommandAugmentations(
-  body: HassServiceCommandBody,
-  originalCommand: string,
-  memories: AgentMemoryDocument[]
-): { body: HassServiceCommandBody; guardSetApplied: boolean } {
-  const commands = Array.isArray(body) ? [...body] : [body];
-  const alreadySetsGuard = commands.some(isLivingRoomGuardPress);
-  const guardSetApplied = !alreadySetsGuard &&
-    shouldSetLivingRoomGuardPosition(body, originalCommand, memories);
-  if (guardSetApplied) {
-    commands.push({
-      url_path: "button/press",
-      entity_id: LIVING_ROOM_GUARD_SET_BUTTON_ENTITY_ID,
-    });
-  }
-
-  // Guarding captures the current position. Preserve the existing settling
-  // interval even when the model supplied the guard call itself. This pause
-  // is a sequencing precaution, not evidence that the camera reached a preset.
-  const plan: HassServiceCommand[] = [];
-  let remainingSettleMs = 0;
-  for (const command of commands) {
-    const urlPath = normalizeHAUrlPath(command.url_path || "");
-    if (isLivingRoomPresetSelection(command)) {
-      remainingSettleMs = GUARD_SET_WAIT_MS;
-    } else if (urlPath === INTERNAL_WAIT_URL_PATH) {
-      const duration = command.service_data?.duration_ms;
-      if (typeof duration === "number" && Number.isFinite(duration)) {
-        remainingSettleMs = Math.max(0, remainingSettleMs - Math.max(0, Math.min(duration, 30000)));
-      }
-    } else if (isLivingRoomGuardPress(command) && remainingSettleMs > 0) {
-      plan.push({
-        url_path: INTERNAL_WAIT_URL_PATH,
-        entity_id: "__internal_wait__",
-        service_data: {
-          duration_ms: remainingSettleMs,
-          reason: "wait for living room camera PTZ preset movement before setting guard position",
-        },
-      });
-      remainingSettleMs = 0;
-    }
-    plan.push(command);
-  }
-
-  return { body: Array.isArray(body) || plan.length > 1 ? plan : plan[0], guardSetApplied };
-}
-
-function commandTargetsEntity(command: HassServiceCommand, targetEntityId: string): boolean {
-  // Match the POST payload: service_data may replace the top-level target.
-  const entityId: unknown = { entity_id: command.entity_id, ...command.service_data }.entity_id;
-  return Array.isArray(entityId) ? entityId.includes(targetEntityId) : entityId === targetEntityId;
-}
-
-function isLivingRoomPresetSelection(command: HassServiceCommand): boolean {
-  return commandTargetsEntity(command, LIVING_ROOM_PTZ_PRESET_ENTITY_ID) &&
-    normalizeHAUrlPath(command.url_path || "") === "select/select_option";
-}
-
-function isLivingRoomGuardPress(command: HassServiceCommand): boolean {
-  return commandTargetsEntity(command, LIVING_ROOM_GUARD_SET_BUTTON_ENTITY_ID) &&
-    normalizeHAUrlPath(command.url_path || "") === "button/press";
-}
-
-function shouldSetLivingRoomGuardPosition(
-  body: HassServiceCommandBody,
-  originalCommand: string,
-  memories: AgentMemoryDocument[]
-): boolean {
-  const commands = Array.isArray(body) ? body : [body];
-  const selectsLivingRoomPreset = commands.some(isLivingRoomPresetSelection);
-  if (!selectsLivingRoomPreset) return false;
-
-  const normalizedCommand = originalCommand.toLowerCase();
-  const commandMentionsPresetCamera =
-    normalizedCommand.includes("living room") &&
-    normalizedCommand.includes("camera") &&
-    normalizedCommand.includes("preset");
-
-  const hasGuardPresetMemory = memories.some((memory) => {
-    const haystack = [
-      memory.text,
-      ...(memory.scopes.deviceNames || []),
-      ...(memory.scopes.roomNames || []),
-      ...(memory.scopes.tags || []),
-    ]
-      .join(" ")
-      .toLowerCase();
-    return (
-      haystack.includes("living room") &&
-      haystack.includes("camera") &&
-      haystack.includes("preset") &&
-      haystack.includes("guard")
-    );
-  });
-
-  return commandMentionsPresetCamera && hasGuardPresetMemory;
 }
 
 /**
@@ -872,9 +766,7 @@ async function executeMultipleHACommands(
       const skipped = commands.length - i - 1;
       return {
         success: false,
-        message: isLivingRoomPresetSelection(cmd) && commands.slice(i + 1).some(isLivingRoomGuardPress)
-          ? `Camera preset request failed; remaining requests were not sent: ${result.message}`
-          : `Step ${i + 1} failed: ${result.message}. ${i}/${commands.length} commands succeeded; ${skipped} remaining commands skipped.`,
+        message: `Step ${i + 1} failed: ${result.message}. ${i}/${commands.length} commands succeeded; ${skipped} remaining commands skipped.`,
         data: results,
       };
     }

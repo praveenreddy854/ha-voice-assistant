@@ -4,7 +4,8 @@ import { createRequire } from "node:module";
 import axios from "axios";
 import type { HassServiceCommand } from "../src/types/ha";
 
-test("preset-to-guard plans retain the settling delay and report transport evidence", async t => {
+test("preset-to-guard plans follow translated memory guidance and report transport evidence", async t => {
+  const previousDevices = process.env.HOME_ASSISTANT_DEVICES;
   process.env.HOME_ASSISTANT_DEVICES = "living_room";
   const requireModule = createRequire(__filename);
   const previous = new Map<string, NodeModule | undefined>();
@@ -22,7 +23,7 @@ test("preset-to-guard plans retain the settling delay and report transport evide
     url_path: "internal/wait", entity_id: "__internal_wait__", service_data: { duration_ms },
   });
   let plan: HassServiceCommand | HassServiceCommand[] = [];
-  let memory = false;
+  let memory: boolean | string = false;
   let abort: AbortController | undefined;
   let rejectPreset = false;
   let presetStatus = 200;
@@ -30,7 +31,7 @@ test("preset-to-guard plans retain the settling delay and report transport evide
   const stubs = {
     "../src/ai": { generateCompletion: async () => JSON.stringify(plan) },
     "../src/memory": {
-      retrieveMemories: async () => memory ? [{ id: "fixture-memory", text: "Guard the living room camera after selecting a preset", scopes: {} }] : [],
+      retrieveMemories: async () => memory ? [{ id: "fixture-memory", text: typeof memory === "string" ? memory : "Guard the living room camera after selecting a preset", scopes: {} }] : [],
       formatMemoryContext: () => "",
     },
     "../src/agents/common/utils": { delay: async (ms: number, signal?: AbortSignal) => {
@@ -52,12 +53,12 @@ test("preset-to-guard plans retain the settling delay and report transport evide
   });
   try {
     const { executeHACommand } = requireModule("../src/ha") as typeof import("../src/ha");
-    const run = async (input: typeof plan, withMemory = false, signal?: AbortSignal) => {
+    const run = async (input: typeof plan, withMemory: boolean | string = false, signal?: AbortSignal, command = "Set the living room camera to preset 1, then guard that position.") => {
       plan = input; memory = withMemory; events.length = 0;
-      return executeHACommand("Set the living room camera to preset 1, then guard that position.", undefined, { abortSignal: signal });
+      return executeHACommand(command, undefined, { abortSignal: signal });
     };
-    await t.test("explicit guard waits without memory and keeps one guard action", async () => {
-      const input = [preset, guard];
+    await t.test("an explicit settling wait is preserved and excluded from accepted-request counts", async () => {
+      const input = [preset, wait(15000), guard];
       const before = JSON.stringify(input);
       const result = await run(input);
       assert.equal(result.success, true);
@@ -66,25 +67,37 @@ test("preset-to-guard plans retain the settling delay and report transport evide
       assert.match(result.message, /device effects have not been verified/i);
       assert.equal(JSON.stringify(input), before);
     });
-    await t.test("memory-derived and already-generated guards share the same delay", async () => {
-      for (const input of [preset, [preset, guard]]) {
-        await run(input, true);
-        assert.deepEqual(events, ["preset", 300, 15000, 300, "guard"]);
+    await t.test("preset-only translations never acquire a guard from positive or negative memory", async () => {
+      for (const guidance of [
+        "Guard the living room camera after selecting a preset",
+        "Do not guard the living room camera after selecting a preset",
+      ]) {
+        const result = await run(preset, guidance, undefined,
+          "Set the living room camera to preset 1 only; do not change the guard position.");
+        assert.equal(result.success, true);
+        assert.deepEqual(events, ["preset"]);
       }
     });
-    await t.test("existing waits count toward the delay without being duplicated", async () => {
-      await run([preset, wait(15000), guard]);
-      assert.deepEqual(events, ["preset", 300, 15000, 300, "guard"]);
-      await run([preset, wait(5000), guard]);
-      assert.deepEqual(events, ["preset", 300, 5000, 300, 10000, 300, "guard"]);
+    await t.test("device-specific waits are supplied by the plan and never defaulted or padded", async () => {
+      for (const duration of [2400, 7600, 15000]) {
+        await run([preset, wait(duration), guard], true);
+        assert.deepEqual(events, ["preset", 300, duration, 300, "guard"]);
+      }
+      await run([preset, guard], true);
+      assert.deepEqual(events, ["preset", 300, "guard"]);
     });
-    await t.test("each new preset resets the settling interval", async () => {
-      await run([preset, guard, preset, guard]);
+    await t.test("cumulative settling waits fail before the first service request", async () => {
+      const result = await run([
+        preset, wait(15000), guard, preset, wait(15000), guard, preset, wait(15000), guard,
+      ], true);
+      assert.equal(result.success, false);
+      assert.match(result.message, /response_parse/);
+      assert.deepEqual(events, []);
+      assert.equal((await run([preset, wait(15000), guard, preset, wait(15000), guard])).success, true);
       assert.equal(events.filter(event => event === 15000).length, 2);
-      assert.equal(events.filter(event => event === "guard").length, 2);
     });
-    await t.test("path aliases receive the same protection", async () => {
-      await run([{ ...preset, url_path: "/api/services/select/select_option/" }, { ...guard, url_path: "/api/services/button/press/" }]);
+    await t.test("path aliases retain explicit settling waits", async () => {
+      await run([{ ...preset, url_path: "/api/services/select/select_option/" }, wait(15000), { ...guard, url_path: "/api/services/button/press/" }]);
       assert.deepEqual(events, ["preset", 300, 15000, 300, "guard"]);
     });
     await t.test("service-data target overrides are rejected before device actions", async () => {
@@ -155,13 +168,13 @@ test("preset-to-guard plans retain the settling delay and report transport evide
       presetStatus = 503;
       const result = await run([preset, guard]);
       assert.equal(result.success, false);
-      assert.match(result.message, /remaining requests were not sent/);
+      assert.match(result.message, /remaining commands skipped/);
       assert.deepEqual(events, ["preset"]);
       presetStatus = 200;
     });
     await t.test("cancellation during settling prevents the guard request", async () => {
       abort = new AbortController();
-      await assert.rejects(run([preset, guard], false, abort.signal), /Synthetic cancellation/);
+      await assert.rejects(run([preset, wait(15000), guard], false, abort.signal), /Synthetic cancellation/);
       assert.equal(events.includes("guard"), false);
       abort = undefined;
     });
@@ -173,6 +186,8 @@ test("preset-to-guard plans retain the settling delay and report transport evide
       rejectPreset = false;
     });
   } finally {
+    if (previousDevices === undefined) delete process.env.HOME_ASSISTANT_DEVICES;
+    else process.env.HOME_ASSISTANT_DEVICES = previousDevices;
     for (const [filename, module] of previous) {
       if (module) requireModule.cache[filename] = module;
       else delete requireModule.cache[filename];
