@@ -10,6 +10,7 @@ import { onlineAssessment } from "../src/evals/online/snapshot";
 import { evaluateOnline } from "../src/evals/online/quality";
 import { onlineSummary, createOnlineRouter } from "../src/evals/online/api";
 import { OnlineEvalSupervisor } from "../src/evals/online/supervisor";
+import { runOnlineWorker } from "../src/evals/online/worker";
 import type { AgentTrace } from "../src/tracing/agentTraceStore";
 import type { Assessment, Grade, Judge, Verdict } from "../src/evals/types";
 import { calibrationReferenceAssessments } from "../src/evals/references";
@@ -38,6 +39,34 @@ async function fixture(fn: (store: EvalStore, engine: OnlineEvalEngine) => Promi
   try { await fn(store, engine); } finally { await rm(directory, { recursive: true, force: true }); }
 }
 const cutoff = "2026-11-07T00:00:00Z";
+
+test("invalid judge or reviewer settings stop startup without changing queued records", async t => {
+  const settings = { ONLINE_EVAL_ENABLED: "true", ONLINE_EVAL_DIR: "", ONLINE_EVAL_JUDGE_MODEL: "", ONLINE_EVAL_REVIEW_MODEL: "" };
+  const previous = Object.keys(settings).map(key => [key, process.env[key]] as const);
+  t.after(() => {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  await fixture(async (store, engine) => {
+    await engine.discover([trace()], cutoff);
+    const id = onlineRecordId(trace());
+    const queued = await store.read<OnlineRecord>("records", id);
+    assert.equal(queued?.status, "queued");
+    for (const invalidKey of ["ONLINE_EVAL_JUDGE_MODEL", "ONLINE_EVAL_REVIEW_MODEL"] as const) {
+      Object.assign(process.env, settings, {
+        ONLINE_EVAL_DIR: engine.config.directory, ONLINE_EVAL_JUDGE_MODEL: "valid-deployment", [invalidKey]: "{",
+      });
+      await assert.rejects(runOnlineWorker(AbortSignal.timeout(500)), new RegExp(`${invalidKey} must be`));
+      assert.deepEqual(await store.read<OnlineRecord>("records", id), queued);
+      assert.equal(await store.workerIsActive(), false);
+      const state = await store.read<{ error?: string; stopped?: boolean }>("state", "worker");
+      assert.equal(state?.stopped, true);
+      assert.match(state?.error ?? "", new RegExp(`${invalidKey} must be`));
+    }
+  }, { config: { sampleRate: 1 } });
+});
 
 test("online enrollment survives restart; discovery excludes history, incomplete runs and unsupported agents", async () => fixture(async (store, engine) => {
   assert.equal((await engine.enroll()).enabledAt, now().toISOString());

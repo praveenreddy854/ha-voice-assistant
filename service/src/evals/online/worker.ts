@@ -7,6 +7,28 @@ import { onlineEvalConfig } from "./config";
 import { OnlineEvalEngine, type OnlineJudges } from "./engine";
 import { ONLINE_REVIEW_INSTRUCTIONS } from "./quality";
 
+async function loadJudges(): Promise<OnlineJudges> {
+  const settings = await import("../../config");
+  const judgeOverride = process.env.ONLINE_EVAL_JUDGE_MODEL || process.env.OFFLINE_EVAL_JUDGE_MODEL;
+  const judgeSetting = process.env.ONLINE_EVAL_JUDGE_MODEL ? "ONLINE_EVAL_JUDGE_MODEL"
+    : judgeOverride ? "OFFLINE_EVAL_JUDGE_MODEL" : "AI_MODEL_ADVANCED";
+  const judgeModel = judgeOverride || settings.AI_MODEL_ADVANCED;
+  const reviewerOverride = process.env.ONLINE_EVAL_REVIEW_MODEL;
+  const reviewerModel = reviewerOverride || judgeModel;
+  const judgeReasoningEffort = judgeOverride ? undefined : settings.AI_MODEL_ADVANCED_REASONING_EFFORT;
+  const reviewerReasoningEffort = reviewerOverride ? undefined : judgeReasoningEffort;
+  const judgeIdentity = modelSettingsIdentity(judgeModel, judgeReasoningEffort, judgeSetting);
+  const reviewerIdentity = reviewerOverride ? modelSettingsIdentity(reviewerOverride, undefined, "ONLINE_EVAL_REVIEW_MODEL") : judgeIdentity;
+  if (!judgeModel || !reviewerModel || !judgeIdentity || !reviewerIdentity || !settings.AZURE_OPENAI_RESOURCE_NAME) throw new Error("Configure online eval judge models and the Azure model endpoint");
+  // Model calls only. No live tools, web fetches, or historical device replays.
+  installNetworkBoundary(`${settings.AZURE_OPENAI_RESOURCE_NAME}.openai.azure.com`);
+  const { createLlmJudge } = await import("../judge");
+  return {
+    judgeModel: judgeIdentity, reviewerModel: reviewerIdentity, primary: await createLlmJudge(judgeModel, [], "", judgeReasoningEffort),
+    reviewer: await createLlmJudge(reviewerModel, [], ONLINE_REVIEW_INSTRUCTIONS, reviewerReasoningEffort),
+  };
+}
+
 export async function runOnlineWorker(signal: AbortSignal): Promise<void> {
   dotenv.config({ quiet: true });
   const config = onlineEvalConfig();
@@ -14,30 +36,15 @@ export async function runOnlineWorker(signal: AbortSignal): Promise<void> {
   const store = new EvalStore(config.directory);
   const release = await store.acquire();
   if (!release) return;
-  let judges: Promise<OnlineJudges> | undefined;
-  const engine = new OnlineEvalEngine(store, config, () => judges ??= (async () => {
-    const settings = await import("../../config");
-    const judgeModel = process.env.ONLINE_EVAL_JUDGE_MODEL || process.env.OFFLINE_EVAL_JUDGE_MODEL || settings.AI_MODEL_ADVANCED;
-    const reviewerModel = process.env.ONLINE_EVAL_REVIEW_MODEL || judgeModel;
-    const judgeReasoningEffort = process.env.ONLINE_EVAL_JUDGE_MODEL || process.env.OFFLINE_EVAL_JUDGE_MODEL
-      ? undefined : settings.AI_MODEL_ADVANCED_REASONING_EFFORT;
-    const reviewerReasoningEffort = process.env.ONLINE_EVAL_REVIEW_MODEL ? undefined : judgeReasoningEffort;
-    const judgeIdentity = modelSettingsIdentity(judgeModel, judgeReasoningEffort);
-    const reviewerIdentity = modelSettingsIdentity(reviewerModel, reviewerReasoningEffort);
-    if (!judgeModel || !reviewerModel || !judgeIdentity || !reviewerIdentity || !settings.AZURE_OPENAI_RESOURCE_NAME) throw new Error("Configure online eval judge models and the Azure model endpoint");
-    // Model calls only. No live tools, web fetches, or historical device replays.
-    installNetworkBoundary(`${settings.AZURE_OPENAI_RESOURCE_NAME}.openai.azure.com`);
-    const { createLlmJudge } = await import("../judge");
-    return {
-      judgeModel: judgeIdentity, reviewerModel: reviewerIdentity, primary: await createLlmJudge(judgeModel, [], "", judgeReasoningEffort),
-      reviewer: await createLlmJudge(reviewerModel, [], ONLINE_REVIEW_INSTRUCTIONS, reviewerReasoningEffort),
-    };
-  })());
   const heartbeat = (error?: string) => store.write("state", {
     id: "worker", pid: process.pid, updatedAt: new Date().toISOString(), error,
   });
-  const timer = setInterval(() => { void heartbeat().catch(error => console.error("[Online eval heartbeat]", error)); }, 10_000);
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let failure: string | undefined;
   try {
+    const judges = await loadJudges();
+    const engine = new OnlineEvalEngine(store, config, async () => judges);
+    timer = setInterval(() => { void heartbeat().catch(error => console.error("[Online eval heartbeat]", error)); }, 10_000);
     const enrollment = await engine.enroll();
     await engine.recover();
     // Import only the read-side trace store; never initialize the agent or telemetry SDK here.
@@ -55,10 +62,14 @@ export async function runOnlineWorker(signal: AbortSignal): Promise<void> {
       }
       await delay(config.pollMs, undefined, { signal }).catch(error => { if (!signal.aborted) throw error; });
     }
+  } catch (error) {
+    failure = error instanceof Error ? error.message : String(error);
+    throw error;
   } finally {
     clearInterval(timer);
-    await store.write("state", { id: "worker", pid: process.pid, updatedAt: new Date().toISOString(), stopped: true });
-    await release();
+    try {
+      await store.write("state", { id: "worker", pid: process.pid, updatedAt: new Date().toISOString(), stopped: true, error: failure });
+    } finally { await release(); }
   }
 }
 
