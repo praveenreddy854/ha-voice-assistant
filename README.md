@@ -42,6 +42,18 @@ REACT_APP_API_BASE_URL=http://localhost:3005
 
 #### Backend Environment (`service/.env`)
 
+Configure each model tier with a JSON object containing `model` and `reasoningEffort`. In `.env`, wrap the JSON in single quotes to preserve its double quotes:
+
+```env
+AI_MODEL_NANO='{"model":"gpt-5.4-nano","reasoningEffort":"low"}'
+AI_MODEL_MINI='{"model":"gpt-5.4-mini","reasoningEffort":"low"}'
+AI_MODEL_ADVANCED='{"model":"gpt-5.4","reasoningEffort":"medium"}'
+```
+
+`model` must be a nonempty deployment name. `reasoningEffort` is optional; omitting it uses the provider default. Supported reasoning values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; choose a value supported by your deployment. Plain deployment names still work. Malformed JSON, unknown fields, invalid reasoning levels, and CSV pairs fail at startup. An unset or blank mini tier inherits the nano settings, and advanced inherits the mini settings. `AI_MODEL_HOME_ASSISTANT` inherits the advanced settings and accepts the same JSON format for an explicit override. An override without `reasoningEffort` uses the provider default.
+
+Reasoning is applied to text, JSON, vision, and delegated agent requests. Offline TV, scheduling and Realtime reasoning model overrides and `OFFLINE_EVAL_JUDGE_MODEL`, `ONLINE_EVAL_JUDGE_MODEL`, and `ONLINE_EVAL_REVIEW_MODEL` also accept JSON settings. GPT Live, native Realtime audio, transcription, and embedding deployment settings continue to use plain names.
+
 ```env
 HOME_ASSISTANT_URL=http://your-ha-instance:8123
 HOME_ASSISTANT_TOKEN=your_ha_long_lived_access_token

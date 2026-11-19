@@ -1,6 +1,6 @@
 import { createAzure } from "@ai-sdk/azure";
 import { generateText } from "ai";
-import { samplingSettings } from "./modelSettings";
+import { parseModelSettings, reasoningSettings, samplingSettings, type ReasoningEffort } from "./modelSettings";
 import {
   AZURE_OPENAI_API_KEY,
   AZURE_OPENAI_RESOURCE_NAME,
@@ -83,18 +83,22 @@ async function withRetry<T>(
  */
 export async function generateCompletion(params: {
   model: string;
+  reasoningEffort?: ReasoningEffort;
   messages: Array<{ role: string; content: string }>;
   maxTokens?: number;
   temperature?: number;
   abortSignal?: AbortSignal;
 }): Promise<string> {
+  const model = parseModelSettings(params.model);
+  const reasoningEffort = params.reasoningEffort ?? model?.reasoningEffort;
   return withRetry(async () => {
     const result = await generateText({
-      model: azureProvider(params.model),
+      model: azureProvider(model?.model ?? ""),
       messages: params.messages as any,
       abortSignal: params.abortSignal,
       maxOutputTokens: params.maxTokens ?? 1000,
-      ...samplingSettings(params.model, params.temperature),
+      ...reasoningSettings(reasoningEffort),
+      ...samplingSettings(model?.model ?? "", params.temperature, reasoningEffort),
     });
     return result.text;
   }, 2, 500, params.abortSignal);
@@ -105,6 +109,7 @@ export async function generateCompletion(params: {
  */
 export async function generateJsonCompletion<T>(params: {
   model: string;
+  reasoningEffort?: ReasoningEffort;
   messages: Array<{ role: string; content: string }>;
   maxTokens?: number;
   temperature?: number;
@@ -118,15 +123,18 @@ export async function generateJsonCompletion<T>(params: {
  */
 export async function generateVisionText(params: {
   model: string;
+  reasoningEffort?: ReasoningEffort;
   prompt: string;
   imageBase64: string;
   imageContentType: string;
   maxTokens?: number;
   temperature?: number;
 }): Promise<string> {
+  const model = parseModelSettings(params.model);
+  const reasoningEffort = params.reasoningEffort ?? model?.reasoningEffort;
   return withRetry(async () => {
     const result = await generateText({
-      model: azureProvider(params.model),
+      model: azureProvider(model?.model ?? ""),
       messages: [
         {
           role: "user",
@@ -145,7 +153,8 @@ export async function generateVisionText(params: {
         },
       ],
       maxOutputTokens: params.maxTokens ?? 500,
-      ...samplingSettings(params.model, params.temperature),
+      ...reasoningSettings(reasoningEffort),
+      ...samplingSettings(model?.model ?? "", params.temperature, reasoningEffort),
     });
     return result.text;
   });

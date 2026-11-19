@@ -1,4 +1,5 @@
 import type { AgentLoop, AgentLoopConfig } from "../../agents/core/agentLoop";
+import type { ReasoningEffort } from "../../modelSettings";
 import { buildLiveVoiceSystemPrompt, LIVE_VOICE_MAX_ITERATIONS, LIVE_VOICE_REQUIRE_TOOL_CALL, liveVoiceToolDefinitions } from "../../liveVoiceContract";
 import { REALTIME_TOOLS } from "../../realtimeAgent";
 import { runOfflineAgentLoop } from "../loop";
@@ -14,6 +15,7 @@ export const REALTIME_EVAL_LIMITS = {
 export async function executeRealtimeSession(options: {
   createLoop(config: AgentLoopConfig): AgentLoop;
   model: string;
+  reasoningEffort?: ReasoningEffort;
   environment: RealtimeEnvironment;
   signal: AbortSignal;
   telemetry: TrialTelemetry;
@@ -42,7 +44,7 @@ export async function executeRealtimeSession(options: {
       const context = environment.beginTurn(index);
       const systemPrompt = buildLiveVoiceSystemPrompt(`${environment.instructions}\n${context}`);
       const result = await runOfflineAgentLoop({
-        createLoop: options.createLoop, model: options.model,
+        createLoop: options.createLoop, model: options.model, reasoningEffort: options.reasoningEffort,
         systemPrompt, tools: liveVoiceToolDefinitions(REALTIME_TOOLS),
         maxIterations: LIVE_VOICE_MAX_ITERATIONS,
         requireToolCall: LIVE_VOICE_REQUIRE_TOOL_CALL,

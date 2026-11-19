@@ -3,7 +3,7 @@
  * Uses vision models to analyze TV screenshots and infer user actions
  */
 
-import { AI_MODEL_ADVANCED } from "../../../config";
+import { AI_MODEL_ADVANCED, AI_MODEL_ADVANCED_REASONING_EFFORT } from "../../../config";
 import { generateVisionText } from "../../../ai";
 
 /**
@@ -91,6 +91,7 @@ Return ONLY the JSON, no other text.`;
 
     const responseText = await generateVisionText({
       model: AI_MODEL_ADVANCED,
+      reasoningEffort: AI_MODEL_ADVANCED_REASONING_EFFORT,
       prompt,
       imageBase64: screenshotBase64,
       imageContentType: contentType,

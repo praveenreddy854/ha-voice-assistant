@@ -11,7 +11,7 @@ function assistantFixture(command: string) {
   let deleted = false;
   let config!: AgentLoopConfig;
   const stubs: Record<string, unknown> = {
-    "../src/config": { AI_MODEL_ADVANCED: "test-model" },
+    "../src/config": { AI_MODEL_ADVANCED: "test-model", AI_MODEL_ADVANCED_REASONING_EFFORT: "high" },
     "../src/memory": { getPromptMemoryContext: async () => "", AGENT_MEMORY_SYSTEM_INSTRUCTIONS: "" },
     "../src/agents/core/memoryTools": { buildMemoryToolDefinitions: () => [] },
     "../src/assistantCapabilities": {
@@ -23,6 +23,8 @@ function assistantFixture(command: string) {
     "../src/agents/core/agentLoop": {
       createAgentLoop: (value: AgentLoopConfig) => {
         config = value;
+        assert.equal(config.model, "test-model");
+        assert.equal(config.reasoningEffort, "high");
         return {
           createSession: () => ({ id: "test-session" }),
           run: async () => {

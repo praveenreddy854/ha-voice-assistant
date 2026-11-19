@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isValidModelOverride, parseModelSettings } from "../modelSettings";
 import { EvalStore, digest, processIsRunning } from "./store";
 import { EvalRunner } from "./runner";
 import { getEvalAgent } from "./registry";
@@ -17,7 +18,10 @@ export interface ModelComparison {
 export async function compareModels(input: ComparisonInput, store: EvalStore, dependencies: {
   createAdapter(model: string): Promise<AgentAdapter>; judge: Judge; judgeModel: string; graderVersion: string;
 }, signal: AbortSignal): Promise<ModelComparison> {
-  if (input.baselineModel === input.candidateModel || ![input.baselineModel, input.candidateModel].every(model => /^[a-zA-Z0-9._-]+$/.test(model))) throw new Error("Choose two distinct valid model deployments");
+  if (![input.baselineModel, input.candidateModel].every(isValidModelOverride)
+    || JSON.stringify(parseModelSettings(input.baselineModel)) === JSON.stringify(parseModelSettings(input.candidateModel))) {
+    throw new Error("Choose two distinct valid model settings");
+  }
   const repeats = input.repeats ?? 1;
   if (!Number.isInteger(repeats) || repeats < 1 || repeats > 5) throw new Error("Choose 1 to 5 repetitions");
   const releaseSubmission = await store.acquire("submission.lock");
@@ -84,7 +88,7 @@ if (require.main === module) {
     const controller = new AbortController();
     process.once("SIGTERM", () => controller.abort()); process.once("SIGINT", () => controller.abort());
     const report = await compareModels({ agentId: registration.id, baselineModel, candidateModel, scenarioIds: scenarioIds.length ? scenarioIds : undefined }, new EvalStore(), {
-      createAdapter: model => registration.createAdapter(model), judge: await createLlmJudge(judgeModel), judgeModel, graderVersion: GRADER_VERSION,
+      createAdapter: model => registration.createAdapter(model), judge: await createLlmJudge(judgeModel, [], "", process.env.OFFLINE_EVAL_JUDGE_MODEL ? undefined : config.AI_MODEL_ADVANCED_REASONING_EFFORT), judgeModel, graderVersion: GRADER_VERSION,
     }, controller.signal);
     console.log(JSON.stringify({ id: report.id, status: report.status, pairs: report.pairs }, null, 2));
     if (report.status !== "completed") process.exitCode = 1;

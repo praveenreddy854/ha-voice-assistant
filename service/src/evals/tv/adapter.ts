@@ -17,7 +17,7 @@ async function readSkills(directory: string, prefix = ""): Promise<Record<string
 }
 export async function createTvAdapter(modelOverride?: string): Promise<AgentAdapter> {
   // This module is constructed only inside the worker after its network boundary.
-  const [{ createAgentLoop }, { TV_TOOLS }, constants, { AI_MODEL_ADVANCED }, { buildMemoryToolDefinitions }, memory] = await Promise.all([
+  const [{ createAgentLoop }, { TV_TOOLS }, constants, { AI_MODEL_ADVANCED, AI_MODEL_ADVANCED_REASONING_EFFORT }, { buildMemoryToolDefinitions }, memory] = await Promise.all([
     import("../../agents/core/agentLoop"), import("../../agents/tv/tools"), import("../../agents/tv/constants"), import("../../config"),
     import("../../agents/core/memoryTools"), import("../../memory"),
   ]);
@@ -25,6 +25,7 @@ export async function createTvAdapter(modelOverride?: string): Promise<AgentAdap
   const systemPrompt = `${constants.TV_AGENT_INSTRUCTIONS}\n\n${memory.AGENT_MEMORY_SYSTEM_INSTRUCTIONS}`;
   const tools = [...TV_TOOLS, ...buildMemoryToolDefinitions("tv")].map(({ type, function: contract }) => ({ type, function: contract }));
   const model = modelOverride || AI_MODEL_ADVANCED;
+  const reasoningEffort = modelOverride ? undefined : AI_MODEL_ADVANCED_REASONING_EFFORT;
   if (!model) throw new Error("Configure AI_MODEL_ADVANCED before running evals");
   const promptVersion = digest({ systemPrompt, skills, tools: tools.map(t => ({ name: t.function.name, description: t.function.description, schema: t.function.inputSchema?.toJSONSchema() })) });
   return { id: "tv", version: "tv-simulator-1", scenarios: tvScenarios, model, promptVersion,
@@ -38,7 +39,7 @@ export async function createTvAdapter(modelOverride?: string): Promise<AgentAdap
       }, signal, async telemetry => {
         telemetry.virtualDeviceTimeMs = 0;
         const { finalResponse, stoppedAtIterationLimit: stopped } = await runOfflineAgentLoop({
-          createLoop: createAgentLoop, systemPrompt, tools, model, maxIterations: cap, initialMessage, signal, telemetry,
+          createLoop: createAgentLoop, systemPrompt, tools, model, reasoningEffort, maxIterations: cap, initialMessage, signal, telemetry,
           oneToolPerTurn: true,
           record: item => environment.record(item),
           async executeTool(name, args) {

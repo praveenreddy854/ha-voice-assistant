@@ -1,6 +1,7 @@
 import cron from "node-cron";
 import {
   AI_MODEL_MINI,
+  AI_MODEL_MINI_REASONING_EFFORT,
   PROACTIVE_REMINDERS_CRON,
   PROACTIVE_REMINDERS_ENABLED,
   PROACTIVE_REMINDER_ON_MINUTES,
@@ -212,6 +213,7 @@ async function buildReminderMessage(situations: Situation[]): Promise<string> {
   try {
     const text = await generateCompletion({
       model: AI_MODEL_MINI,
+      reasoningEffort: AI_MODEL_MINI_REASONING_EFFORT,
       temperature: 0.4,
       maxTokens: 120,
       messages: [

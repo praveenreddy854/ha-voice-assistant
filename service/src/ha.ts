@@ -1,4 +1,4 @@
-import { HOME_ASSISTANT_URL, HOME_ASSISTANT_TOKEN, AI_MODEL_HOME_ASSISTANT } from "./config";
+import { HOME_ASSISTANT_URL, HOME_ASSISTANT_TOKEN, AI_MODEL_HOME_ASSISTANT, AI_MODEL_HOME_ASSISTANT_REASONING_EFFORT } from "./config";
 import fs from "fs";
 import path from "path";
 import { HassServiceCommandBody, HassServiceCommand, HassState, HassTranslationResponse } from "./types/ha";
@@ -110,6 +110,7 @@ export async function getHACommandBody(
     const started = Date.now();
     const responseText = await generateCompletion({
       model: AI_MODEL_HOME_ASSISTANT || "",
+      reasoningEffort: AI_MODEL_HOME_ASSISTANT_REASONING_EFFORT,
       messages,
       abortSignal: options?.abortSignal,
     });

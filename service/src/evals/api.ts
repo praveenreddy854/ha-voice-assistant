@@ -1,6 +1,7 @@
 import { Router } from "express";
 import path from "node:path";
 import { z } from "zod";
+import { isValidModelOverride } from "../modelSettings";
 import { EvalSupervisor } from "./supervisor";
 import { EvalStore } from "./store";
 import { EVAL_TIMEZONE, fidelityPairs, localDay, runVerdict, shiftDay } from "./analytics";
@@ -15,7 +16,7 @@ import { aggregateTrialMetrics } from "./telemetry";
 
 const agentSelection = z.enum(EVAL_AGENT_IDS).default("tv");
 const jobSchema = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("simulated"), agentId: agentSelection, scenarioIds: z.array(z.string().regex(/^[a-z0-9-]+$/)).min(1).optional(), model: z.string().regex(/^[a-zA-Z0-9._-]+$/).optional() }).strict(),
+  z.object({ mode: z.literal("simulated"), agentId: agentSelection, scenarioIds: z.array(z.string().regex(/^[a-z0-9-]+$/)).min(1).optional(), model: z.string().refine(isValidModelOverride, "Expected a deployment name or JSON model settings").optional() }).strict(),
   z.object({ mode: z.literal("recorded"), agentId: agentSelection, sessionIds: z.array(z.string().regex(/^[a-zA-Z0-9_-]+$/)).min(1).max(100)
     .refine(ids => new Set(ids).size === ids.length, "Session IDs must be unique"), requestId: z.string().uuid().optional() }).strict(),
   z.object({ mode: z.literal("calibrate"), agentId: agentSelection }).strict(),

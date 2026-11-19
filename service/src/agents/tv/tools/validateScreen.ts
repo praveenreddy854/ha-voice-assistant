@@ -3,7 +3,7 @@ import { TvToolDefinition, ToolExecutionContext, ToolExecutionResult } from "./t
 import { getLatestScreenshot } from "../../common/screenshotStore";
 import { isRtspMode, startRtspCapture } from "../../common/rtspCapture";
 import { generateVisionText } from "../../../ai";
-import { AI_MODEL_MINI } from "../../../config";
+import { AI_MODEL_MINI, AI_MODEL_MINI_REASONING_EFFORT } from "../../../config";
 
 export const inputSchema = z.object({
   expected_state: z.string().describe(
@@ -62,6 +62,7 @@ async function execute(
 
   const analysis = await generateVisionText({
     model: AI_MODEL_MINI,
+    reasoningEffort: AI_MODEL_MINI_REASONING_EFFORT,
     prompt,
     imageBase64: screenshot.base64,
     imageContentType: screenshot.contentType,

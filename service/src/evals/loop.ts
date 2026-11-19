@@ -8,12 +8,14 @@ import type {
 } from "../agents/core/agentLoop";
 import type { EvalModelCall, Evidence, Usage } from "./types";
 import { reportedModelUsage, type TrialTelemetry } from "./telemetry";
+import type { ReasoningEffort } from "../modelSettings";
 
 export interface OfflineLoopOptions {
   createLoop(config: AgentLoopConfig): AgentLoop;
   systemPrompt: string | (() => string);
   tools: ToolDefinition[];
   model: string;
+  reasoningEffort?: ReasoningEffort;
   maxIterations: number;
   requireToolCall?: boolean;
   initialMessage: string;
@@ -80,6 +82,7 @@ export async function runOfflineAgentLoop(options: OfflineLoopOptions): Promise<
     systemPrompt: options.systemPrompt,
     tools,
     model: options.model,
+    reasoningEffort: options.reasoningEffort,
     maxIterations: options.maxIterations,
     requireToolCall: options.requireToolCall,
     modelMiddleware: {

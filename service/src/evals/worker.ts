@@ -1,4 +1,5 @@
 import dotenv from "dotenv";
+import { isValidModelOverride } from "../modelSettings";
 import { randomUUID } from "node:crypto";
 import { EvalStore } from "./store";
 import { installNetworkBoundary } from "./network";
@@ -49,7 +50,7 @@ export async function runWorker(job: EvalJob, store = new EvalStore()): Promise<
     const judgeModel = process.env.OFFLINE_EVAL_JUDGE_MODEL || config.AI_MODEL_ADVANCED;
     if (!judgeModel) throw new Error("Configure OFFLINE_EVAL_JUDGE_MODEL or AI_MODEL_ADVANCED");
     const scenarios = await registration.scenarios();
-    const judge = await createLlmJudge(judgeModel, scenarios.map(s => s.context));
+    const judge = await createLlmJudge(judgeModel, scenarios.map(s => s.context), "", process.env.OFFLINE_EVAL_JUDGE_MODEL ? undefined : config.AI_MODEL_ADVANCED_REASONING_EFFORT);
     if (job.mode === "calibrate") {
       const result = await calibrateJudge(store, judge, judgeModel, GRADER_VERSION, controller.signal, registration.id);
       if (!result.passed) throw new Error("Judge disagreed with the selected agent's reference cases; inspect calibration results");
@@ -114,7 +115,7 @@ export function parseEvalArguments(args: string[]): Pick<EvalJob, "mode" | "agen
   }
   const agentId = getEvalAgent(flags.get("--agent")).id;
   const model = flags.get("--model");
-  if (model && (mode !== "simulated" || !/^[a-zA-Z0-9._-]+$/.test(model))) throw new Error("A valid --model deployment is supported only for simulations");
+  if (model !== undefined && (mode !== "simulated" || !isValidModelOverride(model))) throw new Error("A valid --model deployment or JSON model settings is supported only for simulations");
   if (mode === "calibrate" && identifiers.length) throw new Error("Judge calibration does not accept scenario or session IDs");
   if (mode === "recorded" && (!identifiers.length || identifiers.length > 100 || identifiers.some(id => !/^[a-zA-Z0-9_-]+$/.test(id)))) {
     throw new Error("Select 1 to 100 valid completed session IDs");

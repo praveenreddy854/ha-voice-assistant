@@ -18,13 +18,16 @@ export async function runOnlineWorker(signal: AbortSignal): Promise<void> {
     const settings = await import("../../config");
     const judgeModel = process.env.ONLINE_EVAL_JUDGE_MODEL || process.env.OFFLINE_EVAL_JUDGE_MODEL || settings.AI_MODEL_ADVANCED;
     const reviewerModel = process.env.ONLINE_EVAL_REVIEW_MODEL || judgeModel;
+    const judgeReasoningEffort = process.env.ONLINE_EVAL_JUDGE_MODEL || process.env.OFFLINE_EVAL_JUDGE_MODEL
+      ? undefined : settings.AI_MODEL_ADVANCED_REASONING_EFFORT;
+    const reviewerReasoningEffort = process.env.ONLINE_EVAL_REVIEW_MODEL ? undefined : judgeReasoningEffort;
     if (!judgeModel || !reviewerModel || !settings.AZURE_OPENAI_RESOURCE_NAME) throw new Error("Configure online eval judge models and the Azure model endpoint");
     // Model calls only. No live tools, web fetches, or historical device replays.
     installNetworkBoundary(`${settings.AZURE_OPENAI_RESOURCE_NAME}.openai.azure.com`);
     const { createLlmJudge } = await import("../judge");
     return {
-      judgeModel, reviewerModel, primary: await createLlmJudge(judgeModel),
-      reviewer: await createLlmJudge(reviewerModel, [], ONLINE_REVIEW_INSTRUCTIONS),
+      judgeModel, reviewerModel, primary: await createLlmJudge(judgeModel, [], "", judgeReasoningEffort),
+      reviewer: await createLlmJudge(reviewerModel, [], ONLINE_REVIEW_INSTRUCTIONS, reviewerReasoningEffort),
     };
   })());
   const heartbeat = (error?: string) => store.write("state", {

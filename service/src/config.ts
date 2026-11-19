@@ -1,4 +1,5 @@
 import dotenv from "dotenv";
+import { parseModelSettings } from "./modelSettings";
 
 dotenv.config();
 
@@ -26,15 +27,23 @@ export const AZURE_OPENAI_API_VERSION =
 // ============================================================================
 
 /** Nano: simple JSON extraction */
-export const AI_MODEL_NANO = process.env.AI_MODEL_NANO;
+const nanoModel = parseModelSettings(process.env.AI_MODEL_NANO, "AI_MODEL_NANO");
+export const AI_MODEL_NANO = nanoModel?.model;
+export const AI_MODEL_NANO_REASONING_EFFORT = nanoModel?.reasoningEffort;
 
 /** Mini: HA commands, vision helpers */
-export const AI_MODEL_MINI = process.env.AI_MODEL_MINI ?? process.env.AI_MODEL_NANO;
+const miniModel = parseModelSettings(process.env.AI_MODEL_MINI, "AI_MODEL_MINI") ?? nanoModel;
+export const AI_MODEL_MINI = miniModel?.model;
+export const AI_MODEL_MINI_REASONING_EFFORT = miniModel?.reasoningEffort;
 
 /** Advanced: agent loops (TV agent, navigation, typing) */
-export const AI_MODEL_ADVANCED = process.env.AI_MODEL_ADVANCED ?? process.env.AI_MODEL_MINI;
+const advancedModel = parseModelSettings(process.env.AI_MODEL_ADVANCED, "AI_MODEL_ADVANCED") ?? miniModel;
+export const AI_MODEL_ADVANCED = advancedModel?.model;
+export const AI_MODEL_ADVANCED_REASONING_EFFORT = advancedModel?.reasoningEffort;
 /** Device-command translation needs the same intent fidelity as voice reasoning. */
-export const AI_MODEL_HOME_ASSISTANT = process.env.AI_MODEL_HOME_ASSISTANT ?? AI_MODEL_ADVANCED;
+const homeAssistantModel = parseModelSettings(process.env.AI_MODEL_HOME_ASSISTANT, "AI_MODEL_HOME_ASSISTANT") ?? advancedModel;
+export const AI_MODEL_HOME_ASSISTANT = homeAssistantModel?.model;
+export const AI_MODEL_HOME_ASSISTANT_REASONING_EFFORT = homeAssistantModel?.reasoningEffort;
 export const EMBEDDING_MODEL =
   process.env.EMBEDDING_MODEL ?? "text-embedding-ada-002";
 

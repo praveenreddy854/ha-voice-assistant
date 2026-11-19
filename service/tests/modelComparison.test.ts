@@ -39,6 +39,19 @@ test("controlled comparisons preserve paired fixtures, alternate order and hold 
   assert.equal(await store.workerIsActive(), false); assert.equal(await store.submissionIsActive(), false);
 }));
 
+test("comparisons accept different efforts on one deployment and reject equivalent settings", async () => fixture(async store => {
+  const baselineModel = '{"model":"same-deployment","reasoningEffort":"low"}';
+  const candidateModel = '{"model":"same-deployment","reasoningEffort":"high"}';
+  const calls: string[] = [];
+  const dependencies = { createAdapter: async (model: string) => adapter(model, calls), judge, judgeModel: "judge", graderVersion: "grader" };
+  const report = await compareModels({ agentId: "tv", baselineModel, candidateModel, scenarioIds: ["first"] }, store, dependencies, new AbortController().signal);
+  assert.equal(report.status, "completed");
+  assert.equal(calls.length, 2);
+  await assert.rejects(compareModels({ agentId: "tv", baselineModel: "same-deployment", candidateModel: '{"model":"same-deployment"}' }, store, dependencies, new AbortController().signal), /distinct valid model settings/);
+  await assert.rejects(compareModels({ agentId: "tv", baselineModel, candidateModel: '{"reasoningEffort":"low", "model":"same-deployment"}' }, store, dependencies, new AbortController().signal), /distinct valid model settings/);
+  assert.equal(calls.length, 2, "Equivalent settings must be rejected before model execution");
+}));
+
 test("different prompts or fixtures fail before either model is called", async () => fixture(async store => {
   const calls: string[] = [];
   await assert.rejects(compareModels({ agentId: "tv", baselineModel: "baseline", candidateModel: "candidate" }, store,

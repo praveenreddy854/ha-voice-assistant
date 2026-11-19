@@ -4,6 +4,7 @@ import { embed } from "ai";
 import { azureProvider, generateCompletion } from "./ai";
 import {
   AI_MODEL_MINI,
+  AI_MODEL_MINI_REASONING_EFFORT,
   AZURE_COSMOS_DATABASE,
   AZURE_COSMOS_ENDPOINT,
   AZURE_COSMOS_KEY,
@@ -1011,6 +1012,7 @@ ${transcript}`;
 
   const raw = await generateCompletion({
     model,
+    reasoningEffort: AI_MODEL_MINI_REASONING_EFFORT,
     messages: [{ role: "user", content: prompt }],
     maxTokens: 1200,
     temperature: 0,
