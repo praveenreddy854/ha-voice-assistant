@@ -41,7 +41,7 @@ const mapStatesToRecords = (
   });
 };
 
-const captureAndPersistStates = async (reason: string): Promise<void> => {
+const captureAndPersistStates = async (reason: string, signal: AbortSignal): Promise<void> => {
   if (!isCosmosConfigured()) {
     console.warn(
       `Azure Cosmos DB credentials are missing; skipping device state capture (${reason})`
@@ -50,7 +50,11 @@ const captureAndPersistStates = async (reason: string): Promise<void> => {
   }
 
   try {
-    const states = await getKnownDeviceStates();
+    // A stalled startup capture must release the scheduler's non-overlap guard.
+    // Share cancellation with shutdown, and bound the complete HA response read.
+    const abortSignal = AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
+    const states = await getKnownDeviceStates({ abortSignal });
+    abortSignal.throwIfAborted();
 
     const capturedAt = new Date();
     const records = mapStatesToRecords(capturedAt, reason, states);
@@ -67,6 +71,7 @@ const captureAndPersistStates = async (reason: string): Promise<void> => {
       `Persisted ${records.length} Home Assistant device states to Azure Cosmos DB (${reason})`
     );
   } catch (error) {
+    if (signal.aborted) return;
     console.error("Failed to capture Home Assistant device states", error);
   }
 };
@@ -83,7 +88,7 @@ export const startDeviceStateLogging = (): void => {
     id: "device-state-log",
     expression: DEVICE_STATE_LOG_CRON,
     runOnStart: true,
-    run: (_signal, reason) => captureAndPersistStates(reason === "startup" ? "startup snapshot" : "scheduled run"),
+    run: (signal, reason) => captureAndPersistStates(reason === "startup" ? "startup snapshot" : "scheduled run", signal),
   });
 
   console.info(

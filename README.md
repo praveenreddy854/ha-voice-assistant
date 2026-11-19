@@ -109,7 +109,7 @@ timer. `announcementPolicy` defaults to `oncePerState`, which announces once per
 state episode per service process; `everyMatch` announces on every matching cron
 run, useful for daily checks. Episode deduplication resets on service restart.
 
-Monitor reads time out after 10 seconds. Each job skips ticks while a previous run
+Monitor and device-state snapshot reads time out after 10 seconds. Each job skips ticks while a previous run
 is active, and shutdown destroys schedules and aborts monitor reads. These are
 process-local jobs: run one scheduler instance for a household. Missed ticks are
 not replayed. The existing durable, voice-created ScheduledTasks keep their own
