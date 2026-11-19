@@ -172,6 +172,26 @@ test("API retries preserve the previous attempt and are idempotent; summaries ex
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
 }));
 
+test("online cohorts separate efforts for the same deployment, prompt and judge", async () => fixture(async (store, engine) => {
+  const traces = (["low", "high", undefined] as const).map(reasoningEffort => trace(reasoningEffort ?? "legacy", {
+    llmSteps: [{
+      stepNumber: 1, timestamp: now().toISOString(), finishReason: "stop", requestModel: "shared",
+      reasoningEffort, text: "On it.", toolCalls: [], systemMessages: ["unchanged instructions"],
+    }],
+  }));
+  await engine.discover(traces, cutoff);
+  for (const _ of traces) assert.equal(await engine.runNext(new AbortController().signal), true);
+  const { cohorts } = onlineSummary(await store.list<OnlineRecord>("records"));
+  assert.equal(cohorts.length, 3);
+  assert.equal(new Set(cohorts.map(cohort => cohort.promptVersion)).size, 1);
+  assert.equal(new Set(cohorts.map(cohort => cohort.judgeModel)).size, 1);
+  assert.deepEqual(new Set(cohorts.map(cohort => cohort.model)), new Set([
+    '{"model":"shared","reasoningEffort":"low"}',
+    '{"model":"shared","reasoningEffort":"high"}',
+    "shared",
+  ]));
+}));
+
 test("calibration includes paired guard-preference examples, wrong-device routing and timed-phase failures", () => {
   const realtime = calibrationReferenceAssessments("realtime"), scheduling = calibrationReferenceAssessments("scheduled_task");
   assert.equal(realtime.find(reference => reference.id === "LOG-R2")?.expected[0], "pass");

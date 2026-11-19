@@ -12,6 +12,7 @@ interface RequestBody {
   model: string;
   reasoning?: { effort: string };
   temperature?: number;
+  max_output_tokens: number;
 }
 
 function completion(text = "OK") {
@@ -50,10 +51,35 @@ test("nano, mini, and advanced text/JSON/vision calls send separate effort to th
   const messages = [{ role: "user", content: "synthetic" }];
   await generateCompletion({ model: "shared-deployment", messages });
   assert.equal(requests.at(-1)!.reasoning, undefined);
+  assert.equal(requests.at(-1)!.max_output_tokens, 1000);
   await generateCompletion({ model: '{"model":"shared-deployment","reasoningEffort":"none"}', messages });
   assert.equal(requests.at(-1)!.reasoning?.effort, "none");
+  assert.equal(requests.at(-1)!.max_output_tokens, 1000);
   await generateCompletion({ model: '{"model":"shared-deployment","reasoningEffort":"low"}', reasoningEffort: "high", messages });
   assert.equal(requests.at(-1)!.reasoning?.effort, "high");
+  await generateCompletion({ model: "gpt-5.4", messages });
+  assert.equal(requests.at(-1)!.max_output_tokens, 26_000);
+});
+
+test("short text and vision calls reserve reasoning tokens and reject incomplete output", async t => {
+  const { generateCompletion, generateVisionText } = await import("../src/ai");
+  const requests: RequestBody[] = [];
+  t.mock.method(globalThis, "fetch", async (_url: unknown, init: RequestInit) => {
+    requests.push(JSON.parse(String(init.body)));
+    const body = await completion("partial").json();
+    return Response.json({
+      ...body, status: "incomplete", incomplete_details: { reason: "max_output_tokens" },
+      output: requests.length === 1 ? [] : body.output,
+    });
+  });
+  const settings = { model: '{"model":"shared-deployment","reasoningEffort":"high"}' };
+  await assert.rejects(generateCompletion({
+    ...settings, messages: [{ role: "user", content: "reminder" }], maxTokens: 120,
+  }), /truncated at the output token limit/);
+  await assert.rejects(generateVisionText({
+    ...settings, prompt: "screen validation", imageBase64: "AA==", imageContentType: "image/png", maxTokens: 200,
+  }), /truncated at the output token limit/);
+  assert.deepEqual(requests.map(request => request.max_output_tokens), [25_120, 25_200]);
 });
 
 test("judge calls honor inherited effort and explicit JSON model settings", async t => {
@@ -66,6 +92,7 @@ test("judge calls honor inherited effort and explicit JSON model settings", asyn
   for (const [model, reasoningEffort, expected] of [
     ["shared-deployment", "high", "high"],
     ['{"model":"shared-deployment","reasoningEffort":"low"}', undefined, "low"],
+    ['{"model":"shared-deployment","reasoningEffort":"low"}', "none", "none"],
     ["shared-deployment", undefined, undefined],
   ] as const) {
     const judge = await createLlmJudge(model, [], "", reasoningEffort);
@@ -76,27 +103,35 @@ test("judge calls honor inherited effort and explicit JSON model settings", asyn
   }
 });
 
-test("Realtime reasoning evals inherit advanced effort and honor JSON or plain overrides", async t => {
+test("offline adapters record effective effort for inherited and overridden model settings", async t => {
   const { createRealtimeAdapter } = await import("../src/evals/realtime/adapter");
+  const { createScheduledTaskAdapter } = await import("../src/evals/scheduled-task/adapter");
+  const { createTvAdapter } = await import("../src/evals/tv/adapter");
   const requests: RequestBody[] = [];
   t.mock.method(globalThis, "fetch", async (_url: unknown, init: RequestInit) => {
     requests.push(JSON.parse(String(init.body)));
     return toolResponse("complete_task", { success: true, message: "The Moon's phases are the changing portion of its sunlit half that we see as it orbits Earth." });
   });
-  for (const [override, effort] of [
-    [undefined, "high"],
-    ['{"model":"shared-deployment","reasoningEffort":"low"}', "low"],
-    ["shared-deployment", undefined],
-  ] as const) {
-    const adapter = await createRealtimeAdapter(override);
-    const scenario = adapter.scenarios.find(item => item.id === "general-chat")!;
-    const result = await adapter.execute(scenario, new AbortController().signal);
-    assert.equal(result.coverage, "complete");
-    assert.equal(result.metrics?.stopReason, "completed");
-    assert.equal(requests.at(-1)!.model, "shared-deployment");
-    assert.equal(requests.at(-1)!.reasoning?.effort, effort);
+  for (const makeAdapter of [createTvAdapter, createScheduledTaskAdapter, createRealtimeAdapter]) {
+    for (const [override, effort] of [
+      [undefined, "high"],
+      ['{"reasoningEffort":"low","model":"shared-deployment"}', "low"],
+      ["shared-deployment", undefined],
+    ] as const) {
+      const adapter = await makeAdapter(override);
+      const scenario = adapter.id === "realtime" ? adapter.scenarios.find(item => item.id === "general-chat")! : adapter.scenarios[0];
+      const result = await adapter.execute(scenario, new AbortController().signal);
+      const identity = effort ? JSON.stringify({ model: "shared-deployment", reasoningEffort: effort }) : "shared-deployment";
+      assert.equal(result.coverage, "complete");
+      assert.equal(result.metrics?.stopReason, "completed");
+      assert.equal(adapter.model, identity);
+      assert.equal(result.model, identity);
+      assert.deepEqual(result.trace?.modelCalls.map(call => call.model), [identity]);
+      assert.equal(requests.at(-1)!.model, "shared-deployment");
+      assert.equal(requests.at(-1)!.reasoning?.effort, effort);
+    }
   }
-  assert.equal(requests.length, 3);
+  assert.equal(requests.length, 9);
 });
 
 test("advanced agent defaults and explicit overrides survive tool steps and screenshot continuations", async t => {
@@ -114,10 +149,10 @@ test("advanced agent defaults and explicit overrides survive tool steps and scre
       if (requests.length === 2) return toolResponse("get_latest_screenshot", {}, "screen");
       return toolResponse("complete_task", { success: true, message: "Done" }, "complete");
     });
-    const events: string[] = [];
+    const events: unknown[] = [];
     const loop = createAgentLoop({
       systemPrompt: "synthetic", model, reasoningEffort, maxIterations: 4,
-      onStepFinish: event => events.push(event.requestModel),
+      onStepFinish: ({ requestModel, reasoningEffort }) => events.push({ requestModel, reasoningEffort }),
       tools: [
         { type: "function", function: { name: "navigate", parameters: { type: "object", properties: {} } }, execute: async () => "moved" },
         { type: "function", function: { name: "get_latest_screenshot", parameters: { type: "object", properties: {} } } },
@@ -131,7 +166,7 @@ test("advanced agent defaults and explicit overrides survive tool steps and scre
       assert.equal(request.model, "shared-deployment");
       assert.equal(request.reasoning?.effort, expected);
     }
-    assert.deepEqual(events, ["shared-deployment", "shared-deployment", "shared-deployment"]);
+    assert.deepEqual(events, Array.from({ length: 3 }, () => ({ requestModel: "shared-deployment", reasoningEffort: expected })));
     loop.deleteSession(session.id);
   });
 });

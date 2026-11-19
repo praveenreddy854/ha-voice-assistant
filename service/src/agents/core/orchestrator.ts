@@ -110,6 +110,7 @@ function getOrCreateLoop(def: AgentDefinition): AgentLoop {
             timestamp: new Date().toISOString(),
             finishReason: event.finishReason,
             requestModel: event.requestModel,
+            reasoningEffort: event.reasoningEffort,
             responseModel: event.responseModel,
             responseId: event.responseId,
             provider: event.provider,

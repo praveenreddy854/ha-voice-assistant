@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import { modelSettingsIdentity } from "../../modelSettings";
 import path from "node:path";
 import type { AgentAdapter, Assessment, Scenario } from "../types";
 import { digest } from "../store";
@@ -24,8 +25,7 @@ export async function createTvAdapter(modelOverride?: string): Promise<AgentAdap
   const skills = await readSkills(path.join(__dirname, "../../agents/tv/skills"));
   const systemPrompt = `${constants.TV_AGENT_INSTRUCTIONS}\n\n${memory.AGENT_MEMORY_SYSTEM_INSTRUCTIONS}`;
   const tools = [...TV_TOOLS, ...buildMemoryToolDefinitions("tv")].map(({ type, function: contract }) => ({ type, function: contract }));
-  const model = modelOverride || AI_MODEL_ADVANCED;
-  const reasoningEffort = modelOverride ? undefined : AI_MODEL_ADVANCED_REASONING_EFFORT;
+  const model = modelSettingsIdentity(modelOverride || AI_MODEL_ADVANCED, modelOverride ? undefined : AI_MODEL_ADVANCED_REASONING_EFFORT);
   if (!model) throw new Error("Configure AI_MODEL_ADVANCED before running evals");
   const promptVersion = digest({ systemPrompt, skills, tools: tools.map(t => ({ name: t.function.name, description: t.function.description, schema: t.function.inputSchema?.toJSONSchema() })) });
   return { id: "tv", version: "tv-simulator-1", scenarios: tvScenarios, model, promptVersion,
@@ -39,7 +39,7 @@ export async function createTvAdapter(modelOverride?: string): Promise<AgentAdap
       }, signal, async telemetry => {
         telemetry.virtualDeviceTimeMs = 0;
         const { finalResponse, stoppedAtIterationLimit: stopped } = await runOfflineAgentLoop({
-          createLoop: createAgentLoop, systemPrompt, tools, model, reasoningEffort, maxIterations: cap, initialMessage, signal, telemetry,
+          createLoop: createAgentLoop, systemPrompt, tools, model, maxIterations: cap, initialMessage, signal, telemetry,
           oneToolPerTurn: true,
           record: item => environment.record(item),
           async executeTool(name, args) {

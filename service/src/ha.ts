@@ -118,11 +118,13 @@ export async function getHACommandBody(
     if (sessionId) retainHAEvidence(() => {
       addEvent(sessionId, "ha.translation.configuration", "Home Assistant translation configuration", {
         model: AI_MODEL_HOME_ASSISTANT || "unreported",
+        reasoningEffort: AI_MODEL_HOME_ASSISTANT_REASONING_EFFORT,
         promptVersion: createHash("sha256").update(promptCache.get(homeAssistantCacheKey) || "").digest("hex").slice(0, 24),
       });
       addLLMStep(sessionId, {
         stepNumber: 1, timestamp: new Date(started).toISOString(), finishReason: "translation_response",
-        requestModel: AI_MODEL_HOME_ASSISTANT, text: responseText, toolCalls: [], messages,
+        requestModel: AI_MODEL_HOME_ASSISTANT, reasoningEffort: AI_MODEL_HOME_ASSISTANT_REASONING_EFFORT,
+        text: responseText, toolCalls: [], messages,
         responseTimeMs: Date.now() - started,
       });
     });

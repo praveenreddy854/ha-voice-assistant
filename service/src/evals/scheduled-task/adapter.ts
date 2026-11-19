@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import { modelSettingsIdentity } from "../../modelSettings";
 import path from "node:path";
 import { runOfflineAgentLoop } from "../loop";
 import { digest } from "../store";
@@ -22,8 +23,7 @@ export async function createScheduledTaskAdapter(modelOverride?: string): Promis
   const tools = [...SCHEDULED_TASK_TOOLS, ...buildMemoryToolDefinitions("scheduled_task")]
     .map(({ type, function: contract }) => ({ type, function: contract }));
   assertScheduledTaskToolCoverage(tools);
-  const model = modelOverride || AI_MODEL_ADVANCED;
-  const reasoningEffort = modelOverride ? undefined : AI_MODEL_ADVANCED_REASONING_EFFORT;
+  const model = modelSettingsIdentity(modelOverride || AI_MODEL_ADVANCED, modelOverride ? undefined : AI_MODEL_ADVANCED_REASONING_EFFORT);
   if (!model) throw new Error("Configure AI_MODEL_ADVANCED before running evals");
   const systemPromptFor = (state: ScheduledTaskState) =>
     `${renderScheduledTaskSystemPrompt(template, new Date(state.now), state.timeZone)}\n\n${memory.AGENT_MEMORY_SYSTEM_INSTRUCTIONS}`;
@@ -57,7 +57,7 @@ export async function createScheduledTaskAdapter(modelOverride?: string): Promis
         evidence: environment.evidence, context: scenario.context, expectations: scenario.expectations,
       }, signal, async telemetry => {
         const result = await runOfflineAgentLoop({
-          createLoop: createAgentLoop, systemPrompt, tools, model, reasoningEffort, telemetry,
+          createLoop: createAgentLoop, systemPrompt, tools, model, telemetry,
           maxIterations: constants.SCHEDULED_TASK_AGENT_MAX_ITERATIONS, initialMessage, signal, requireInputSchemas: true,
           record: item => environment.record(item),
           async executeTool(name, args) {

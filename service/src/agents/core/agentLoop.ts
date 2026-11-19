@@ -25,7 +25,7 @@ import type {
 } from "ai";
 import type { z } from "zod";
 import { AI_MODEL_ADVANCED, AI_MODEL_ADVANCED_REASONING_EFFORT } from "../../config";
-import { parseModelSettings, reasoningSettings, type ReasoningEffort } from "../../modelSettings";
+import { resolveModelSettings, reasoningSettings, type ReasoningEffort } from "../../modelSettings";
 import { azureProvider } from "../../ai";
 import { getRequestContext, withRequestContext } from "../../requestContext";
 import type { AgentPauseGate } from "./types";
@@ -85,6 +85,7 @@ export interface StepEvent {
   toolCalls: Array<{ toolName: string; toolCallId: string; args: unknown; error?: string }>;
   finishReason: string;
   requestModel: string;
+  reasoningEffort?: ReasoningEffort;
   responseModel?: string;
   responseId?: string;
   provider: string;
@@ -216,10 +217,10 @@ export function createAgentLoop(
   resolveModel: (modelId: string) => Exclude<LanguageModel, string> = azureProvider
 ): AgentLoop {
   const sessions = new Map<string, AgentLoopSession>();
-  const selectedModel = parseModelSettings(config.model || AI_MODEL_ADVANCED);
-  const model = selectedModel?.model;
-  const reasoningEffort = config.reasoningEffort ?? selectedModel?.reasoningEffort
-    ?? (config.model ? undefined : AI_MODEL_ADVANCED_REASONING_EFFORT);
+  const { model, reasoningEffort } = resolveModelSettings(
+    config.model || AI_MODEL_ADVANCED,
+    config.reasoningEffort ?? (config.model ? undefined : AI_MODEL_ADVANCED_REASONING_EFFORT),
+  ) ?? {};
   const maxIterations = config.maxIterations || 20;
 
   // Build AI SDK tool set from our definitions
@@ -378,6 +379,7 @@ export function createAgentLoop(
                 })),
                 finishReason: finishReason || "unknown",
                 requestModel: model ?? "unknown",
+                reasoningEffort,
                 responseModel: response.modelId || model || undefined,
                 responseId: response.id,
                 provider: "azure.ai.openai",

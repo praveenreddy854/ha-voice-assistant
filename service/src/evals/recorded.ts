@@ -4,6 +4,7 @@ import type { CosmosClient } from "@azure/cosmos";
 import type { Assessment, Evidence } from "./types";
 import { digest } from "./store";
 import { getEvalAgent } from "./registry";
+import { formatModelSettingsIdentity } from "../modelSettings";
 
 export { RECORDED_IMPORT_VERSION } from "./types";
 
@@ -38,7 +39,8 @@ export function assessmentFromRecord(trace?: AgentTrace, flow?: TvFlowMemoryDocu
   const finalResponse = trace?.finalMessage || flow?.finalMessage || "";
   add({ kind: "final", text: finalResponse || "Final response was not retained" });
   add({ kind: "context", text: "Historical record may be incomplete. Legacy success flags and executionScore are proxies, not verified outcomes. Cosmos steps may omit automatically executed tools. Images, observations, or context absent here are unknown; do not infer that the original agent lacked them. Evidence is grouped by source/type, not a merged chronological timeline. Reconstruct available order from LLM step numbers, tool call IDs, and timestamps; missing order remains an evidence gap. Repeated snapshots, events, and Cosmos copies are not additional actions or mistakes." });
-  const models = new Set(trace?.llmSteps.map(s => s.requestModel).filter(Boolean));
+  const models = new Set(trace?.llmSteps.flatMap(({ requestModel, reasoningEffort }) =>
+    requestModel ? [formatModelSettingsIdentity({ model: requestModel, reasoningEffort })] : []));
   const system = trace?.llmSteps.find(s => s.systemMessages?.length)?.systemMessages;
   return { agentId: agent.id, mode: "recorded", request: trace?.userPrompt || flow?.userPrompt || "", finalResponse,
     evaluationScope: agent.id === "realtime" ? "routing" : "execution",

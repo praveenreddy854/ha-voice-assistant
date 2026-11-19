@@ -1,5 +1,5 @@
 import type { AgentLoop, AgentLoopConfig } from "../../agents/core/agentLoop";
-import type { ReasoningEffort } from "../../modelSettings";
+import { modelSettingsIdentity, type ReasoningEffort } from "../../modelSettings";
 import { buildLiveVoiceSystemPrompt, LIVE_VOICE_REQUIRE_TOOL_CALL, liveVoiceToolDefinitions } from "../../liveVoiceContract";
 import type { AgentAdapter, Assessment, Scenario } from "../types";
 import { digest } from "../store";
@@ -11,8 +11,9 @@ import { realtimeScenarios, REALTIME_EVAL_SCOPE } from "./scenarios";
 import type { RealtimeState } from "./scenarios";
 
 /** Injection is a model-loop seam only; every tool remains bound to the fixture. */
-export function createRealtimeAdapterWithLoop(model: string, createLoop: (config: AgentLoopConfig) => AgentLoop, reasoningEffort?: ReasoningEffort): AgentAdapter {
-  if (!model.trim()) throw new Error("Configure AI_MODEL_ADVANCED before running Realtime reasoning evals");
+export function createRealtimeAdapterWithLoop(selection: string, createLoop: (config: AgentLoopConfig) => AgentLoop, reasoningEffort?: ReasoningEffort): AgentAdapter {
+  const model = modelSettingsIdentity(selection, reasoningEffort);
+  if (!model) throw new Error("Configure AI_MODEL_ADVANCED before running Realtime reasoning evals");
   const promptVersion = digest({
     prompts: realtimeScenarios.map(scenario => buildLiveVoiceSystemPrompt(new RealtimeEnvironment(scenario).instructions)),
     runtimeInstructions: buildRealtimeTurnInstructions({
@@ -32,7 +33,7 @@ export function createRealtimeAdapterWithLoop(model: string, createLoop: (config
         agentId: "realtime", request: scenario.request, model, promptVersion,
         evidence: environment.evidence, context: scenario.context, expectations: scenario.expectations,
       }, signal, async telemetry => {
-        const result = await executeRealtimeSession({ createLoop, model, reasoningEffort, environment, signal, telemetry });
+        const result = await executeRealtimeSession({ createLoop, model, environment, signal, telemetry });
         environment.record({ kind: "assertion", text: JSON.stringify({
           taskSatisfied: environment.taskSatisfied(), violations: environment.violations,
           acceptedEffects: environment.effects, finalFixtureState: environment.state,

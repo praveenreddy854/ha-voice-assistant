@@ -1,6 +1,6 @@
 import { createAzure } from "@ai-sdk/azure";
 import { generateText } from "ai";
-import { parseModelSettings, reasoningSettings, samplingSettings, type ReasoningEffort } from "./modelSettings";
+import { outputTokenBudget, resolveModelSettings, reasoningSettings, samplingSettings, type ReasoningEffort } from "./modelSettings";
 import {
   AZURE_OPENAI_API_KEY,
   AZURE_OPENAI_RESOURCE_NAME,
@@ -78,6 +78,13 @@ async function withRetry<T>(
 // Core Functions
 // ============================================================================
 
+function completedText(result: { finishReason: string; text: string }): string {
+  if (result.finishReason === "length") {
+    throw new Error("Model response was truncated at the output token limit");
+  }
+  return result.text;
+}
+
 /**
  * Generate a plain text completion.
  */
@@ -89,18 +96,17 @@ export async function generateCompletion(params: {
   temperature?: number;
   abortSignal?: AbortSignal;
 }): Promise<string> {
-  const model = parseModelSettings(params.model);
-  const reasoningEffort = params.reasoningEffort ?? model?.reasoningEffort;
+  const { model = "", reasoningEffort } = resolveModelSettings(params.model, params.reasoningEffort) ?? {};
   return withRetry(async () => {
     const result = await generateText({
-      model: azureProvider(model?.model ?? ""),
+      model: azureProvider(model),
       messages: params.messages as any,
       abortSignal: params.abortSignal,
-      maxOutputTokens: params.maxTokens ?? 1000,
+      maxOutputTokens: outputTokenBudget(model, params.maxTokens ?? 1000, reasoningEffort),
       ...reasoningSettings(reasoningEffort),
-      ...samplingSettings(model?.model ?? "", params.temperature, reasoningEffort),
+      ...samplingSettings(model, params.temperature, reasoningEffort),
     });
-    return result.text;
+    return completedText(result);
   }, 2, 500, params.abortSignal);
 }
 
@@ -130,11 +136,10 @@ export async function generateVisionText(params: {
   maxTokens?: number;
   temperature?: number;
 }): Promise<string> {
-  const model = parseModelSettings(params.model);
-  const reasoningEffort = params.reasoningEffort ?? model?.reasoningEffort;
+  const { model = "", reasoningEffort } = resolveModelSettings(params.model, params.reasoningEffort) ?? {};
   return withRetry(async () => {
     const result = await generateText({
-      model: azureProvider(model?.model ?? ""),
+      model: azureProvider(model),
       messages: [
         {
           role: "user",
@@ -152,10 +157,10 @@ export async function generateVisionText(params: {
           ],
         },
       ],
-      maxOutputTokens: params.maxTokens ?? 500,
+      maxOutputTokens: outputTokenBudget(model, params.maxTokens ?? 500, reasoningEffort),
       ...reasoningSettings(reasoningEffort),
-      ...samplingSettings(model?.model ?? "", params.temperature, reasoningEffort),
+      ...samplingSettings(model, params.temperature, reasoningEffort),
     });
-    return result.text;
+    return completedText(result);
   });
 }

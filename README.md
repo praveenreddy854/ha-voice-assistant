@@ -52,6 +52,8 @@ AI_MODEL_ADVANCED='{"model":"gpt-5.4","reasoningEffort":"medium"}'
 
 `model` must be a nonempty deployment name. `reasoningEffort` is optional; omitting it uses the provider default. Supported reasoning values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; choose a value supported by your deployment. Plain deployment names still work. Malformed JSON, unknown fields, invalid reasoning levels, and CSV pairs fail at startup. An unset or blank mini tier inherits the nano settings, and advanced inherits the mini settings. `AI_MODEL_HOME_ASSISTANT` inherits the advanced settings and accepts the same JSON format for an explicit override. An override without `reasoningEffort` uses the provider default.
 
+Text and vision helpers allow extra output tokens for reasoning and treat responses cut off by the token limit as failures. Evaluation records distinguish explicitly configured reasoning efforts even when they use the same deployment. Historical traces without effort metadata retain their deployment-only identity.
+
 Reasoning is applied to text, JSON, vision, and delegated agent requests. Offline TV, scheduling and Realtime reasoning model overrides and `OFFLINE_EVAL_JUDGE_MODEL`, `ONLINE_EVAL_JUDGE_MODEL`, and `ONLINE_EVAL_REVIEW_MODEL` also accept JSON settings. GPT Live, native Realtime audio, transcription, and embedding deployment settings continue to use plain names.
 
 ```env

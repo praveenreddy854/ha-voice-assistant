@@ -3,7 +3,7 @@ import type { Assessment, ComparisonContext, Grade, Judge, StepGroup, Usage } fr
 import { digest } from "./store";
 import { computeTaskScore, SCORING_RUBRIC, scoringAssessmentSchema, supportsTaskScoring } from "./scoring";
 import { EvalGradingError, reportedModelUsage, sumUsage } from "./telemetry";
-import { parseModelSettings, reasoningSettings, type ReasoningEffort } from "../modelSettings";
+import { resolveModelSettings, reasoningSettings, type ReasoningEffort } from "../modelSettings";
 
 const verdict = z.enum(["pass", "fail", "unknown", "not_applicable"]);
 const judgment = z.object({ verdict, reason: z.string().min(1), evidenceIds: z.array(z.string()) });
@@ -87,7 +87,7 @@ export function makeJudge(generate: GenerateJudge): Judge {
   };
 }
 export async function createLlmJudge(model: string, knownContexts: ComparisonContext[] = [], additionalInstructions = "", reasoningEffort?: ReasoningEffort): Promise<Judge> {
-  const selectedModel = parseModelSettings(model);
+  const selectedModel = resolveModelSettings(model, reasoningEffort);
   const [{ generateText }, { azureProvider }] = await Promise.all([import("ai"), import("../ai")]);
   return makeJudge(async (system, assessment, groups, signal) => {
     const { metrics: _metrics, trace: _trace, ...gradingAssessment } = assessment;
@@ -102,7 +102,7 @@ export async function createLlmJudge(model: string, knownContexts: ComparisonCon
     for (const evidence of assessment.evidence) if (evidence.image) {
       content.push({ type: "text", text: `Evidence image ${evidence.id}: ${evidence.text}` }, { type: "image", image: evidence.image });
     }
-    const result = await generateText({ model: azureProvider(selectedModel?.model ?? ""), ...reasoningSettings(reasoningEffort ?? selectedModel?.reasoningEffort), system: [system, additionalInstructions].filter(Boolean).join("\n"), messages: [{ role: "user", content }], abortSignal: signal, maxRetries: 0 });
+    const result = await generateText({ model: azureProvider(selectedModel?.model ?? ""), ...reasoningSettings(selectedModel?.reasoningEffort), system: [system, additionalInstructions].filter(Boolean).join("\n"), messages: [{ role: "user", content }], abortSignal: signal, maxRetries: 0 });
     const text = result.text.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
     // SDK aggregate usage drops the raw provider details needed to distinguish absent counts from zero.
     const usage = sumUsage(result.steps.map(step => reportedModelUsage(step.usage, step.usage.raw)));

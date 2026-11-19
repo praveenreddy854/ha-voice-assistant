@@ -8,7 +8,7 @@ import type {
 } from "../agents/core/agentLoop";
 import type { EvalModelCall, Evidence, Usage } from "./types";
 import { reportedModelUsage, type TrialTelemetry } from "./telemetry";
-import type { ReasoningEffort } from "../modelSettings";
+import { formatModelSettingsIdentity, resolveModelSettings, type ReasoningEffort } from "../modelSettings";
 
 export interface OfflineLoopOptions {
   createLoop(config: AgentLoopConfig): AgentLoop;
@@ -46,6 +46,9 @@ export interface OfflineLoopResult {
 
 /** Only the supplied simulator receives tool calls; no production executor is retained. */
 export async function runOfflineAgentLoop(options: OfflineLoopOptions): Promise<OfflineLoopResult> {
+  const settings = resolveModelSettings(options.model, options.reasoningEffort);
+  if (!settings) throw new Error("Offline evaluation requires a model deployment");
+  const modelIdentity = formatModelSettingsIdentity(settings);
   const tools = options.tools.map(({ type, function: contract }) => ({ type, function: contract }));
   const telemetry = options.telemetry;
   let activeCall: EvalModelCall | undefined;
@@ -81,21 +84,20 @@ export async function runOfflineAgentLoop(options: OfflineLoopOptions): Promise<
   const loop = options.createLoop({
     systemPrompt: options.systemPrompt,
     tools,
-    model: options.model,
-    reasoningEffort: options.reasoningEffort,
+    ...settings,
     maxIterations: options.maxIterations,
     requireToolCall: options.requireToolCall,
     modelMiddleware: {
       specificationVersion: "v4",
       async wrapGenerate({ doGenerate }) {
-        const call = telemetry.beginModel(options.model);
+        const call = telemetry.beginModel(modelIdentity);
         activeCall = call;
         requestCalls.push(call);
         try {
           const result = await doGenerate();
           const inputTokens = result.usage.inputTokens.total, outputTokens = result.usage.outputTokens.total;
           const response = telemetry.response(call, {
-            model: result.response?.modelId || options.model, responseId: result.response?.id,
+            model: result.response?.modelId || settings.model, responseId: result.response?.id,
             finishReason: result.finishReason.unified,
             text: result.content.filter(part => part.type === "text").map(part => part.text).join("\n"),
             content: result.content,
@@ -129,7 +131,7 @@ export async function runOfflineAgentLoop(options: OfflineLoopOptions): Promise<
       }
       options.record({
         kind: "context",
-        text: JSON.stringify({ model: event.requestModel, text: event.text, toolCalls: event.toolCalls, usage: event.usage }),
+        text: JSON.stringify({ model: modelIdentity, text: event.text, toolCalls: event.toolCalls, usage: event.usage }),
       });
     },
   });

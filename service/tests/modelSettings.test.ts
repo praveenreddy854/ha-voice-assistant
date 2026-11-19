@@ -41,6 +41,7 @@ test("model settings identity includes the effective reasoning effort canonicall
   assert.equal(modelSettingsIdentity("deployment"), "deployment");
   assert.equal(modelSettingsIdentity("deployment", "high"), '{"model":"deployment","reasoningEffort":"high"}');
   assert.equal(modelSettingsIdentity('{"reasoningEffort":"low","model":"deployment"}'), '{"model":"deployment","reasoningEffort":"low"}');
+  assert.equal(modelSettingsIdentity('{"model":"deployment","reasoningEffort":"low"}', "high"), '{"model":"deployment","reasoningEffort":"high"}');
   assert.equal(modelSettingsIdentity("deployment", undefined), "deployment");
   assert.equal(modelSettingsIdentity(undefined, "high"), undefined);
 });

@@ -40,13 +40,19 @@ export function isValidModelOverride(value: string): boolean {
   } catch { return false; }
 }
 
-export function modelSettingsIdentity(value: string | undefined, reasoningEffort?: ReasoningEffort, setting = "model"): string | undefined {
+export function resolveModelSettings(value: string | undefined, reasoningEffort?: ReasoningEffort, setting = "model"): ModelSettings | undefined {
   const settings = parseModelSettings(value, setting);
   if (!settings) return undefined;
-  const effectiveEffort = settings.reasoningEffort ?? reasoningEffort;
-  return effectiveEffort === undefined
-    ? settings.model
-    : JSON.stringify({ model: settings.model, reasoningEffort: effectiveEffort });
+  return { model: settings.model, reasoningEffort: reasoningEffort ?? settings.reasoningEffort };
+}
+
+export function formatModelSettingsIdentity({ model, reasoningEffort }: ModelSettings): string {
+  return reasoningEffort === undefined ? model : JSON.stringify({ model, reasoningEffort });
+}
+
+export function modelSettingsIdentity(value: string | undefined, reasoningEffort?: ReasoningEffort, setting = "model"): string | undefined {
+  const settings = resolveModelSettings(value, reasoningEffort, setting);
+  return settings && formatModelSettingsIdentity(settings);
 }
 
 export function reasoningSettings(reasoningEffort?: ReasoningEffort) {
@@ -60,9 +66,18 @@ export function reasoningSettings(reasoningEffort?: ReasoningEffort) {
 // Match the installed OpenAI provider's reasoning-family defaults. Chat variants
 // keep sampling support; Azure deployment aliases without a known family retain
 // their caller-supplied settings.
-export function samplingSettings(model: string, temperature?: number, reasoningEffort?: ReasoningEffort): { temperature?: number } {
+function isReasoningModel(model: string): boolean {
   const gpt = /^gpt-(\d+)(?:\.\d+)?(?:-(.+))?$/.exec(model);
   const chat = /^gpt-\d+-chat(?:-|$)/.test(model);
-  const reasoning = /^o\d+(?:-|$)/.test(model) || (!!gpt && Number(gpt[1]) >= 5 && !chat);
-  return temperature != null && !reasoning && reasoningEffort === undefined ? { temperature } : {};
+  return /^o\d+(?:-|$)/.test(model) || (!!gpt && Number(gpt[1]) >= 5 && !chat);
+}
+
+export function samplingSettings(model: string, temperature?: number, reasoningEffort?: ReasoningEffort): { temperature?: number } {
+  return temperature != null && !isReasoningModel(model) && reasoningEffort === undefined ? { temperature } : {};
+}
+
+export function outputTokenBudget(model: string, visibleTokens: number, reasoningEffort?: ReasoningEffort): number {
+  const usesReasoning = reasoningEffort === undefined ? isReasoningModel(model) : reasoningEffort !== "none";
+  // Azure counts hidden reasoning against the same cap and recommends 25K of headroom.
+  return usesReasoning ? visibleTokens + 25_000 : visibleTokens;
 }
