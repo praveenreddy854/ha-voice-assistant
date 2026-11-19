@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import { Container, CosmosClient, PartitionKeyKind } from "@azure/cosmos";
 import { embed } from "ai";
-import { azureProvider, generateCompletion } from "./ai";
+import { azureEmbeddingModel, generateCompletion } from "./ai";
 import {
   AI_MODEL_MINI,
   AI_MODEL_MINI_REASONING_EFFORT,
@@ -380,7 +380,7 @@ function validMemoryType(value: unknown): MemoryType {
 async function generateEmbedding(text: string): Promise<number[]> {
   try {
     const { embedding } = await embed({
-      model: azureProvider.embeddingModel(EMBEDDING_MODEL),
+      model: azureEmbeddingModel(EMBEDDING_MODEL),
       value: text,
     });
     return embedding;

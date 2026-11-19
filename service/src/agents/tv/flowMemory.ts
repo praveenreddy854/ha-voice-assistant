@@ -1,6 +1,6 @@
 import { Container, CosmosClient, PartitionKeyKind } from "@azure/cosmos";
 import { embed } from "ai";
-import { azureProvider } from "../../ai";
+import { azureEmbeddingModel } from "../../ai";
 import {
   AZURE_COSMOS_DATABASE,
   AZURE_COSMOS_ENDPOINT,
@@ -191,7 +191,7 @@ function getPrimaryDeviceId(steps: TvAgentStep[]): string {
 async function generateEmbedding(text: string): Promise<number[]> {
   try {
     const { embedding } = await embed({
-      model: azureProvider.embeddingModel(EMBEDDING_MODEL),
+      model: azureEmbeddingModel(EMBEDDING_MODEL),
       value: text,
     });
     return embedding;

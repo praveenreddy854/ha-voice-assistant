@@ -7,7 +7,6 @@ import { SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { getAllTraces, telemetrySpanExporter } from "../src/tracing/agentTraceStore";
 
 test("translation refusals and clarification do not execute device requests", async t => {
-  process.env.AI_MODEL_HOME_ASSISTANT = "synthetic-translator";
   process.env.HOME_ASSISTANT_DEVICES = "test_camera";
   const sdk = new NodeSDK({ autoDetectResources: false, spanProcessors: [new SimpleSpanProcessor(telemetrySpanExporter)] });
   sdk.start();

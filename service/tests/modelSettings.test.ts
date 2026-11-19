@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import test from "node:test";
 import dotenv from "dotenv";
+import { MODEL_CATALOG, regionForDeployment } from "../src/modelCatalog";
 import { modelSettingsIdentity, parseModelSettings, REASONING_EFFORTS } from "../src/modelSettings";
 
 const requireModule = createRequire(__filename);
@@ -60,60 +61,33 @@ test("malformed JSON, invalid fields, and CSV values are rejected with the setti
   }
 });
 
-test("example environment preserves JSON settings through dotenv including inline comments", () => {
+test("example environment contains only empty Foundry connection placeholders, not deployments", () => {
   const values = dotenv.parse(readFileSync(path.join(__dirname, "../example.env")));
-  assert.deepEqual(parseModelSettings(values.AI_MODEL_NANO), { model: "gpt-5.4-nano", reasoningEffort: "low" });
-  assert.deepEqual(parseModelSettings(values.AI_MODEL_MINI), { model: "gpt-5.4-mini", reasoningEffort: "low" });
-  assert.deepEqual(parseModelSettings(values.AI_MODEL_ADVANCED), { model: "gpt-5.4", reasoningEffort: "medium" });
+  for (const suffix of ["EUS", "EUS2"]) {
+    assert.equal(values[`AZURE_OPENAI_RESOURCE_NAME_${suffix}`], "");
+    assert.equal(values[`AZURE_OPENAI_API_KEY_${suffix}`], "");
+  }
+  assert.deepEqual(Object.keys(values).filter(key => /^(AI_MODEL_|EMBEDDING_MODEL$)|_EVAL_(JUDGE|REVIEW)_MODEL$/.test(key)), []);
 });
 
-test("tiers sharing a deployment retain independent reasoning levels", t => {
+test("production tiers ignore legacy environment settings", t => {
   t.mock.method(dotenv, "config", () => ({}));
   withModels({
-    AI_MODEL_NANO: '{"model":"shared","reasoningEffort":"low"}',
-    AI_MODEL_MINI: '{"model":"shared","reasoningEffort":"medium"}',
-    AI_MODEL_ADVANCED: '{"model":"shared","reasoningEffort":"high"}',
+    AI_MODEL_NANO: "untracked",
+    AI_MODEL_MINI: "untracked",
+    AI_MODEL_ADVANCED: "untracked",
+    AI_MODEL_HOME_ASSISTANT: "untracked",
   }, config => {
-    assert.equal(config.AI_MODEL_NANO, "shared");
-    assert.equal(config.AI_MODEL_MINI, "shared");
-    assert.equal(config.AI_MODEL_ADVANCED, "shared");
-    assert.equal(config.AI_MODEL_NANO_REASONING_EFFORT, "low");
-    assert.equal(config.AI_MODEL_MINI_REASONING_EFFORT, "medium");
-    assert.equal(config.AI_MODEL_ADVANCED_REASONING_EFFORT, "high");
-    assert.equal(config.AI_MODEL_HOME_ASSISTANT_REASONING_EFFORT, "high");
-  });
-});
-
-test("tier fallback inherits all JSON settings, while overrides retain provider defaults", t => {
-  t.mock.method(dotenv, "config", () => ({}));
-  withModels({ AI_MODEL_NANO: '{"model":"nano","reasoningEffort":"none"}' }, config => {
-    for (const key of modelKeys) {
-      assert.equal(config[key], "nano");
-      assert.equal(config[`${key}_REASONING_EFFORT`], "none");
+    for (const [i, role] of (["nano", "mini", "advanced", "homeAssistant"] as const).entries()) {
+      assert.equal(config[modelKeys[i]], MODEL_CATALOG[role].model);
+      assert.equal(config[`${modelKeys[i]}_REASONING_EFFORT`], MODEL_CATALOG[role].reasoningEffort);
     }
   });
-  withModels({
-    AI_MODEL_NANO: '{"model":"nano","reasoningEffort":"low"}',
-    AI_MODEL_MINI: '{"model":"mini","reasoningEffort":"medium"}',
-    AI_MODEL_HOME_ASSISTANT: '{"model":"translator","reasoningEffort":"high"}',
-  }, config => {
-    assert.equal(config.AI_MODEL_ADVANCED, "mini");
-    assert.equal(config.AI_MODEL_ADVANCED_REASONING_EFFORT, "medium");
-    assert.equal(config.AI_MODEL_HOME_ASSISTANT, "translator");
-    assert.equal(config.AI_MODEL_HOME_ASSISTANT_REASONING_EFFORT, "high");
-  });
-  withModels({
-    AI_MODEL_NANO: '{"model":"nano","reasoningEffort":"low"}',
-    AI_MODEL_MINI: "mini",
-    AI_MODEL_ADVANCED: '{"model":"advanced","reasoningEffort":"high"}',
-    AI_MODEL_HOME_ASSISTANT: '{"model":"translator"}',
-  }, config => {
-    assert.equal(config.AI_MODEL_MINI_REASONING_EFFORT, undefined);
-    assert.equal(config.AI_MODEL_HOME_ASSISTANT_REASONING_EFFORT, undefined);
-  });
-  withModels({}, config => {
-    for (const key of modelKeys) assert.equal(config[key], undefined);
-  });
-  assert.throws(() => withModels({ AI_MODEL_ADVANCED: '{"model":"advanced","reasoningEffort":"typo"}' }, () => {}), /AI_MODEL_ADVANCED must be/);
-  assert.throws(() => withModels({ AI_MODEL_ADVANCED: "advanced,high" }, () => {}), /CSV pairs are not supported/);
+});
+
+test("Live and embedding use East US 2; reasoning and ad-hoc evals use East US", () => {
+  for (const [role, { model }] of Object.entries(MODEL_CATALOG)) {
+    assert.equal(regionForDeployment(model), role === "live" || role === "embedding" ? "eus2" : "eus");
+  }
+  assert.equal(regionForDeployment("new-eval-candidate"), "eus");
 });

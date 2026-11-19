@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 
 export function configureTestProviders(): void {
-  process.env.AZURE_OPENAI_API_KEY = "test-key";
-  process.env.AZURE_OPENAI_RESOURCE_NAME = "test-resource";
-  process.env.AI_MODEL_ADVANCED = "test-model";
+  process.env.AZURE_OPENAI_API_KEY_EUS = "test-key";
+  process.env.AZURE_OPENAI_RESOURCE_NAME_EUS = "test-resource";
+  process.env.AZURE_OPENAI_API_KEY_EUS2 = "second-test-key";
+  process.env.AZURE_OPENAI_RESOURCE_NAME_EUS2 = "second-test-resource";
   process.env.HOME_ASSISTANT_URL = "http://ha.invalid";
   process.env.HOME_ASSISTANT_TOKEN = "test-token";
   // Tests opt into a mocked Cosmos implementation explicitly when needed.
@@ -23,7 +24,8 @@ export function readModelRequest(url: string | URL | Request, init?: RequestInit
 }
 
 export function messageText(request: ModelRequest, role: string): string {
-  const content = request.input.find((item) => item.role === role)?.content;
+  // The SDK serializes system instructions as developer messages for reasoning models.
+  const content = request.input.find(item => item.role === role || (role === "system" && item.role === "developer"))?.content;
   return typeof content === "string" ? content : content?.map((part) => part.text ?? "").join("\n") ?? "";
 }
 

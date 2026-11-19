@@ -6,8 +6,8 @@ import type { ToolExecutionContext } from "../src/agents/tv/tools/types";
 
 let power: typeof import("../src/agents/tv/tools/clickPowerButton").definition;
 before(async () => {
-  process.env.AZURE_OPENAI_API_KEY = "test-key";
-  process.env.AZURE_OPENAI_RESOURCE_NAME = "test-resource";
+  process.env.AZURE_OPENAI_API_KEY_EUS = "test-key";
+  process.env.AZURE_OPENAI_RESOURCE_NAME_EUS = "test-resource";
   process.env.HOME_ASSISTANT_URL = "http://ha.invalid";
   process.env.HOME_ASSISTANT_TOKEN = "test-token";
   process.env.TV_DEFAULT_WAIT_MS = "250";

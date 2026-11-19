@@ -7,9 +7,8 @@ import { SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { getAllTraces, telemetrySpanExporter } from '../src/tracing/agentTraceStore';
 
 test('offline controls fail and translation errors retain sanitized diagnostic evidence', async t => {
-  process.env.AI_MODEL_HOME_ASSISTANT = 'synthetic-translator';
   process.env.HOME_ASSISTANT_DEVICES = 'lb1';
-  process.env.AZURE_OPENAI_API_KEY = 'synthetic-secret-key';
+  process.env.AZURE_OPENAI_API_KEY_EUS = 'synthetic-secret-key';
   const sdk = new NodeSDK({ autoDetectResources: false, spanProcessors: [new SimpleSpanProcessor(telemetrySpanExporter)] });
   sdk.start();
   const requireModule = createRequire(__filename);

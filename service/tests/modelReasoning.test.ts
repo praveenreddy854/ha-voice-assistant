@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { configureTestProviders, toolResponse } from "./helpers/agentFixtures";
+import { MODEL_CATALOG } from "../src/modelCatalog";
+import { embed } from "ai";
 
 configureTestProviders();
-process.env.AI_MODEL_NANO = '{"model":"shared-deployment","reasoningEffort":"low"}';
-process.env.AI_MODEL_MINI = '{"model":"shared-deployment","reasoningEffort":"medium"}';
-process.env.AI_MODEL_ADVANCED = '{"model":"shared-deployment","reasoningEffort":"high"}';
-process.env.AI_MODEL_HOME_ASSISTANT = "";
 
 interface RequestBody {
   model: string;
@@ -23,11 +21,13 @@ function completion(text = "OK") {
   });
 }
 
-test("nano, mini, and advanced text/JSON/vision calls send separate effort to the same Azure alias", async t => {
+test("tier text/JSON/vision calls send the selected model and effort to the East US resource", async t => {
   const config = await import("../src/config");
   const { generateCompletion, generateJsonCompletion, generateVisionText } = await import("../src/ai");
   const requests: RequestBody[] = [];
-  t.mock.method(globalThis, "fetch", async (_url: unknown, init: RequestInit) => {
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    assert.equal(new URL(url).hostname, "test-resource.openai.azure.com");
+    assert.equal(new Headers(init.headers).get("api-key"), "test-key");
     requests.push(JSON.parse(String(init.body)));
     return completion('"OK"');
   });
@@ -43,7 +43,7 @@ test("nano, mini, and advanced text/JSON/vision calls send separate effort to th
     assert.equal(await generateJsonCompletion({ ...settings, messages }), "OK");
     await generateVisionText({ ...settings, prompt: "synthetic", imageBase64: "AA==", imageContentType: "image/png" });
     for (const request of requests.slice(-3)) {
-      assert.equal(request.model, "shared-deployment");
+      assert.equal(request.model, model);
       assert.equal(request.reasoning?.effort, reasoningEffort);
       assert.equal(request.temperature, undefined);
     }
@@ -63,6 +63,18 @@ test("nano, mini, and advanced text/JSON/vision calls send separate effort to th
   assert.equal(requests.at(-1)!.max_output_tokens, 120);
   await generateVisionText({ model: "gpt-5.1-chat-latest", prompt: "screen", imageBase64: "AA==", imageContentType: "image/png" });
   assert.equal(requests.at(-1)!.max_output_tokens, 500);
+});
+
+test("embeddings use the East US 2 resource and its own key", async t => {
+  const { azureEmbeddingModel } = await import("../src/ai");
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    assert.equal(new URL(url).hostname, "second-test-resource.openai.azure.com");
+    assert.equal(new Headers(init.headers).get("api-key"), "second-test-key");
+    assert.equal(JSON.parse(String(init.body)).model, MODEL_CATALOG.embedding.model);
+    return Response.json({ data: [{ embedding: [0.1] }] });
+  });
+  const result = await embed({ model: azureEmbeddingModel(MODEL_CATALOG.embedding.model), value: "fixture" });
+  assert.deepEqual(result.embedding, [0.1]);
 });
 
 test("short text and vision calls reserve reasoning tokens and reject incomplete output", async t => {
@@ -125,13 +137,14 @@ test("offline adapters record effective effort for inherited and overridden mode
       const adapter = await makeAdapter(override);
       const scenario = adapter.id === "realtime" ? adapter.scenarios.find(item => item.id === "general-chat")! : adapter.scenarios[0];
       const result = await adapter.execute(scenario, new AbortController().signal);
-      const identity = effort ? JSON.stringify({ model: "shared-deployment", reasoningEffort: effort }) : "shared-deployment";
+      const selectedModel = override ? "shared-deployment" : MODEL_CATALOG.advanced.model;
+      const identity = effort ? JSON.stringify({ model: selectedModel, reasoningEffort: effort }) : selectedModel;
       assert.equal(result.coverage, "complete");
       assert.equal(result.metrics?.stopReason, "completed");
       assert.equal(adapter.model, identity);
       assert.equal(result.model, identity);
       assert.deepEqual(result.trace?.modelCalls.map(call => call.model), [identity]);
-      assert.equal(requests.at(-1)!.model, "shared-deployment");
+      assert.equal(requests.at(-1)!.model, selectedModel);
       assert.equal(requests.at(-1)!.reasoning?.effort, effort);
     }
   }
@@ -166,11 +179,12 @@ test("advanced agent defaults and explicit overrides survive tool steps and scre
     assert.equal((await loop.run(session.id)).type, "tool_calls");
     assert.equal((await loop.submitToolResults(session.id, [{ toolName: "get_latest_screenshot", toolCallId: "screen", result: "synthetic screen" }])).type, "complete");
     assert.equal(requests.length, 3);
+    const selectedModel = model ? "shared-deployment" : MODEL_CATALOG.advanced.model;
     for (const request of requests) {
-      assert.equal(request.model, "shared-deployment");
+      assert.equal(request.model, selectedModel);
       assert.equal(request.reasoning?.effort, expected);
     }
-    assert.deepEqual(events, Array.from({ length: 3 }, () => ({ requestModel: "shared-deployment", reasoningEffort: expected })));
+    assert.deepEqual(events, Array.from({ length: 3 }, () => ({ requestModel: selectedModel, reasoningEffort: expected })));
     loop.deleteSession(session.id);
   });
 });

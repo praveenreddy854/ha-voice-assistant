@@ -4,7 +4,7 @@
  */
 
 import { embed } from "ai";
-import { azureProvider } from "../../../ai";
+import { azureEmbeddingModel } from "../../../ai";
 import { EMBEDDING_MODEL } from "../../../config";
 import { loadIndex } from "./storage";
 import { SimilarRecording } from "./types";
@@ -15,7 +15,7 @@ import { SimilarRecording } from "./types";
 export async function generateEmbedding(text: string): Promise<number[]> {
   try {
     const { embedding } = await embed({
-      model: azureProvider.embeddingModel(EMBEDDING_MODEL),
+      model: azureEmbeddingModel(EMBEDDING_MODEL),
       value: text,
     });
     return embedding;

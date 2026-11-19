@@ -1,5 +1,6 @@
 import dotenv from "dotenv";
-import { isValidModelOverride, modelSettingsIdentity } from "../modelSettings";
+import { formatModelSettingsIdentity, isValidModelOverride, parseModelSettings } from "../modelSettings";
+import { MODEL_CATALOG } from "../modelCatalog";
 import { randomUUID } from "node:crypto";
 import { EvalStore } from "./store";
 import { installNetworkBoundary } from "./network";
@@ -42,17 +43,19 @@ export async function runWorker(job: EvalJob, store = new EvalStore()): Promise<
     await updateRecordedDailyOutcome(store, job);
     await store.queueRecordedAttempts(job);
     const config = await import("../config");
-    if (!config.AZURE_OPENAI_RESOURCE_NAME) throw new Error("Azure model endpoint is not configured");
-    installNetworkBoundary(`${config.AZURE_OPENAI_RESOURCE_NAME}.openai.azure.com`, job.mode === "recorded" && registration.id === "tv" && config.AZURE_COSMOS_ENDPOINT ? new URL(config.AZURE_COSMOS_ENDPOINT).hostname : undefined);
+    const judgeProfile = MODEL_CATALOG.offlineJudge;
+    const modelHosts = [config.foundryConnectionFor(judgeProfile.model).hostname];
+    if (job.mode === "simulated") {
+      const assessed = parseModelSettings(job.model) ?? MODEL_CATALOG.advanced;
+      modelHosts.push(config.foundryConnectionFor(assessed.model).hostname);
+    }
+    installNetworkBoundary(modelHosts, job.mode === "recorded" && registration.id === "tv" && config.AZURE_COSMOS_ENDPOINT ? new URL(config.AZURE_COSMOS_ENDPOINT).hostname : undefined);
     const [{ createLlmJudge, GRADER_VERSION }, { EvalRunner }, { calibrateJudge }] = await Promise.all([
       import("./judge"), import("./runner"), import("./references"),
     ]);
-    const judgeModel = process.env.OFFLINE_EVAL_JUDGE_MODEL || config.AI_MODEL_ADVANCED;
-    const judgeReasoningEffort = process.env.OFFLINE_EVAL_JUDGE_MODEL ? undefined : config.AI_MODEL_ADVANCED_REASONING_EFFORT;
-    const judgeIdentity = modelSettingsIdentity(judgeModel, judgeReasoningEffort, "OFFLINE_EVAL_JUDGE_MODEL");
-    if (!judgeModel || !judgeIdentity) throw new Error("Configure OFFLINE_EVAL_JUDGE_MODEL or AI_MODEL_ADVANCED");
+    const judgeIdentity = formatModelSettingsIdentity(judgeProfile);
     const scenarios = await registration.scenarios();
-    const judge = await createLlmJudge(judgeModel, scenarios.map(s => s.context), "", judgeReasoningEffort);
+    const judge = await createLlmJudge(judgeIdentity, scenarios.map(s => s.context));
     if (job.mode === "calibrate") {
       const result = await calibrateJudge(store, judge, judgeIdentity, GRADER_VERSION, controller.signal, registration.id);
       if (!result.passed) throw new Error("Judge disagreed with the selected agent's reference cases; inspect calibration results");

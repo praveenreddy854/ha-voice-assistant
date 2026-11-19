@@ -92,25 +92,25 @@ test("unreachable task failure can pass handling; a partial historical record st
 });
 test("network boundary allows model calls and explicitly read-only Cosmos, never HA or redirects to other hosts", () => {
   const model = "model.openai.azure.com", cosmos = "db.documents.azure.com";
-  assert.equal(networkAllowed(new URL(`https://${model}/openai/responses`), "POST", {}, model), true);
-  assert.equal(networkAllowed(new URL("http://homeassistant.local:8123/api/services/remote/turn_on"), "POST", {}, model), false);
-  assert.equal(networkAllowed(new URL(`https://${cosmos}/dbs/a/colls/b/docs`), "POST", {}, model, cosmos), false);
-  assert.equal(networkAllowed(new URL(`https://${cosmos}/dbs/a/colls/b/docs`), "POST", { "x-ms-documentdb-isquery": "true", "content-type": "application/query+json" }, model, cosmos), true);
-  assert.equal(networkAllowed(new URL(`https://${cosmos}/dbs/a/colls/b/docs`), "DELETE", {}, model, cosmos), false);
-  assert.equal(networkAllowed(new URL(`https://${model}.evil.test/openai/responses`), "POST", {}, model), false);
+  assert.equal(networkAllowed(new URL(`https://${model}/openai/responses`), "POST", {}, [model]), true);
+  assert.equal(networkAllowed(new URL("http://homeassistant.local:8123/api/services/remote/turn_on"), "POST", {}, [model]), false);
+  assert.equal(networkAllowed(new URL(`https://${cosmos}/dbs/a/colls/b/docs`), "POST", {}, [model], cosmos), false);
+  assert.equal(networkAllowed(new URL(`https://${cosmos}/dbs/a/colls/b/docs`), "POST", { "x-ms-documentdb-isquery": "true", "content-type": "application/query+json" }, [model], cosmos), true);
+  assert.equal(networkAllowed(new URL(`https://${cosmos}/dbs/a/colls/b/docs`), "DELETE", {}, [model], cosmos), false);
+  assert.equal(networkAllowed(new URL(`https://${model}.evil.test/openai/responses`), "POST", {}, [model]), false);
 });
 test("Cosmos query-plan POSTs are read-only; missing markers, document writes, and other paths stay blocked", () => {
   const model = "model.openai.azure.com", cosmos = "db.documents.azure.com";
   const url = new URL(`https://${cosmos}/dbs/a/colls/b/docs`);
   const headers = { "X-Ms-Cosmos-Is-Query-Plan-Request": "True", "Content-Type": "application/query+json" };
-  assert.equal(networkAllowed(url, "POST", headers, model, cosmos), true);
-  assert.equal(networkAllowed(url, "POST", headers, model), false);
-  assert.equal(networkAllowed(url, "POST", { ...headers, "X-Ms-Cosmos-Is-Query-Plan-Request": "False" }, model, cosmos), false);
-  assert.equal(networkAllowed(url, "POST", { ...headers, "Content-Type": "application/json" }, model, cosmos), false);
-  assert.equal(networkAllowed(url, "PUT", headers, model, cosmos), false);
-  assert.equal(networkAllowed(url, "DELETE", headers, model, cosmos), false);
-  assert.equal(networkAllowed(new URL(`${url}/document-id`), "POST", headers, model, cosmos), false);
-  assert.equal(networkAllowed(new URL(`https://${cosmos}/dbs/a/colls/b/sprocs/run`), "POST", headers, model, cosmos), false);
+  assert.equal(networkAllowed(url, "POST", headers, [model], cosmos), true);
+  assert.equal(networkAllowed(url, "POST", headers, [model]), false);
+  assert.equal(networkAllowed(url, "POST", { ...headers, "X-Ms-Cosmos-Is-Query-Plan-Request": "False" }, [model], cosmos), false);
+  assert.equal(networkAllowed(url, "POST", { ...headers, "Content-Type": "application/json" }, [model], cosmos), false);
+  assert.equal(networkAllowed(url, "PUT", headers, [model], cosmos), false);
+  assert.equal(networkAllowed(url, "DELETE", headers, [model], cosmos), false);
+  assert.equal(networkAllowed(new URL(`${url}/document-id`), "POST", headers, [model], cosmos), false);
+  assert.equal(networkAllowed(new URL(`https://${cosmos}/dbs/a/colls/b/sprocs/run`), "POST", headers, [model], cosmos), false);
 });
 test("baseline excludes today, confirmation attempts, old fixtures, and ungraded failures", () => {
   const current = run("2026-09-13", { grade: grade("fail") });

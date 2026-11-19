@@ -2,8 +2,7 @@ import { createAzure } from "@ai-sdk/azure";
 import { generateText } from "ai";
 import { outputTokenBudget, resolveModelSettings, reasoningSettings, samplingSettings, type ReasoningEffort } from "./modelSettings";
 import {
-  AZURE_OPENAI_API_KEY,
-  AZURE_OPENAI_RESOURCE_NAME,
+  foundryConnectionFor,
   AZURE_OPENAI_API_VERSION,
 } from "./config";
 
@@ -11,15 +10,13 @@ import {
 // Provider
 // ============================================================================
 
-if (!AZURE_OPENAI_RESOURCE_NAME || !AZURE_OPENAI_API_KEY) {
-  throw new Error("OpenAI configuration missing required values");
+function providerFor(model: string) {
+  const { apiKey, resourceName } = foundryConnectionFor(model);
+  return createAzure({ apiKey, resourceName, apiVersion: AZURE_OPENAI_API_VERSION });
 }
 
-export const azureProvider = createAzure({
-  apiKey: AZURE_OPENAI_API_KEY,
-  resourceName: AZURE_OPENAI_RESOURCE_NAME,
-  apiVersion: AZURE_OPENAI_API_VERSION,
-});
+export const azureProvider = (model: string) => providerFor(model)(model);
+export const azureEmbeddingModel = (model: string) => providerFor(model).embeddingModel(model);
 
 // ============================================================================
 // Retry Helper

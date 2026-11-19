@@ -42,31 +42,28 @@ REACT_APP_API_BASE_URL=http://localhost:3005
 
 #### Backend Environment (`service/.env`)
 
-Configure each model tier with a JSON object containing `model` and `reasoningEffort`. In `.env`, wrap the JSON in single quotes to preserve its double quotes:
+**To upgrade a model**, edit [the model catalog](service/src/modelCatalog.ts) in a PR. It maps each deployment to a Foundry region and assigns a deployment and reasoning effort to each role. GPT Live and embeddings use `eus2` (East US 2); chat, delegated reasoning, vision, HA translation and evaluation judges use `eus` (East US). These are application routes, not a list of all models Azure offers. Deploy the named model in the selected resource before rolling out a catalog change.
+
+**To connect the resources**, put each resource's name (not its URL) and its own key in `service/.env`:
 
 ```env
-AI_MODEL_NANO='{"model":"gpt-5.4-nano","reasoningEffort":"low"}'
-AI_MODEL_MINI='{"model":"gpt-5.4-mini","reasoningEffort":"low"}'
-AI_MODEL_ADVANCED='{"model":"gpt-5.4","reasoningEffort":"medium"}'
+AZURE_OPENAI_RESOURCE_NAME_EUS=
+AZURE_OPENAI_API_KEY_EUS=
+AZURE_OPENAI_RESOURCE_NAME_EUS2=
+AZURE_OPENAI_API_KEY_EUS2=
 ```
 
-`model` must be a nonempty deployment name. `reasoningEffort` is optional; omitting it uses the provider default. Supported reasoning values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; choose a value supported by your deployment. Plain deployment names still work. Malformed JSON, unknown fields, invalid reasoning levels, and CSV pairs fail at startup. An unset or blank mini tier inherits the nano settings, and advanced inherits the mini settings. `AI_MODEL_HOME_ASSISTANT` inherits the advanced settings and accepts the same JSON format for an explicit override. An override without `reasoningEffort` uses the provider default.
+When migrating, replace the unsuffixed resource/endpoint and key settings with the matching regional pair and supply the other pair separately. Remove old `AI_MODEL_*`, `EMBEDDING_MODEL`, and eval judge/reviewer model variables: they no longer select deployments. Restart the backend. A missing regional credential fails the affected request; credentials are never borrowed from another region.
 
 Text and vision helpers allow extra output tokens for reasoning and treat responses cut off by the token limit as failures. Evaluation records distinguish explicitly configured reasoning efforts even when they use the same deployment. Historical traces without effort metadata retain their deployment-only identity.
 
-Reasoning is applied to text, JSON, vision, and delegated agent requests. Offline TV, scheduling and Realtime reasoning model overrides and `OFFLINE_EVAL_JUDGE_MODEL`, `ONLINE_EVAL_JUDGE_MODEL`, and `ONLINE_EVAL_REVIEW_MODEL` also accept JSON settings. GPT Live, native Realtime audio, transcription, and embedding deployment settings continue to use plain names.
-
-The online eval worker records its enrollment cutoff and recovers interrupted attempts before validating judge and reviewer model settings. Invalid settings stop the worker without consuming queued evaluations.
+For a one-off offline eval, `--model` still accepts a deployment name or JSON such as `'{"model":"candidate","reasoningEffort":"low"}'`. Unlisted candidates run in `eus`; add a deployment-to-region entry to test one elsewhere. This does not change any production or judge default.
 
 ```env
 HOME_ASSISTANT_URL=http://your-ha-instance:8123
 HOME_ASSISTANT_TOKEN=your_ha_long_lived_access_token
 SPEECH_KEY=your_azure_speech_key
 SPEECH_REGION=your_azure_speech_region
-API_KEY=your_openai_or_azure_openai_key
-OPEN_AI_BASE_URL=your_azure_openai_endpoint
-AZURE_OPENAI_API_DEPLOYMENT_NAME=your_deployment_name
-OPENAI_RESPONSES_API_VERSION=2024-02-15-preview
 
 # Optional: enable Azure Cosmos DB logging of device states every hour
 AZURE_COSMOS_ENDPOINT=https://your-cosmos-account.documents.azure.com:443/
@@ -189,7 +186,7 @@ The application integrates with Home Assistant through:
 
 After browser wake-word detection, the server streams 24 kHz PCM16 audio to GPT Live. Its full-duplex voice model delegates work to the application, whose existing AI SDK loop selects tools and Specialist agents. Existing Home Assistant tools, confirmations, ScheduledTasks, memory, and TV jobs remain server-owned.
 
-Deploy `gpt-live-1` in Azure Foundry and set `AI_MODEL_LIVE` to its deployment name. The application uses the existing `AI_MODEL_ADVANCED` for delegated reasoning; no separate GPT Live backend deployment is required. Optionally set `GPT_LIVE_VOICE` (defaults to `marin`). The resource and API key use the existing Azure OpenAI settings. `AI_MODEL_LIVE_BACKEND`, `AI_MODEL_REALTIME`, and `AI_MODEL_TRANSCRIBE` are not used for browser voice. The independent native Realtime evaluation adapter retains its legacy settings.
+Browser voice connects to the catalog's `live` deployment; the `advanced` profile handles delegated reasoning on its own resource. No separate GPT Live backend deployment is required. `GPT_LIVE_VOICE` selects the voice (default `marin`).
 
 The internal `/api/realtime-chat` route is retained for browser compatibility. GPT Live has no authoritative turn-completed event: transcript display and speech completion use silence-based grouping. Client delegation waits for a delegation event and 800 ms without new transcript fragments before running a request. Browser-submitted wake-word text goes through the same AI SDK adapter. Delegation IDs correlate replies, repeated IDs are ignored, and requests run in order. The command mic stops after 30 seconds, while agent work, speech streaming, and queued playback continue to completion. Wake-word listening resumes after the reply finishes; Stop still silences it immediately. Muted sessions close only after work and speech settle.
 
@@ -224,7 +221,7 @@ is a no-op when Cosmos DB is not configured.
 
 The backend automatically grades completed live runs in a separate worker. Open `/dashboards/evals/online` to review model cohorts, evidence, independent judge disagreements and queue health. See [configuration and recovery](docs/online-evals.md) and the [model quality audit](docs/model-quality-audit.md) based on recent live-service traces.
 
-`ONLINE_EVAL_ENABLED=false` disables this worker. `AI_MODEL_HOME_ASSISTANT` controls downstream device-command translation and defaults to `AI_MODEL_ADVANCED`.
+`ONLINE_EVAL_ENABLED=false` disables this worker. The catalog's `homeAssistant` profile controls downstream device-command translation.
 
 Relative scheduling now uses a fixed server request timestamp. One-shot timed actions persist executable follow-up phases atomically and fire from server timers. See [timed-action semantics](docs/adr/0006-request-anchored-timed-actions.md) and [controlled model comparisons](docs/model-comparisons.md).
 

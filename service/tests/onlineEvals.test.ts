@@ -40,8 +40,8 @@ async function fixture(fn: (store: EvalStore, engine: OnlineEvalEngine) => Promi
 }
 const cutoff = "2026-11-07T00:00:00Z";
 
-test("invalid judge or reviewer settings preserve enrollment and recover interrupted attempts without consuming the queue", async t => {
-  const settings = { ONLINE_EVAL_ENABLED: "true", ONLINE_EVAL_DIR: "", ONLINE_EVAL_JUDGE_MODEL: "", ONLINE_EVAL_REVIEW_MODEL: "" };
+test("missing judge credentials preserve enrollment and recover interrupted attempts without consuming the queue", async t => {
+  const settings = { ONLINE_EVAL_ENABLED: "true", ONLINE_EVAL_DIR: "", AZURE_OPENAI_RESOURCE_NAME_EUS: "test-resource", AZURE_OPENAI_API_KEY_EUS: "test-key" };
   const previous = Object.keys(settings).map(key => [key, process.env[key]] as const);
   t.after(() => {
     for (const [key, value] of previous) {
@@ -60,11 +60,11 @@ test("invalid judge or reviewer settings preserve enrollment and recover interru
     await store.write<OnlineRecord>("records", { ...interrupted, status: "running" });
     const start = Date.now();
     let enabledAt: string | undefined;
-    for (const invalidKey of ["ONLINE_EVAL_JUDGE_MODEL", "ONLINE_EVAL_REVIEW_MODEL"] as const) {
+    for (const invalidKey of ["AZURE_OPENAI_RESOURCE_NAME_EUS", "AZURE_OPENAI_API_KEY_EUS"] as const) {
       Object.assign(process.env, settings, {
-        ONLINE_EVAL_DIR: engine.config.directory, ONLINE_EVAL_JUDGE_MODEL: "valid-deployment", [invalidKey]: "{",
+        ONLINE_EVAL_DIR: engine.config.directory, [invalidKey]: "",
       });
-      await assert.rejects(runOnlineWorker(AbortSignal.timeout(500)), new RegExp(`${invalidKey} must be`));
+      await assert.rejects(runOnlineWorker(AbortSignal.timeout(500)), new RegExp(invalidKey));
       assert.deepEqual(await store.read<OnlineRecord>("records", id), queued);
       const enrollment = await store.read<{ enabledAt: string }>("state", "enrollment");
       assert.ok(enrollment);
@@ -78,7 +78,7 @@ test("invalid judge or reviewer settings preserve enrollment and recover interru
       assert.equal(await store.workerIsActive(), false);
       const state = await store.read<{ error?: string; stopped?: boolean }>("state", "worker");
       assert.equal(state?.stopped, true);
-      assert.match(state?.error ?? "", new RegExp(`${invalidKey} must be`));
+      assert.match(state?.error ?? "", new RegExp(invalidKey));
     }
   }, { config: { sampleRate: 1 } });
 });

@@ -34,14 +34,13 @@ Online history is stored separately from existing recorded/simulated eval histor
 | --- | --- | --- |
 | `ONLINE_EVAL_ENABLED` | `true` | Set `false` to disable worker startup and new retry admission |
 | `ONLINE_EVAL_DIR` | `service/generated_data/online-evals` | Shared local durable storage |
-| `ONLINE_EVAL_JUDGE_MODEL` | `OFFLINE_EVAL_JUDGE_MODEL`, then `AI_MODEL_ADVANCED` | Primary judge deployment |
-| `ONLINE_EVAL_REVIEW_MODEL` | Primary judge | Independent reviewer deployment; may use a different model |
 | `ONLINE_EVAL_SAMPLE_RATE` | `1` | Stable deterministic fraction, 0–1 |
 | `ONLINE_EVAL_MAX_PENDING` | `500` | Maximum queued/running records |
 | `ONLINE_EVAL_TIMEOUT_MS` | `180000` | Total deadline across the two judgments |
 | `ONLINE_EVAL_POLL_MS` | `5000` | Worker discovery polling interval |
 | `ONLINE_EVAL_MAX_TEXT_BYTES` | `350000` | Maximum text packet size after factoring shared evidence |
 | `ONLINE_EVAL_MAX_EVIDENCE_BYTES` | `16000000` | Maximum complete packet size including images |
-| `AI_MODEL_HOME_ASSISTANT` | `AI_MODEL_ADVANCED` | Downstream HA translation deployment; set explicitly to use a different quality/latency tradeoff |
+
+Primary judge, reviewer and downstream HA model selections are versioned in the [model catalog](../service/src/modelCatalog.ts) (`onlineJudge`, `onlineReviewer`, `homeAssistant`), not environment variables.
 
 The operating service must run this code for new downstream execution traces to exist. Old voice records ending at a job ID cannot reconstruct missing HA outcomes. No live service restart or deployment is part of local development validation.

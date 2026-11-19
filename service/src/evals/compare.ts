@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { isValidModelOverride, modelSettingsIdentity } from "../modelSettings";
+import { formatModelSettingsIdentity, isValidModelOverride, modelSettingsIdentity, parseModelSettings } from "../modelSettings";
+import { MODEL_CATALOG } from "../modelCatalog";
 import { EvalStore, digest, processIsRunning } from "./store";
 import { EvalRunner } from "./runner";
 import { getEvalAgent } from "./registry";
@@ -84,17 +85,18 @@ if (require.main === module) {
     if (!baselineModel || !candidateModel) throw new Error("Usage: npm run eval:compare -- tv|scheduled_task|realtime baseline-deployment candidate-deployment [scenario-id ...]");
     const registration = getEvalAgent(agentId);
     const config = await import("../config");
-    if (!config.AZURE_OPENAI_RESOURCE_NAME) throw new Error("Configure the Azure model endpoint");
-    (await import("./network")).installNetworkBoundary(`${config.AZURE_OPENAI_RESOURCE_NAME}.openai.azure.com`);
+    const judgeIdentity = formatModelSettingsIdentity(MODEL_CATALOG.offlineJudge);
+    const modelHosts = [judgeIdentity, baselineModel, candidateModel].map(value => {
+      const settings = parseModelSettings(value);
+      if (!settings) throw new Error("Missing comparison model");
+      return config.foundryConnectionFor(settings.model).hostname;
+    });
+    (await import("./network")).installNetworkBoundary(modelHosts);
     const { createLlmJudge, GRADER_VERSION } = await import("./judge");
-    const judgeModel = process.env.OFFLINE_EVAL_JUDGE_MODEL || config.AI_MODEL_ADVANCED;
-    const judgeReasoningEffort = process.env.OFFLINE_EVAL_JUDGE_MODEL ? undefined : config.AI_MODEL_ADVANCED_REASONING_EFFORT;
-    const judgeIdentity = modelSettingsIdentity(judgeModel, judgeReasoningEffort, "OFFLINE_EVAL_JUDGE_MODEL");
-    if (!judgeModel || !judgeIdentity) throw new Error("Configure the eval judge model");
     const controller = new AbortController();
     process.once("SIGTERM", () => controller.abort()); process.once("SIGINT", () => controller.abort());
     const report = await compareModels({ agentId: registration.id, baselineModel, candidateModel, scenarioIds: scenarioIds.length ? scenarioIds : undefined }, new EvalStore(), {
-      createAdapter: model => registration.createAdapter(model), judge: await createLlmJudge(judgeModel, [], "", judgeReasoningEffort), judgeModel: judgeIdentity, graderVersion: GRADER_VERSION,
+      createAdapter: model => registration.createAdapter(model), judge: await createLlmJudge(judgeIdentity, [], ""), judgeModel: judgeIdentity, graderVersion: GRADER_VERSION,
     }, controller.signal);
     console.log(JSON.stringify({ id: report.id, status: report.status, pairs: report.pairs }, null, 2));
     if (report.status !== "completed") process.exitCode = 1;
