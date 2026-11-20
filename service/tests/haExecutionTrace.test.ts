@@ -1,3 +1,5 @@
+import { MODEL_CATALOG } from "../src/modelCatalog";
+import { formatModelSettingsIdentity } from "../src/modelSettings";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -10,16 +12,15 @@ import { startActiveRun } from "../src/activeRunManager";
 import { getRequestContext, withRequestContext } from "../src/requestContext";
 
 test("HA commands retain downstream model, actual request results and parent attribution, including failures", async t => {
-  process.env.AI_MODEL_HOME_ASSISTANT = "synthetic-quality-model";
   process.env.HOME_ASSISTANT_DEVICES = "test_light";
   const sdk = new NodeSDK({ autoDetectResources: false, spanProcessors: [new SimpleSpanProcessor(telemetrySpanExporter)] });
   sdk.start();
   const requireModule = createRequire(__filename);
   const previous = new Map<string, NodeModule | undefined>();
-  const modelCalls: string[] = [];
+  const modelCalls: Array<[string, string | undefined]> = [];
   const stubs = {
-    "../src/ai": { generateCompletion: async (params: { model: string }) => {
-      modelCalls.push(params.model);
+    "../src/ai": { generateCompletion: async (params: { model: string; reasoningEffort?: string }) => {
+      modelCalls.push([params.model, params.reasoningEffort]);
       return JSON.stringify({ url_path: "light/turn_off", entity_id: "light.test_light" });
     } },
     "../src/memory": { retrieveMemories: async () => [], formatMemoryContext: () => "" },
@@ -45,14 +46,18 @@ test("HA commands retain downstream model, actual request results and parent att
       assert.equal((await executeHACommand("Turn off test light")).success, false);
     });
     const traces = getAllTraces().filter(trace => trace.agentType === "home_assistant" && !existingSessionIds.has(trace.sessionId));
-    assert.equal(traces.length, 2); assert.deepEqual(modelCalls, ["synthetic-quality-model", "synthetic-quality-model"]);
+    assert.equal(traces.length, 2);
+    const expectedCall = [MODEL_CATALOG.homeAssistant.model, MODEL_CATALOG.homeAssistant.reasoningEffort];
+    assert.deepEqual(modelCalls, [expectedCall, expectedCall]);
     const success = traces.find(trace => trace.status === "completed")!;
     const error = traces.find(trace => trace.status === "error")!;
-    assert.equal(success.llmSteps[0].requestModel, "synthetic-quality-model");
+    assert.equal(success.llmSteps[0].requestModel, MODEL_CATALOG.homeAssistant.model);
+    assert.equal(success.llmSteps[0].reasoningEffort, MODEL_CATALOG.homeAssistant.reasoningEffort);
     assert.equal(success.toolResults[0].args?.entity_id, "light.test_light");
     assert.equal(success.events.find(event => event.type === "ha.execution.started")?.data?.parentSessionId, "voice-parent");
     assert.equal(error.toolResults[0].toolSuccess, false); assert.match(error.toolResults[0].observation, /Synthetic API failure/);
     const assessment = onlineAssessment(success);
+    assert.equal(assessment.model, formatModelSettingsIdentity(MODEL_CATALOG.homeAssistant));
     assert.equal(assessment.agentId, "home_assistant"); assert.match(assessment.promptVersion!, /^ha-template-/);
     assert.equal(assessment.evaluationScope, "execution");
     assert.equal(assessment.taskAssertion, undefined); assert.equal(assessment.coverage, "partial");

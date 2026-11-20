@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { AI_MODEL_ADVANCED } from "./config";
+import { AI_MODEL_ADVANCED, AI_MODEL_ADVANCED_REASONING_EFFORT } from "./config";
 import { createAgentLoop, type ToolDefinition } from "./agents/core/agentLoop";
 import { getPromptMemoryContext, recordMemoryInteraction } from "./memory";
 import { addEvent, addLLMStep, completeTrace, createTrace, trackToolResult, withTraceSession } from "./tracing/agentTraceStore";
@@ -58,6 +58,7 @@ async function runVoiceRequest(
   }));
   const loop = createAgentLoop({
     model: AI_MODEL_ADVANCED,
+    reasoningEffort: AI_MODEL_ADVANCED_REASONING_EFFORT,
     maxIterations: LIVE_VOICE_MAX_ITERATIONS,
     // Voice replies, including async acknowledgements, use complete_task.
     requireToolCall: LIVE_VOICE_REQUIRE_TOOL_CALL,
@@ -68,6 +69,7 @@ async function runVoiceRequest(
       timestamp: new Date().toISOString(),
       finishReason: event.finishReason,
       requestModel: event.requestModel,
+      reasoningEffort: event.reasoningEffort,
       responseModel: event.responseModel,
       responseId: event.responseId,
       provider: event.provider,

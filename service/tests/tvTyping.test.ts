@@ -10,8 +10,8 @@ let typing: typeof import("../src/agents/tv/tools/deterministicTyping").definiti
 let navigate: typeof import("../src/agents/tv/tools/navigate").definition;
 let deletion: typeof import("../src/agents/tv/tools/deleteTypedText").definition;
 before(async () => {
-  process.env.AZURE_OPENAI_API_KEY = "test-key";
-  process.env.AZURE_OPENAI_RESOURCE_NAME = "test-resource";
+  process.env.AZURE_OPENAI_API_KEY_EUS = "test-key";
+  process.env.AZURE_OPENAI_RESOURCE_NAME_EUS = "test-resource";
   process.env.HOME_ASSISTANT_URL = "http://ha.invalid";
   process.env.HOME_ASSISTANT_TOKEN = "test-token";
   process.env.TV_REMOTE_KEY_DELAY_MS = "0";

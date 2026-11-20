@@ -8,6 +8,7 @@
  */
 
 import type { ToolDefinition } from "./agentLoop";
+import type { ReasoningEffort } from "../../modelSettings";
 
 // ============================================================================
 // Agent Type
@@ -229,8 +230,9 @@ export interface AgentDefinition {
   systemPrompt: string;
   /** Tools the agent can call (without execute functions). */
   tools: ToolDefinition[];
-  /** Azure OpenAI deployment name to use. Falls back to AI_MODEL_ADVANCED. */
+  /** Azure deployment name or JSON model settings. Falls back to AI_MODEL_ADVANCED. */
   model?: string;
+  reasoningEffort?: ReasoningEffort;
   /** Maximum iterations before the orchestrator aborts. */
   maxIterations: number;
 

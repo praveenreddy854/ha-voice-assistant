@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { formatModelSettingsIdentity, isValidModelOverride, modelSettingsIdentity, parseModelSettings } from "../modelSettings";
+import { MODEL_CATALOG } from "../modelCatalog";
 import { EvalStore, digest, processIsRunning } from "./store";
 import { EvalRunner } from "./runner";
 import { getEvalAgent } from "./registry";
@@ -17,7 +19,14 @@ export interface ModelComparison {
 export async function compareModels(input: ComparisonInput, store: EvalStore, dependencies: {
   createAdapter(model: string): Promise<AgentAdapter>; judge: Judge; judgeModel: string; graderVersion: string;
 }, signal: AbortSignal): Promise<ModelComparison> {
-  if (input.baselineModel === input.candidateModel || ![input.baselineModel, input.candidateModel].every(model => /^[a-zA-Z0-9._-]+$/.test(model))) throw new Error("Choose two distinct valid model deployments");
+  if (![input.baselineModel, input.candidateModel].every(isValidModelOverride)) {
+    throw new Error("Choose two distinct valid model settings");
+  }
+  const baselineModel = modelSettingsIdentity(input.baselineModel);
+  const candidateModel = modelSettingsIdentity(input.candidateModel);
+  if (!baselineModel || !candidateModel || baselineModel === candidateModel) {
+    throw new Error("Choose two distinct valid model settings");
+  }
   const repeats = input.repeats ?? 1;
   if (!Number.isInteger(repeats) || repeats < 1 || repeats > 5) throw new Error("Choose 1 to 5 repetitions");
   const releaseSubmission = await store.acquire("submission.lock");
@@ -32,12 +41,12 @@ export async function compareModels(input: ComparisonInput, store: EvalStore, de
     for (const previous of await store.list<ModelComparison>("model-comparisons")) if (previous.status === "running") {
       await store.write("model-comparisons", { ...previous, status: "incomplete", finishedAt: new Date().toISOString(), error: "Comparison worker interrupted; no model calls were resumed automatically" });
     }
-    const baseline = await dependencies.createAdapter(input.baselineModel), candidate = await dependencies.createAdapter(input.candidateModel);
+    const baseline = await dependencies.createAdapter(baselineModel), candidate = await dependencies.createAdapter(candidateModel);
     const manifest = (adapter: AgentAdapter) => digest({ id: adapter.id, version: adapter.version, promptVersion: adapter.promptVersion, scenarios: adapter.scenarios });
-    if (baseline.id !== input.agentId || candidate.id !== input.agentId || baseline.model !== input.baselineModel || candidate.model !== input.candidateModel || manifest(baseline) !== manifest(candidate)) throw new Error("Models must share identical agent, prompt/tool versions, requests, fixture state and clocks");
+    if (baseline.id !== input.agentId || candidate.id !== input.agentId || baseline.model !== baselineModel || candidate.model !== candidateModel || manifest(baseline) !== manifest(candidate)) throw new Error("Models must share identical agent, prompt/tool versions, requests, fixture state and clocks");
     const selected = input.scenarioIds || baseline.scenarios.map(scenario => scenario.id);
     if (!selected.length || new Set(selected).size !== selected.length || selected.some(id => !baseline.scenarios.some(scenario => scenario.id === id))) throw new Error("Unknown or duplicate scenario selection");
-    report = { id: randomUUID(), input: { ...input, repeats }, manifest: manifest(baseline), graderVersion: dependencies.graderVersion, judgeModel: dependencies.judgeModel,
+    report = { id: randomUUID(), input: { ...input, baselineModel, candidateModel, repeats }, manifest: manifest(baseline), graderVersion: dependencies.graderVersion, judgeModel: dependencies.judgeModel,
       startedAt: new Date().toISOString(), status: "running", pairs: [] };
     await store.write("model-comparisons", report);
     const groups = (await store.list<StepGroup>("groups")).filter(group => group.agentId === input.agentId);
@@ -76,15 +85,18 @@ if (require.main === module) {
     if (!baselineModel || !candidateModel) throw new Error("Usage: npm run eval:compare -- tv|scheduled_task|realtime baseline-deployment candidate-deployment [scenario-id ...]");
     const registration = getEvalAgent(agentId);
     const config = await import("../config");
-    if (!config.AZURE_OPENAI_RESOURCE_NAME) throw new Error("Configure the Azure model endpoint");
-    (await import("./network")).installNetworkBoundary(`${config.AZURE_OPENAI_RESOURCE_NAME}.openai.azure.com`);
+    const judgeIdentity = formatModelSettingsIdentity(MODEL_CATALOG.offlineJudge);
+    const modelHosts = [judgeIdentity, baselineModel, candidateModel].map(value => {
+      const settings = parseModelSettings(value);
+      if (!settings) throw new Error("Missing comparison model");
+      return config.foundryConnectionFor(settings.model).hostname;
+    });
+    (await import("./network")).installNetworkBoundary(modelHosts);
     const { createLlmJudge, GRADER_VERSION } = await import("./judge");
-    const judgeModel = process.env.OFFLINE_EVAL_JUDGE_MODEL || config.AI_MODEL_ADVANCED;
-    if (!judgeModel) throw new Error("Configure the eval judge model");
     const controller = new AbortController();
     process.once("SIGTERM", () => controller.abort()); process.once("SIGINT", () => controller.abort());
     const report = await compareModels({ agentId: registration.id, baselineModel, candidateModel, scenarioIds: scenarioIds.length ? scenarioIds : undefined }, new EvalStore(), {
-      createAdapter: model => registration.createAdapter(model), judge: await createLlmJudge(judgeModel), judgeModel, graderVersion: GRADER_VERSION,
+      createAdapter: model => registration.createAdapter(model), judge: await createLlmJudge(judgeIdentity, [], ""), judgeModel: judgeIdentity, graderVersion: GRADER_VERSION,
     }, controller.signal);
     console.log(JSON.stringify({ id: report.id, status: report.status, pairs: report.pairs }, null, 2));
     if (report.status !== "completed") process.exitCode = 1;

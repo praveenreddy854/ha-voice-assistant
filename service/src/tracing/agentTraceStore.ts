@@ -18,6 +18,7 @@ import {
 import { ExportResult, ExportResultCode } from "@opentelemetry/core";
 import { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { isTelemetryLogFilename } from "./fileExporter";
+import { REASONING_EFFORTS, type ReasoningEffort } from "../modelSettings";
 
 export interface TraceToolCall {
   toolName: string;
@@ -48,6 +49,7 @@ export interface TraceLLMStep {
   timestamp: string;
   finishReason: string;
   requestModel?: string;
+  reasoningEffort?: ReasoningEffort;
   responseModel?: string;
   responseId?: string;
   provider?: string;
@@ -297,6 +299,7 @@ export function addLLMStep(sessionId: string, step: TraceLLMStep): void {
   const responseTimeMs = Math.max(step.responseTimeMs ?? 0, 0);
   const modelAttributes: Record<string, string | number> = {};
   setOptionalAttribute(modelAttributes, "gen_ai.request.model", step.requestModel);
+  setOptionalAttribute(modelAttributes, "agent.step.reasoning_effort", step.reasoningEffort);
   setOptionalAttribute(modelAttributes, "gen_ai.response.model", step.responseModel);
   setOptionalAttribute(modelAttributes, "gen_ai.response.id", step.responseId);
   setOptionalAttribute(modelAttributes, "gen_ai.provider.name", step.provider);
@@ -675,12 +678,14 @@ function hydrateLlmStep(traceEntry: AgentTrace, span: ExportedTelemetrySpan): vo
     getStringAttribute(span.attributes, "agent.step.system_messages")
   );
   const messages = parseMessages(getStringAttribute(span.attributes, "agent.step.messages"));
+  const effort = getStringAttribute(span.attributes, "agent.step.reasoning_effort");
 
   traceEntry.llmSteps.push({
     stepNumber,
     timestamp: hrTimeToISOString(span.startTime),
     finishReason: getStringAttribute(span.attributes, "agent.step.finish_reason") || "unknown",
     requestModel: getStringAttribute(span.attributes, "gen_ai.request.model"),
+    reasoningEffort: REASONING_EFFORTS.find(value => value === effort),
     responseModel: getStringAttribute(span.attributes, "gen_ai.response.model"),
     responseId: getStringAttribute(span.attributes, "gen_ai.response.id"),
     provider: getStringAttribute(span.attributes, "gen_ai.provider.name"),

@@ -24,7 +24,8 @@ import type {
   LanguageModelMiddleware,
 } from "ai";
 import type { z } from "zod";
-import { AI_MODEL_ADVANCED } from "../../config";
+import { AI_MODEL_ADVANCED, AI_MODEL_ADVANCED_REASONING_EFFORT } from "../../config";
+import { resolveModelSettings, reasoningSettings, type ReasoningEffort } from "../../modelSettings";
 import { azureProvider } from "../../ai";
 import { getRequestContext, withRequestContext } from "../../requestContext";
 import type { AgentPauseGate } from "./types";
@@ -69,6 +70,7 @@ export interface AgentLoopConfig {
   tools: ToolDefinition[];
   maxIterations?: number;
   model?: string;
+  reasoningEffort?: ReasoningEffort;
   /** Require a tool call on each provider step, including the completion handoff. */
   requireToolCall?: boolean;
   /** Optional observation middleware; offline evals retain raw calls before tool validation. */
@@ -83,6 +85,7 @@ export interface StepEvent {
   toolCalls: Array<{ toolName: string; toolCallId: string; args: unknown; error?: string }>;
   finishReason: string;
   requestModel: string;
+  reasoningEffort?: ReasoningEffort;
   responseModel?: string;
   responseId?: string;
   provider: string;
@@ -214,7 +217,10 @@ export function createAgentLoop(
   resolveModel: (modelId: string) => Exclude<LanguageModel, string> = azureProvider
 ): AgentLoop {
   const sessions = new Map<string, AgentLoopSession>();
-  const model = config.model || AI_MODEL_ADVANCED;
+  const { model, reasoningEffort } = resolveModelSettings(
+    config.model || AI_MODEL_ADVANCED,
+    config.reasoningEffort ?? (config.model ? undefined : AI_MODEL_ADVANCED_REASONING_EFFORT),
+  ) ?? {};
   const maxIterations = config.maxIterations || 20;
 
   // Build AI SDK tool set from our definitions
@@ -351,6 +357,7 @@ export function createAgentLoop(
       const languageModel = resolveModel(model ?? "");
       const result = await generateText<typeof aiTools, AgentToolContext>({
         model: config.modelMiddleware ? wrapLanguageModel({ model: languageModel, middleware: config.modelMiddleware }) : languageModel,
+        ...reasoningSettings(reasoningEffort),
         tools: aiTools,
         toolChoice: config.requireToolCall ? "required" : "auto",
         system: systemPrompt,
@@ -372,6 +379,7 @@ export function createAgentLoop(
                 })),
                 finishReason: finishReason || "unknown",
                 requestModel: model ?? "unknown",
+                reasoningEffort,
                 responseModel: response.modelId || model || undefined,
                 responseId: response.id,
                 provider: "azure.ai.openai",

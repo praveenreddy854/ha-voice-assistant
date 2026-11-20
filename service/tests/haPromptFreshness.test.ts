@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import axios from "axios";
 
-process.env.AZURE_OPENAI_RESOURCE_NAME ??= "prompt-test";
-process.env.AZURE_OPENAI_API_KEY ??= "prompt-test";
+process.env.AZURE_OPENAI_RESOURCE_NAME_EUS ??= "prompt-test";
+process.env.AZURE_OPENAI_API_KEY_EUS ??= "prompt-test";
 
 test("HA translation refreshes entities and options on every command instead of retaining startup state", async t => {
   const previous = process.env.HOME_ASSISTANT_DEVICES;

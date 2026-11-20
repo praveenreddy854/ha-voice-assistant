@@ -1,3 +1,4 @@
+import { MODEL_CATALOG } from "../src/modelCatalog";
 import assert from "node:assert/strict";
 import test, { before, after, mock } from "node:test";
 import { Databases } from "@azure/cosmos";
@@ -115,7 +116,7 @@ test("SDK auto-execution records one result and preserves fresh model usage end 
   assert.equal(trace.llmSteps[0].toolCalls[0].toolCallId, "fresh-save");
   assert.equal(trace.llmSteps.length, 2);
   for (const step of trace.llmSteps) {
-    assert.equal(step.requestModel, "test-model");
+    assert.equal(step.requestModel, MODEL_CATALOG.advanced.model);
     assert.equal(step.responseModel, "test-model");
     assert.equal(step.provider, "azure.ai.openai");
     assert.ok(step.responseId?.startsWith("response-fresh-"));

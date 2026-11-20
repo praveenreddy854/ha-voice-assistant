@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import { modelSettingsIdentity } from "../../modelSettings";
 import path from "node:path";
 import { runOfflineAgentLoop } from "../loop";
 import { digest } from "../store";
@@ -11,7 +12,7 @@ export async function createScheduledTaskAdapter(modelOverride?: string): Promis
   // The worker installs its network boundary before these production modules load.
   const [
     { createAgentLoop }, { SCHEDULED_TASK_TOOLS }, constants, { renderScheduledTaskSystemPrompt },
-    { AI_MODEL_ADVANCED }, { buildMemoryToolDefinitions }, memory, { dueDateError },
+    { AI_MODEL_ADVANCED, AI_MODEL_ADVANCED_REASONING_EFFORT }, { buildMemoryToolDefinitions }, memory, { dueDateError },
   ] = await Promise.all([
     import("../../agents/core/agentLoop"), import("../../agents/scheduled-task/tools"),
     import("../../agents/scheduled-task/constants"), import("../../agents/scheduled-task/prompt"),
@@ -22,7 +23,7 @@ export async function createScheduledTaskAdapter(modelOverride?: string): Promis
   const tools = [...SCHEDULED_TASK_TOOLS, ...buildMemoryToolDefinitions("scheduled_task")]
     .map(({ type, function: contract }) => ({ type, function: contract }));
   assertScheduledTaskToolCoverage(tools);
-  const model = modelOverride || AI_MODEL_ADVANCED;
+  const model = modelSettingsIdentity(modelOverride || AI_MODEL_ADVANCED, modelOverride ? undefined : AI_MODEL_ADVANCED_REASONING_EFFORT);
   if (!model) throw new Error("Configure AI_MODEL_ADVANCED before running evals");
   const systemPromptFor = (state: ScheduledTaskState) =>
     `${renderScheduledTaskSystemPrompt(template, new Date(state.now), state.timeZone)}\n\n${memory.AGENT_MEMORY_SYSTEM_INSTRUCTIONS}`;

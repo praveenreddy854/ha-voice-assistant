@@ -1,9 +1,11 @@
 import { randomUUID } from "crypto";
 import { Container, CosmosClient, PartitionKeyKind } from "@azure/cosmos";
 import { embed } from "ai";
-import { azureProvider, generateCompletion } from "./ai";
+import { azureEmbeddingModel, generateCompletion } from "./ai";
+import { safeErrorDetails } from "./logSanitizer";
 import {
   AI_MODEL_MINI,
+  AI_MODEL_MINI_REASONING_EFFORT,
   AZURE_COSMOS_DATABASE,
   AZURE_COSMOS_ENDPOINT,
   AZURE_COSMOS_KEY,
@@ -377,14 +379,12 @@ function validMemoryType(value: unknown): MemoryType {
 }
 
 async function generateEmbedding(text: string): Promise<number[]> {
+  const model = azureEmbeddingModel(EMBEDDING_MODEL);
   try {
-    const { embedding } = await embed({
-      model: azureProvider.embeddingModel(EMBEDDING_MODEL),
-      value: text,
-    });
+    const { embedding } = await embed({ model, value: text });
     return embedding;
   } catch (error) {
-    console.error("[Memory] Embedding generation failed", error);
+    console.error("[Memory] Embedding generation failed", safeErrorDetails(error));
     return [];
   }
 }
@@ -925,6 +925,14 @@ export async function runMemoryConsolidationOnce(): Promise<void> {
   if (consolidationRunning || pendingInteractions.length === 0) return;
   if (!AI_MODEL_MINI || !isMemoryConfigured()) return;
 
+  // Validate storage's embedding configuration before paying to extract candidates.
+  try {
+    azureEmbeddingModel(EMBEDDING_MODEL);
+  } catch (error) {
+    console.warn("[Memory] Consolidation paused; embedding configuration is invalid", safeErrorDetails(error));
+    return;
+  }
+
   consolidationRunning = true;
   const batch = pendingInteractions.splice(0, CONSOLIDATION_BATCH_SIZE);
   try {
@@ -1011,6 +1019,7 @@ ${transcript}`;
 
   const raw = await generateCompletion({
     model,
+    reasoningEffort: AI_MODEL_MINI_REASONING_EFFORT,
     messages: [{ role: "user", content: prompt }],
     maxTokens: 1200,
     temperature: 0,

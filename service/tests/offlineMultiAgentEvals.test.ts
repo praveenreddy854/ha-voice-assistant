@@ -82,6 +82,42 @@ test("CLI explicitly selects each agent and preserves legacy TV defaults", () =>
   ]) assert.throws(() => parseEvalArguments(args), undefined, args.join(" "));
 });
 
+test("CLI model overrides accept JSON settings for every reasoning agent", () => {
+  const model = '{"model":"candidate","reasoningEffort":"low"}';
+  for (const agentId of EVAL_AGENT_IDS) {
+    assert.equal(parseEvalArguments(["simulated", "--agent", agentId, "--model", model]).model, model);
+  }
+  for (const invalid of ["candidate,low", "{}", '{"model":"bad/model"}', '{"model":"candidate","reasoningEffort":"typo"}']) {
+    assert.throws(() => parseEvalArguments(["simulated", "--model", invalid]), /valid --model/);
+  }
+  assert.throws(() => parseEvalArguments(["recorded", "source", "--model", model]), /only for simulations/);
+});
+
+test("eval API admits JSON model overrides and rejects malformed settings before submission", async t => withStore(async store => {
+  const supervisor = new EvalSupervisor(store, () => assert.fail("must not spawn a worker"));
+  const submitted: Array<{ model?: string }> = [];
+  t.mock.method(supervisor, "submit", async (input: EvalJob) => { submitted.push(input); return { ...input, id: randomUUID() }; });
+  const app = express();
+  app.use(express.json());
+  app.use(createEvalRouter(supervisor));
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>(resolve => server.once("listening", resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const submit = (agentId: string, model: string) => fetch(`${base}/api/evals/jobs`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode: "simulated", agentId, model }),
+  });
+  try {
+    const model = '{"model":"candidate","reasoningEffort":"low"}';
+    for (const agentId of EVAL_AGENT_IDS) assert.equal((await submit(agentId, model)).status, 202);
+    for (const invalid of ["candidate,low", "{}", '{"model":"bad/model"}', '{"model":"candidate","reasoningEffort":"typo"}']) {
+      assert.equal((await submit("tv", invalid)).status, 400);
+    }
+    assert.deepEqual(submitted.map(item => item.model), [model, model, model]);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+}));
+
 test("recorded import accepts terminal nonvisual agents and preserves incomplete evidence honestly", () => {
   for (const id of ["scheduled_task", "realtime"]) {
     const result = assessmentFromRecord(trace(id), undefined, id);

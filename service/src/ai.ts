@@ -1,9 +1,9 @@
 import { createAzure } from "@ai-sdk/azure";
 import { generateText } from "ai";
-import { samplingSettings } from "./modelSettings";
+import { MODEL_CATALOG } from "./modelCatalog";
+import { outputTokenBudget, resolveModelSettings, reasoningSettings, samplingSettings, type ReasoningEffort } from "./modelSettings";
 import {
-  AZURE_OPENAI_API_KEY,
-  AZURE_OPENAI_RESOURCE_NAME,
+  foundryConnectionFor,
   AZURE_OPENAI_API_VERSION,
 } from "./config";
 
@@ -11,15 +11,14 @@ import {
 // Provider
 // ============================================================================
 
-if (!AZURE_OPENAI_RESOURCE_NAME || !AZURE_OPENAI_API_KEY) {
-  throw new Error("OpenAI configuration missing required values");
+function providerFor(model: string) {
+  const { apiKey, resourceName } = foundryConnectionFor(model);
+  return createAzure({ apiKey, resourceName, apiVersion: AZURE_OPENAI_API_VERSION });
 }
 
-export const azureProvider = createAzure({
-  apiKey: AZURE_OPENAI_API_KEY,
-  resourceName: AZURE_OPENAI_RESOURCE_NAME,
-  apiVersion: AZURE_OPENAI_API_VERSION,
-});
+export const azureProvider = (model: string) => providerFor(model)(model);
+// Existing embedding aliases use the resource assigned to the embedding role.
+export const azureEmbeddingModel = (model: string) => providerFor(MODEL_CATALOG.embedding.model).embeddingModel(model);
 
 // ============================================================================
 // Retry Helper
@@ -78,25 +77,35 @@ async function withRetry<T>(
 // Core Functions
 // ============================================================================
 
+function completedText(result: { finishReason: string; text: string }): string {
+  if (result.finishReason === "length") {
+    throw new Error("Model response was truncated at the output token limit");
+  }
+  return result.text;
+}
+
 /**
  * Generate a plain text completion.
  */
 export async function generateCompletion(params: {
   model: string;
+  reasoningEffort?: ReasoningEffort;
   messages: Array<{ role: string; content: string }>;
   maxTokens?: number;
   temperature?: number;
   abortSignal?: AbortSignal;
 }): Promise<string> {
+  const { model = "", reasoningEffort } = resolveModelSettings(params.model, params.reasoningEffort) ?? {};
   return withRetry(async () => {
     const result = await generateText({
-      model: azureProvider(params.model),
+      model: azureProvider(model),
       messages: params.messages as any,
       abortSignal: params.abortSignal,
-      maxOutputTokens: params.maxTokens ?? 1000,
-      ...samplingSettings(params.model, params.temperature),
+      maxOutputTokens: outputTokenBudget(model, params.maxTokens ?? 1000, reasoningEffort),
+      ...reasoningSettings(reasoningEffort),
+      ...samplingSettings(model, params.temperature, reasoningEffort),
     });
-    return result.text;
+    return completedText(result);
   }, 2, 500, params.abortSignal);
 }
 
@@ -105,6 +114,7 @@ export async function generateCompletion(params: {
  */
 export async function generateJsonCompletion<T>(params: {
   model: string;
+  reasoningEffort?: ReasoningEffort;
   messages: Array<{ role: string; content: string }>;
   maxTokens?: number;
   temperature?: number;
@@ -118,15 +128,17 @@ export async function generateJsonCompletion<T>(params: {
  */
 export async function generateVisionText(params: {
   model: string;
+  reasoningEffort?: ReasoningEffort;
   prompt: string;
   imageBase64: string;
   imageContentType: string;
   maxTokens?: number;
   temperature?: number;
 }): Promise<string> {
+  const { model = "", reasoningEffort } = resolveModelSettings(params.model, params.reasoningEffort) ?? {};
   return withRetry(async () => {
     const result = await generateText({
-      model: azureProvider(params.model),
+      model: azureProvider(model),
       messages: [
         {
           role: "user",
@@ -144,9 +156,10 @@ export async function generateVisionText(params: {
           ],
         },
       ],
-      maxOutputTokens: params.maxTokens ?? 500,
-      ...samplingSettings(params.model, params.temperature),
+      maxOutputTokens: outputTokenBudget(model, params.maxTokens ?? 500, reasoningEffort),
+      ...reasoningSettings(reasoningEffort),
+      ...samplingSettings(model, params.temperature, reasoningEffort),
     });
-    return result.text;
+    return completedText(result);
   });
 }

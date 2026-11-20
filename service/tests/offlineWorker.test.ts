@@ -1,3 +1,5 @@
+import { MODEL_CATALOG } from "../src/modelCatalog";
+import { formatModelSettingsIdentity } from "../src/modelSettings";
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -19,14 +21,11 @@ async function withWorkerStore(t: TestContext, work: (store: EvalStore) => Promi
   const directory = await mkdtemp(path.join(os.tmpdir(), "offline-worker-"));
   const original = {
     fetch: globalThis.fetch, httpRequest: http.request, httpGet: http.get,
-    httpsRequest: https.request, httpsGet: https.get, judgeModel: process.env.OFFLINE_EVAL_JUDGE_MODEL,
+    httpsRequest: https.request, httpsGet: https.get,
   };
-  process.env.OFFLINE_EVAL_JUDGE_MODEL = "offline-test-judge";
   t.after(() => {
     globalThis.fetch = original.fetch; http.request = original.httpRequest; http.get = original.httpGet;
     https.request = original.httpsRequest; https.get = original.httpsGet;
-    if (original.judgeModel === undefined) delete process.env.OFFLINE_EVAL_JUDGE_MODEL;
-    else process.env.OFFLINE_EVAL_JUDGE_MODEL = original.judgeModel;
   });
   try { await work(new EvalStore(directory)); } finally { await rm(directory, { recursive: true, force: true }); }
 }
@@ -79,7 +78,7 @@ test("worker runs and persists the selected simulated adapter with isolated per-
   assert.equal(runs.length, 1);
   assert.equal(runs[0].agentId, "scheduled_task");
   assert.equal(runs[0].assessedModel, "assessed-deployment");
-  assert.equal(runs[0].judgeModel, "offline-test-judge");
+  assert.equal(runs[0].judgeModel, formatModelSettingsIdentity(MODEL_CATALOG.offlineJudge));
   assert.equal(runs[0].adapterVersion, "fixture-adapter");
   const skipped = (await store.list<EvalBatch>("batches")).filter(batch => batch.status === "skipped");
   assert.deepEqual(skipped.map(batch => batch.scheduledDay).sort(), [shiftDay(day, -2), shiftDay(day, -1)]);

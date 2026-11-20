@@ -71,7 +71,7 @@ The service package is a Node.js/Express backend that provides:
 
 ### Realtime Voice Agent (`src/realtimeChat.ts`)
 
-Owns the post-wake-word GPT Live connection at `/openai/v1/live/sessions`. Streams 24 kHz PCM16 audio, uses client delegation and the existing AI SDK loop for reasoning and tools, and retains server-owned confirmations and Specialist jobs. Configure `AI_MODEL_LIVE` and `GPT_LIVE_VOICE`; reasoning uses `AI_MODEL_ADVANCED`. `liveDelegation.ts` waits for a delegation event plus 800 ms of transcript quiet, deduplicates IDs, and serializes requests. `liveVoiceAgent.ts` supplies browser voice history, persistent memory, and existing tools to the AI SDK loop. Transcript fragments are grouped for display using silence; they never directly trigger device actions. Delegated AI SDK steps and tool results retain the `realtime` trace category for dashboards and recorded evaluations; these traces do not establish audio playback completion.
+Owns the post-wake-word GPT Live connection at `/openai/v1/live/sessions`. Streams 24 kHz PCM16 audio, uses client delegation and the existing AI SDK loop for reasoning and tools, and retains server-owned confirmations and Specialist jobs. The model catalog selects `live` for audio and `advanced` for delegated reasoning; `GPT_LIVE_VOICE` selects the voice. `liveDelegation.ts` waits for a delegation event plus 800 ms of transcript quiet, deduplicates IDs, and serializes requests. `liveVoiceAgent.ts` supplies browser voice history, persistent memory, and existing tools to the AI SDK loop. Transcript fragments are grouped for display using silence; they never directly trigger device actions. Delegated AI SDK steps and tool results retain the `realtime` trace category for dashboards and recorded evaluations; these traces do not establish audio playback completion.
 
 ### Text Assistant (`src/textAssistant.ts`, `src/textAssistantSessions.ts`)
 
@@ -349,8 +349,8 @@ npm run traces:errors
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `AZURE_OPENAI_ENDPOINT` | Azure OpenAI endpoint | - |
-| `AZURE_OPENAI_API_KEY` | API key | - |
+| `AZURE_OPENAI_RESOURCE_NAME_EUS` / `AZURE_OPENAI_RESOURCE_NAME_EUS2` | Foundry resource name for each region | - |
+| `AZURE_OPENAI_API_KEY_EUS` / `AZURE_OPENAI_API_KEY_EUS2` | Key for the corresponding resource | - |
 | `HOME_ASSISTANT_URL` | Home Assistant URL | `http://homeassistant.local:8123` |
 | `HOME_ASSISTANT_TOKEN` | HA long-lived token | - |
 | `TV_REMOTE_ENTITY_ID` | Default TV remote entity | - |

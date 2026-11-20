@@ -1,4 +1,6 @@
 import test, { type TestContext } from "node:test";
+import { MODEL_CATALOG } from "../src/modelCatalog";
+import { formatModelSettingsIdentity } from "../src/modelSettings";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -94,7 +96,7 @@ test("ScheduledTask adapter uses production loop, schemas and rendered prompt wi
     assert.match(messageText(request, "user"), /offline scheduling fixture/i);
     assert.ok(messageText(request, "system").includes(expectedPrompt));
     assert.match(messageText(request, "system"), /Persistent agent memory/);
-    assert.equal(request.model, "test-model");
+    assert.equal(request.model, MODEL_CATALOG.advanced.model);
     assert.deepEqual(new Set(request.tools.map(tool => tool.name)), new Set([...contracts.map(tool => tool.function.name), "complete_task"]));
     for (const contract of contracts) {
       const sent = request.tools.find(tool => tool.name === contract.function.name)!;
@@ -108,7 +110,7 @@ test("ScheduledTask adapter uses production loop, schemas and rendered prompt wi
   assert.equal(requests.length, 0, "Constructing an adapter must not call a model or write anything");
   assert.equal(cosmos.mock.callCount(), 0);
   assert.equal(adapter.id, "scheduled_task");
-  assert.equal(adapter.model, "test-model");
+  assert.equal(adapter.model, formatModelSettingsIdentity(MODEL_CATALOG.advanced));
   const result = await adapter.execute(scenario, new AbortController().signal);
   assert.equal(result.taskAssertion, true);
   assert.equal(result.finalResponse, "Scheduled.");

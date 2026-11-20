@@ -4,8 +4,7 @@ import { LiveDelegationController, type VoiceHistoryItem } from "./liveDelegatio
 import { runLiveVoiceAgent, type LiveVoiceTool } from "./liveVoiceAgent";
 import WebSocket, { WebSocketServer } from "ws";
 import {
-  AZURE_OPENAI_API_KEY,
-  AZURE_OPENAI_RESOURCE_NAME,
+  foundryConnectionFor,
   AI_MODEL_LIVE,
   AI_MODEL_ADVANCED,
   GPT_LIVE_VOICE,
@@ -638,10 +637,10 @@ Delegate answers to a pending clarification or confirmation to the application, 
 Only the application can accept commands, confirm actions, or report their outcome. Do not acknowledge acceptance before its result arrives.
 User and assistant transcript fragments can overlap; do not interpret each fragment as a completed turn.`;
 
-function connectAzure(onReady: () => void): void {
+function connectAzure({ hostname, apiKey }: ReturnType<typeof foundryConnectionFor>, onReady: () => void): void {
   const ws = new WebSocket(
-    `wss://${AZURE_OPENAI_RESOURCE_NAME}.openai.azure.com/openai/v1/live/sessions`,
-    { headers: { "api-key": AZURE_OPENAI_API_KEY! } }
+    `wss://${hostname}/openai/v1/live/sessions`,
+    { headers: { "api-key": apiKey } }
   );
   azureWs = ws;
   azureReady = false;
@@ -852,12 +851,16 @@ export function setupRealtimeChatProxy(server: http.Server): void {
     activeClientWs = clientWs;
     fullTranscript = "";
     pendingFollowUp = false;
-    if (!AI_MODEL_ADVANCED || !AZURE_OPENAI_RESOURCE_NAME || !AZURE_OPENAI_API_KEY) {
-      sendClient({ type: "error", message: "Configure AI_MODEL_ADVANCED, AZURE_OPENAI_RESOURCE_NAME, and AZURE_OPENAI_API_KEY for GPT Live." });
+    let liveConnection: ReturnType<typeof foundryConnectionFor>;
+    try {
+      foundryConnectionFor(AI_MODEL_ADVANCED); // Live delegates reasoning to a separate deployment.
+      liveConnection = foundryConnectionFor(AI_MODEL_LIVE);
+    } catch (error) {
+      sendClient({ type: "error", message: error instanceof Error ? error.message : "Missing Foundry configuration." });
       clientWs.close();
       return;
     }
-    connectAzure(() => sendClient({ type: "session_ready" }));
+    connectAzure(liveConnection, () => sendClient({ type: "session_ready" }));
     clientWs.on("message", async (data) => {
       if (activeClientWs !== clientWs) return;
       try {

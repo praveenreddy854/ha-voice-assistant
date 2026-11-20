@@ -1,3 +1,5 @@
+import { MODEL_CATALOG } from "../src/modelCatalog";
+import { formatModelSettingsIdentity } from "../src/modelSettings";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -64,7 +66,7 @@ function happyTurn(goal: RealtimeGoal, text: string): Array<Frame[]> {
 test("default factory uses production reasoning with legacy realtime configuration unset", async () => {
   delete process.env.AI_MODEL_REALTIME;
   const adapter = await createRealtimeAdapter();
-  assert.equal(adapter.model, "test-model");
+  assert.equal(adapter.model, formatModelSettingsIdentity(MODEL_CATALOG.advanced));
   assert.equal(adapter.version, "realtime-reasoning-simulator-4");
   assert.equal((await createRealtimeAdapter("candidate-reasoning-model")).model, "candidate-reasoning-model");
   assert.throws(() => createRealtimeAdapterWithLoop("", () => assert.fail("must not create loop")), /AI_MODEL_ADVANCED/);
@@ -80,7 +82,7 @@ test("all twelve stateful fixtures use serialized AI SDK requests with isolated 
       assert.equal(new URL(String(url)).pathname, "/openai/v1/responses");
       const request = readModelRequest(url, init) as unknown as Frame;
       serialized.push(request);
-      assert.equal(request.model, "test-model");
+      assert.equal(request.model, MODEL_CATALOG.advanced.model);
       assert.ok(requests < script.length, "bounded fixture script");
       const output = script[requests++][0];
       return output.type === "function_call"
@@ -198,7 +200,7 @@ test("model transport remains inside the offline network boundary", async () => 
   const original = { request: http.request, get: http.get, secureRequest: https.request, secureGet: https.get, fetch: globalThis.fetch };
   try {
     globalThis.fetch = async () => Response.json({ ok: true });
-    installNetworkBoundary("fixture-resource.openai.azure.com");
+    installNetworkBoundary(["fixture-resource.openai.azure.com"]);
     await globalThis.fetch("https://fixture-resource.openai.azure.com/openai/v1/responses", { method: "POST" });
     await assert.rejects(globalThis.fetch("http://home-assistant.fixture.invalid/api/services/light/turn_on", { method: "POST" }), /Offline eval blocked network/);
     await assert.rejects(globalThis.fetch("https://fixture-resource.openai.azure.com/not-openai"), /Offline eval blocked network/);
