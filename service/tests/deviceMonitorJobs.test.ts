@@ -119,6 +119,27 @@ test("all state/attribute conditions must match and daily checks may announce on
   assert.equal(f.registered[0].timezone, "America/New_York");
 });
 
+test("inherited attributes never satisfy conditions, including notEquals", async () => {
+  for (const attribute of ["constructor", "toString", "__proto__", "status"]) {
+    for (const operator of ["equals", "notEquals"]) {
+      const f = fixture({
+        minStateDurationSeconds: 0,
+        conditions: [{ field: `attributes.${attribute}`, operator, value: "Stuck" }],
+      });
+      f.setState({ attributes: Object.create({ status: "Stuck" }) });
+      await f.run();
+      assert.deepEqual(f.announcements, [], `${attribute} must be an own attribute`);
+    }
+  }
+  const own = fixture({
+    minStateDurationSeconds: 0,
+    conditions: [{ field: "attributes.constructor", operator: "notEquals", value: "Charging" }],
+  });
+  own.setState({ attributes: JSON.parse('{"constructor":"Stuck"}') });
+  await own.run();
+  assert.deepEqual(own.announcements, [input.announcement], "explicit own attributes remain supported");
+});
+
 test("disabled jobs do not register and aborted reads cannot announce", async () => {
   const disabled = fixture({ enabled: false });
   assert.equal(disabled.registered.length, 0); assert.equal(disabled.reads, 0);

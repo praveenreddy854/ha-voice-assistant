@@ -76,9 +76,12 @@ export function registerDeviceMonitorJobs(
         if (signal.aborted) return;
         if (state.entity_id !== job.entityId || ["unknown", "unavailable"].includes(state.state)) return;
         const matches = job.conditions.every(condition => {
+          const attribute = condition.field.slice("attributes.".length);
           const value: unknown = condition.field === "state"
             ? state.state
-            : state.attributes?.[condition.field.slice("attributes.".length)];
+            : state.attributes && Object.prototype.hasOwnProperty.call(state.attributes, attribute)
+              ? state.attributes[attribute]
+              : undefined;
           // Missing attributes never satisfy a condition, including notEquals.
           if (value === undefined || value === null) return false;
           return condition.operator === "equals" ? value === condition.value : value !== condition.value;
