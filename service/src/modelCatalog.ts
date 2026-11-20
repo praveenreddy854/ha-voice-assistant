@@ -7,6 +7,7 @@ const deploymentRegions = {
   "gpt-6.2-sol": "eus",
   "gpt-live-1": "eus2",
   "text-embedding-ada-002": "eus2",
+  "text-embedding-3-large": "eus2",
 } as const satisfies Record<string, FoundryRegion>;
 
 type Profile = { model: keyof typeof deploymentRegions; reasoningEffort?: ReasoningEffort };

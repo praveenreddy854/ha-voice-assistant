@@ -21,7 +21,7 @@ The Vercel AI SDK (`ai` + `@ai-sdk/azure`) uses the deployment, region and reaso
 | `AI_MODEL_MINI` | Mini | HA commands, vision helpers (TV detection, screenshot analysis) |
 | `AI_MODEL_ADVANCED` | Advanced | Agent loops (TV agent) |
 
-Edit the catalog to upgrade a tier. Resource names and keys belong only in the environment.
+Edit the catalog to upgrade a tier. Resource names and keys belong only in the environment. Keep `EMBEDDING_MODEL` set to the existing deployment when migrating stored vectors to the regional configuration.
 
 ### AI Service Layer (`src/ai.ts`)
 

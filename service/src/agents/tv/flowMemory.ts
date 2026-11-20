@@ -1,6 +1,7 @@
 import { Container, CosmosClient, PartitionKeyKind } from "@azure/cosmos";
 import { embed } from "ai";
 import { azureEmbeddingModel } from "../../ai";
+import { safeErrorDetails } from "../../logSanitizer";
 import {
   AZURE_COSMOS_DATABASE,
   AZURE_COSMOS_ENDPOINT,
@@ -189,14 +190,12 @@ function getPrimaryDeviceId(steps: TvAgentStep[]): string {
 }
 
 async function generateEmbedding(text: string): Promise<number[]> {
+  const model = azureEmbeddingModel(EMBEDDING_MODEL);
   try {
-    const { embedding } = await embed({
-      model: azureEmbeddingModel(EMBEDDING_MODEL),
-      value: text,
-    });
+    const { embedding } = await embed({ model, value: text });
     return embedding;
   } catch (error) {
-    console.error("[TV Flow Memory] Embedding generation failed", error);
+    console.error("[TV Flow Memory] Embedding generation failed", safeErrorDetails(error));
     return [];
   }
 }

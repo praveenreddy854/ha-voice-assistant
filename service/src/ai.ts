@@ -1,5 +1,6 @@
 import { createAzure } from "@ai-sdk/azure";
 import { generateText } from "ai";
+import { MODEL_CATALOG } from "./modelCatalog";
 import { outputTokenBudget, resolveModelSettings, reasoningSettings, samplingSettings, type ReasoningEffort } from "./modelSettings";
 import {
   foundryConnectionFor,
@@ -16,7 +17,8 @@ function providerFor(model: string) {
 }
 
 export const azureProvider = (model: string) => providerFor(model)(model);
-export const azureEmbeddingModel = (model: string) => providerFor(model).embeddingModel(model);
+// Existing embedding aliases use the resource assigned to the embedding role.
+export const azureEmbeddingModel = (model: string) => providerFor(MODEL_CATALOG.embedding.model).embeddingModel(model);
 
 // ============================================================================
 // Retry Helper

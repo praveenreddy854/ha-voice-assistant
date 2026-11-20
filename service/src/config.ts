@@ -31,7 +31,8 @@ export const { model: AI_MODEL_NANO, reasoningEffort: AI_MODEL_NANO_REASONING_EF
 export const { model: AI_MODEL_MINI, reasoningEffort: AI_MODEL_MINI_REASONING_EFFORT } = MODEL_CATALOG.mini;
 export const { model: AI_MODEL_ADVANCED, reasoningEffort: AI_MODEL_ADVANCED_REASONING_EFFORT } = MODEL_CATALOG.advanced;
 export const { model: AI_MODEL_HOME_ASSISTANT, reasoningEffort: AI_MODEL_HOME_ASSISTANT_REASONING_EFFORT } = MODEL_CATALOG.homeAssistant;
-export const EMBEDDING_MODEL = MODEL_CATALOG.embedding.model;
+// Keep existing vectors in the same model space when migrating Foundry settings.
+export const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL?.trim() || MODEL_CATALOG.embedding.model;
 export const AI_MODEL_LIVE = MODEL_CATALOG.live.model;
 export const GPT_LIVE_VOICE = process.env.GPT_LIVE_VOICE ?? "marin";
 

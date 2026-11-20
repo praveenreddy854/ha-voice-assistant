@@ -9,13 +9,18 @@ import { modelSettingsIdentity, parseModelSettings, REASONING_EFFORTS } from "..
 
 const requireModule = createRequire(__filename);
 const modelKeys = ["AI_MODEL_NANO", "AI_MODEL_MINI", "AI_MODEL_ADVANCED", "AI_MODEL_HOME_ASSISTANT"] as const;
+const modelEnvKeys = [...modelKeys, "EMBEDDING_MODEL"] as const;
 
-function withModels(values: Partial<Record<typeof modelKeys[number], string>>, check: (config: typeof import("../src/config")) => void) {
+function withModels(values: Partial<Record<typeof modelEnvKeys[number], string>>, check: (config: typeof import("../src/config")) => void) {
   const modulePath = requireModule.resolve("../src/config");
   const previousModule = requireModule.cache[modulePath];
-  const previousEnv = modelKeys.map(key => [key, process.env[key]] as const);
+  const previousEnv = modelEnvKeys.map(key => [key, process.env[key]] as const);
   try {
-    for (const key of modelKeys) process.env[key] = values[key] ?? "";
+    for (const key of modelEnvKeys) {
+      const value = values[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     delete requireModule.cache[modulePath];
     check(requireModule(modulePath));
   } finally {
@@ -61,13 +66,14 @@ test("malformed JSON, invalid fields, and CSV values are rejected with the setti
   }
 });
 
-test("example environment contains only empty Foundry connection placeholders, not deployments", () => {
+test("example environment has empty Foundry credential placeholders and preserves the embedding deployment", () => {
   const values = dotenv.parse(readFileSync(path.join(__dirname, "../example.env")));
   for (const suffix of ["EUS", "EUS2"]) {
     assert.equal(values[`AZURE_OPENAI_RESOURCE_NAME_${suffix}`], "");
     assert.equal(values[`AZURE_OPENAI_API_KEY_${suffix}`], "");
   }
-  assert.deepEqual(Object.keys(values).filter(key => /^(AI_MODEL_|EMBEDDING_MODEL$)|_EVAL_(JUDGE|REVIEW)_MODEL$/.test(key)), []);
+  assert.equal(values.EMBEDDING_MODEL, "text-embedding-3-large");
+  assert.deepEqual(Object.keys(values).filter(key => /^AI_MODEL_|_EVAL_(JUDGE|REVIEW)_MODEL$/.test(key)), []);
 });
 
 test("production tiers ignore legacy environment settings", t => {
@@ -85,9 +91,18 @@ test("production tiers ignore legacy environment settings", t => {
   });
 });
 
+test("embedding configuration preserves both the previous default and deployed overrides", t => {
+  t.mock.method(dotenv, "config", () => ({}));
+  withModels({}, config => assert.equal(config.EMBEDDING_MODEL, "text-embedding-ada-002"));
+  for (const model of ["text-embedding-3-large", "custom-embedding-deployment"]) {
+    withModels({ EMBEDDING_MODEL: model }, config => assert.equal(config.EMBEDDING_MODEL, model));
+  }
+});
+
 test("Live and embedding use East US 2; reasoning and ad-hoc evals use East US", () => {
   for (const [role, { model }] of Object.entries(MODEL_CATALOG)) {
     assert.equal(regionForDeployment(model), role === "live" || role === "embedding" ? "eus2" : "eus");
   }
+  assert.equal(regionForDeployment("text-embedding-3-large"), "eus2");
   assert.equal(regionForDeployment("new-eval-candidate"), "eus");
 });

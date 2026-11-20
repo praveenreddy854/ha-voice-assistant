@@ -53,7 +53,9 @@ AZURE_OPENAI_RESOURCE_NAME_EUS2=
 AZURE_OPENAI_API_KEY_EUS2=
 ```
 
-When migrating, replace the unsuffixed resource/endpoint and key settings with the matching regional pair and supply the other pair separately. Remove old `AI_MODEL_*`, `EMBEDDING_MODEL`, and eval judge/reviewer model variables: they no longer select deployments. Restart the backend. A missing regional credential fails the affected request; credentials are never borrowed from another region.
+When migrating, replace the unsuffixed resource/endpoint and key settings with the matching regional pair and supply the other pair separately. Remove old `AI_MODEL_*` and eval judge/reviewer model variables: they no longer select deployments. Restart the backend. A missing regional credential fails the affected request; credentials are never borrowed from another region.
+
+Keep your existing `EMBEDDING_MODEL` value and deploy it in East US 2. Installations that used `example.env` should retain `text-embedding-3-large`; if the variable was unset, the catalog still defaults to `text-embedding-ada-002`. To switch models later, re-embed persisted memories, TV flows, and teaching recordings so they remain searchable.
 
 Text and vision helpers allow extra output tokens for reasoning and treat responses cut off by the token limit as failures. Evaluation records distinguish explicitly configured reasoning efforts even when they use the same deployment. Historical traces without effort metadata retain their deployment-only identity.
 

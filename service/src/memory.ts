@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { Container, CosmosClient, PartitionKeyKind } from "@azure/cosmos";
 import { embed } from "ai";
 import { azureEmbeddingModel, generateCompletion } from "./ai";
+import { safeErrorDetails } from "./logSanitizer";
 import {
   AI_MODEL_MINI,
   AI_MODEL_MINI_REASONING_EFFORT,
@@ -378,14 +379,12 @@ function validMemoryType(value: unknown): MemoryType {
 }
 
 async function generateEmbedding(text: string): Promise<number[]> {
+  const model = azureEmbeddingModel(EMBEDDING_MODEL);
   try {
-    const { embedding } = await embed({
-      model: azureEmbeddingModel(EMBEDDING_MODEL),
-      value: text,
-    });
+    const { embedding } = await embed({ model, value: text });
     return embedding;
   } catch (error) {
-    console.error("[Memory] Embedding generation failed", error);
+    console.error("[Memory] Embedding generation failed", safeErrorDetails(error));
     return [];
   }
 }

@@ -67,14 +67,17 @@ test("tier text/JSON/vision calls send the selected model and effort to the East
 
 test("embeddings use the East US 2 resource and its own key", async t => {
   const { azureEmbeddingModel } = await import("../src/ai");
-  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
-    assert.equal(new URL(url).hostname, "second-test-resource.openai.azure.com");
-    assert.equal(new Headers(init.headers).get("api-key"), "second-test-key");
-    assert.equal(JSON.parse(String(init.body)).model, MODEL_CATALOG.embedding.model);
+  const fetch = t.mock.method(globalThis, "fetch", async (_url: string, _init: RequestInit) => {
     return Response.json({ data: [{ embedding: [0.1] }] });
   });
-  const result = await embed({ model: azureEmbeddingModel(MODEL_CATALOG.embedding.model), value: "fixture" });
-  assert.deepEqual(result.embedding, [0.1]);
+  for (const model of [MODEL_CATALOG.embedding.model, "text-embedding-3-large", "custom-embedding-deployment"]) {
+    const result = await embed({ model: azureEmbeddingModel(model), value: "fixture", maxRetries: 0 });
+    const [url, init] = fetch.mock.calls.at(-1)!.arguments;
+    assert.equal(new URL(url).hostname, "second-test-resource.openai.azure.com");
+    assert.equal(new Headers(init.headers).get("api-key"), "second-test-key");
+    assert.equal(JSON.parse(String(init.body)).model, model);
+    assert.deepEqual(result.embedding, [0.1]);
+  }
 });
 
 test("short text and vision calls reserve reasoning tokens and reject incomplete output", async t => {

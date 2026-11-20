@@ -6,6 +6,7 @@
 import { embed } from "ai";
 import { azureEmbeddingModel } from "../../../ai";
 import { EMBEDDING_MODEL } from "../../../config";
+import { safeErrorDetails } from "../../../logSanitizer";
 import { loadIndex } from "./storage";
 import { SimilarRecording } from "./types";
 
@@ -13,14 +14,12 @@ import { SimilarRecording } from "./types";
  * Generate an embedding for a text string
  */
 export async function generateEmbedding(text: string): Promise<number[]> {
+  const model = azureEmbeddingModel(EMBEDDING_MODEL);
   try {
-    const { embedding } = await embed({
-      model: azureEmbeddingModel(EMBEDDING_MODEL),
-      value: text,
-    });
+    const { embedding } = await embed({ model, value: text });
     return embedding;
   } catch (error) {
-    console.error("[Teaching Embeddings] Error generating embedding:", error);
+    console.error("[Teaching Embeddings] Error generating embedding:", safeErrorDetails(error));
     return [];
   }
 }
