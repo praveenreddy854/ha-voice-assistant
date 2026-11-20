@@ -377,7 +377,10 @@ export async function saveTvFlowMemory(
   const normalizedTaskText = normalizeTaskText(params.userPrompt);
   const primaryDeviceId = getPrimaryDeviceId(params.steps);
   const embeddingText = buildEmbeddingText(params.userPrompt, params.steps);
-  const embedding = await generateEmbedding(embeddingText);
+  const embedding = await generateEmbedding(embeddingText).catch((error) => {
+    console.warn("[TV Flow Memory] Saving flow history without an embedding", safeErrorDetails(error));
+    return [];
+  });
   const executionScore = computeExecutionScore(
     params.status,
     params.success,

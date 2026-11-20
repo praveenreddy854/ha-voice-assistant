@@ -925,6 +925,14 @@ export async function runMemoryConsolidationOnce(): Promise<void> {
   if (consolidationRunning || pendingInteractions.length === 0) return;
   if (!AI_MODEL_MINI || !isMemoryConfigured()) return;
 
+  // Validate storage's embedding configuration before paying to extract candidates.
+  try {
+    azureEmbeddingModel(EMBEDDING_MODEL);
+  } catch (error) {
+    console.warn("[Memory] Consolidation paused; embedding configuration is invalid", safeErrorDetails(error));
+    return;
+  }
+
   consolidationRunning = true;
   const batch = pendingInteractions.splice(0, CONSOLIDATION_BATCH_SIZE);
   try {

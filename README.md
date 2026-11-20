@@ -57,6 +57,8 @@ When migrating, replace the unsuffixed resource/endpoint and key settings with t
 
 Keep your existing `EMBEDDING_MODEL` value and deploy it in East US 2. Installations that used `example.env` should retain `text-embedding-3-large`; if the variable was unset, the catalog still defaults to `text-embedding-ada-002`. To switch models later, re-embed persisted memories, TV flows, and teaching recordings so they remain searchable.
 
+If embedding credentials are missing or misconfigured, completed TV runs still save their flow history without a similarity vector. Background memory consolidation leaves queued interactions untouched until embedding configuration is valid.
+
 Text and vision helpers allow extra output tokens for reasoning and treat responses cut off by the token limit as failures. Evaluation records distinguish explicitly configured reasoning efforts even when they use the same deployment. Historical traces without effort metadata retain their deployment-only identity.
 
 For a one-off offline eval, `--model` still accepts a deployment name or JSON such as `'{"model":"candidate","reasoningEffort":"low"}'`. Unlisted candidates run in `eus`; add a deployment-to-region entry to test one elsewhere. This does not change any production or judge default.
