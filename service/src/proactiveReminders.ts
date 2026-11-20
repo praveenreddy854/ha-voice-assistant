@@ -256,7 +256,9 @@ async function runReminderCheck(signal: AbortSignal): Promise<void> {
     const windowMinutes = Math.max(PROACTIVE_REMINDER_ON_MINUTES * 2, 360);
     const sinceIso = new Date(now - windowMinutes * 60000).toISOString();
 
-    const records = await queryRecentDeviceStates(sinceIso);
+    const readSignal = AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
+    const records = await queryRecentDeviceStates(sinceIso, readSignal);
+    readSignal.throwIfAborted();
     signal.throwIfAborted();
     if (records.length === 0) return;
 

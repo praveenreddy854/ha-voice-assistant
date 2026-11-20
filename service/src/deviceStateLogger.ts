@@ -66,7 +66,7 @@ const captureAndPersistStates = async (reason: string, signal: AbortSignal): Pro
       return;
     }
 
-    await saveDeviceStatesBatch(records);
+    await saveDeviceStatesBatch(records, abortSignal);
     console.info(
       `Persisted ${records.length} Home Assistant device states to Azure Cosmos DB (${reason})`
     );

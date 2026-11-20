@@ -28,19 +28,39 @@ export const isCosmosConfigured = (): boolean => {
   );
 };
 
-export const getCosmosContainer = async (): Promise<Container | null> => {
+export const getCosmosContainer = async (abortSignal?: AbortSignal): Promise<Container | null> => {
+  abortSignal?.throwIfAborted();
   if (!isCosmosConfigured()) {
     return null;
   }
 
   if (!containerPromise) {
-    containerPromise = initializeContainer().catch((error) => {
+    containerPromise = initializeContainer(abortSignal).catch((error) => {
+      // A transient failure must not leave every later scheduler tick idle.
+      containerPromise = null;
+      abortSignal?.throwIfAborted();
       console.error("Failed to initialize Azure Cosmos DB container", error);
       return null;
     });
   }
 
-  return containerPromise;
+  if (!abortSignal) return containerPromise;
+  // Shared initialization may belong to another job. Each waiter must still be
+  // able to stop promptly on its own deadline or shutdown signal.
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      abortSignal.removeEventListener("abort", onAbort);
+      reject(abortSignal.reason);
+    };
+    abortSignal.addEventListener("abort", onAbort, { once: true });
+    containerPromise!.then(value => {
+      abortSignal.removeEventListener("abort", onAbort);
+      resolve(value);
+    }, error => {
+      abortSignal.removeEventListener("abort", onAbort);
+      reject(error);
+    });
+  });
 };
 
 const getCosmosClient = (): CosmosClient => {
@@ -72,14 +92,15 @@ export async function loadDeviceMonitorJobs(): Promise<DeviceMonitorJob[]> {
   return parseDeviceMonitorJobs(resources.map(({ _rid, _self, _etag, _attachments, _ts, ...job }) => job));
 }
 
-const initializeContainer = async (): Promise<Container> => {
+const initializeContainer = async (abortSignal?: AbortSignal): Promise<Container> => {
   if (!isCosmosConfigured()) {
     throw new Error("Azure Cosmos DB configuration is incomplete");
   }
 
+  const options = { abortSignal: abortSignal ?? AbortSignal.timeout(10_000) };
   const { database } = await getCosmosClient().databases.createIfNotExists({
     id: AZURE_COSMOS_DATABASE!,
-  });
+  }, options);
 
   const { container } = await database.containers.createIfNotExists({
     id: AZURE_COSMOS_CONTAINER!,
@@ -87,7 +108,7 @@ const initializeContainer = async (): Promise<Container> => {
       kind: PartitionKeyKind.Hash,
       paths: ["/entityId"],
     },
-  });
+  }, options);
 
   return container;
 };
@@ -339,29 +360,36 @@ export interface DeviceStateRecord {
 }
 
 export const queryRecentDeviceStates = async (
-  sinceIso: string
+  sinceIso: string,
+  abortSignal?: AbortSignal
 ): Promise<DeviceStateRecord[]> => {
-  const container = await getCosmosContainer();
+  const signal = abortSignal ?? AbortSignal.timeout(10_000);
+  const container = await getCosmosContainer(signal);
+  signal.throwIfAborted();
   if (!container) return [];
 
   const { resources } = await container.items
     .query<DeviceStateRecord>({
       query: "SELECT * FROM c WHERE c.capturedAt >= @since",
       parameters: [{ name: "@since", value: sinceIso }],
-    })
+    }, { abortSignal: signal })
     .fetchAll();
 
+  signal.throwIfAborted();
   return resources;
 };
 
 export const saveDeviceStatesBatch = async (
-  deviceStates: DeviceStateRecord[]
+  deviceStates: DeviceStateRecord[],
+  abortSignal?: AbortSignal
 ): Promise<void> => {
   if (deviceStates.length === 0) {
     return;
   }
 
-  const container = await getCosmosContainer();
+  const signal = abortSignal ?? AbortSignal.timeout(10_000);
+  const container = await getCosmosContainer(signal);
+  signal.throwIfAborted();
   if (!container) {
     console.warn(
       "Azure Cosmos DB container is not available; skipping device state persistence"
@@ -370,9 +398,12 @@ export const saveDeviceStatesBatch = async (
   }
 
   for (const record of deviceStates) {
+    signal.throwIfAborted();
     try {
-      await container.items.upsert(record);
+      await container.items.upsert(record, { abortSignal: signal });
+      signal.throwIfAborted();
     } catch (error) {
+      signal.throwIfAborted();
       console.error(
         `Failed to upsert device state for ${record.entityId} (${record.id})`,
         error

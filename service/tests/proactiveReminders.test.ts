@@ -16,7 +16,8 @@ test("reminder model deadlines release non-overlap; shutdown never announces or 
   const announcements: string[] = [];
   let episode = "2026-11-15T10:00:00Z";
   let releaseRead: (() => void) | undefined;
-  let stallRead = false;
+  let stallRead = true;
+  const readSignals: AbortSignal[] = [];
   const stubs = {
     "../src/ai": { generateCompletion: async ({ abortSignal }: { abortSignal: AbortSignal }) => {
       modelSignals.push(abortSignal);
@@ -29,8 +30,13 @@ test("reminder model deadlines release non-overlap; shutdown never announces or 
     "../src/announcementBus": { emitAnnouncement: (message: string) => announcements.push(message) },
     "../src/cosmos": {
       isCosmosConfigured: () => true,
-      queryRecentDeviceStates: async () => {
-        if (stallRead) await new Promise<void>(resolve => { releaseRead = resolve; });
+      queryRecentDeviceStates: async (_since: string, signal: AbortSignal) => {
+        readSignals.push(signal);
+        if (stallRead) await new Promise<void>((resolve, reject) => {
+          releaseRead = resolve;
+          signal.throwIfAborted();
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
         return [{ entityId: "switch.test", domain: "switch", state: "on", friendlyName: "Test lamp", attributes: {}, lastChanged: episode, capturedAt: "2026-11-15T12:00:00Z" }];
       },
     },
@@ -54,11 +60,20 @@ test("reminder model deadlines release non-overlap; shutdown never announces or 
     t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: new Date("2026-11-15T12:00:00Z") });
     startProactiveReminders();
     t.mock.timers.tick(1000); await settle();
+    assert.equal(readSignals.length, 1);
+    t.mock.timers.tick(1000); await settle();
+    assert.equal(readSignals.length, 1, "a stalled Cosmos query skips overlapping ticks");
+    deadlines[0].abort(new DOMException("Cosmos deadline", "TimeoutError"));
+    await settle();
+    assert.equal(readSignals[0].aborted, true);
+    assert.equal(modelSignals.length, 0, "a failed Cosmos query cannot start paid model work");
+    stallRead = false;
+    t.mock.timers.tick(1000); await settle();
     assert.equal(modelSignals.length, 1);
-    assert.equal(deadlines.length, 1);
+    assert.equal(deadlines.length, 3);
     t.mock.timers.tick(1000); await settle();
     assert.equal(modelSignals.length, 1, "pending model request skips overlapping ticks");
-    deadlines[0].abort(new DOMException("Synthetic deadline", "TimeoutError"));
+    deadlines[2].abort(new DOMException("Synthetic deadline", "TimeoutError"));
     await settle();
     assert.equal(modelSignals[0].aborted, true);
     assert.match(announcements[0], /^Reminder:/, "a deadline retains existing fallback behavior");
@@ -72,7 +87,7 @@ test("reminder model deadlines release non-overlap; shutdown never announces or 
     await cronJobs.stop(); await settle();
     assert.equal(modelSignals[2].aborted, true, "shutdown reaches the actual model request");
     assert.equal(announcements.length, 2, "shutdown cannot emit fallback");
-    assert.equal(errors.mock.callCount(), 1, "only the model deadline reports fallback");
+    assert.equal(errors.mock.callCount(), 2, "only the read deadline and model deadline report errors");
     startProactiveReminders();
     t.mock.timers.tick(1000); await settle();
     assert.equal(modelSignals.length, 4, "cancelled episode remains eligible after restart");
