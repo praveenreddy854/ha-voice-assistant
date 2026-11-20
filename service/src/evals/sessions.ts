@@ -1,3 +1,4 @@
+import { summarizeStorageError } from "./storageError";
 import type { CosmosClientOptions, FeedOptions } from "@azure/cosmos";
 import type { TvFlowMemoryDocument } from "../agents/tv/flowMemory";
 import type { AgentTrace } from "../tracing/agentTraceStore";
@@ -212,7 +213,7 @@ export async function discoverRecordedSessions(
     console.warn(`[Recorded session discovery] ${message}`);
   }
   function unavailable(source: string, error: unknown): void {
-    warn(`${source} source unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    warn(`${source} source unavailable: ${source === "Cosmos" ? summarizeStorageError(error) : error instanceof Error ? error.message : String(error)}`);
   }
   if (telemetry.status === "rejected") unavailable("Telemetry", telemetry.reason);
   if (cosmos.status === "rejected") unavailable("Cosmos", cosmos.reason);

@@ -355,7 +355,8 @@ test("partial discovery grades available sources and preserves warnings through 
   await fixture.complete();
   const latest = (await fixture.supervisor.scheduleStatus()).recorded.latest!;
   assert.equal(latest.status, "completed");
-  assert.match(latest.warnings.join(" "), /Synthetic Cosmos/);
+  assert.match(latest.warnings.join(" "), /Cosmos source unavailable: Storage read failed/);
+  assert.doesNotMatch(latest.warnings.join(" "), /Synthetic Cosmos/);
 }));
 
 test("incomplete empty discovery and wholly unavailable discovery have distinct terminal outcomes", () => withStore(async store => {
