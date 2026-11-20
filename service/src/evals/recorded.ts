@@ -1,3 +1,4 @@
+import { summarizeStorageError } from "./storageError";
 import type { AgentTrace } from "../tracing/agentTraceStore";
 import type { TvFlowMemoryDocument } from "../agents/tv/flowMemory";
 import type { CosmosClient } from "@azure/cosmos";
@@ -66,9 +67,9 @@ export async function loadRecordedAssessment(sessionId: string, expectedAgentId 
       }).fetchAll();
       flow = resources[0];
     } catch (error) {
-      if (!trace) throw error;
+      if (!trace) throw new Error(`Cosmos evidence unavailable: ${summarizeStorageError(error)}`);
       const assessment = assessmentFromRecord(trace, undefined, agent.id);
-      assessment.evidence.push({ id: `e${assessment.evidence.length + 1}`, kind: "context", text: `Cosmos supplement unavailable: ${error instanceof Error ? error.message : "read failed"}` });
+      assessment.evidence.push({ id: `e${assessment.evidence.length + 1}`, kind: "context", text: `Cosmos supplement unavailable: ${summarizeStorageError(error)}` });
       return assessment;
     } finally { client?.dispose(); }
   }

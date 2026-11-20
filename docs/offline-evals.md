@@ -498,3 +498,8 @@ Resolved alerts remain in history; a later recurrence creates a new alert.
 Job records retain individual worker attempts, including failures before any
 scenario produces a run summary. Inspect these jobs when a suite has no recent
 results; passing suites do not establish coverage for a failed worker.
+
+
+### Storage outage diagnostics
+
+Recorded discovery and evidence loading summarize Cosmos failures without copying SDK request URLs or header dumps into warnings, stored eval errors, or grader evidence. Summaries retain a valid HTTP error status and identify a disabled subscription when the provider explicitly reports one. Restore subscription access or check service availability and credentials before retrying. Discovery remains incomplete when a source is unavailable; an available telemetry trace can still be graded with a partial-coverage warning. These summaries do not repair provider access or rewrite historical records.

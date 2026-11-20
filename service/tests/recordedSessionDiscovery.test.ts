@@ -133,7 +133,7 @@ test("partial Cosmos outage preserves telemetry and logs the returned warning", 
   });
   assert.deepEqual(ids(result), ["retained"]);
   assert.deepEqual(result.sessions[0].sources, ["telemetry"]);
-  assert.match(result.warnings[0], /Cosmos source unavailable: Cosmos read failed/);
+  assert.match(result.warnings[0], /Cosmos source unavailable: Storage read failed/);
   assert.equal(warnings.mock.calls[0].arguments[0], `[Recorded session discovery] ${result.warnings[0]}`);
 });
 
@@ -165,7 +165,7 @@ test("both configured source failures reject instead of returning empty success"
   await assert.rejects(discoverRecordedSessions({
     loadTelemetry: async () => { throw new Error("Telemetry read failed"); },
     loadCosmos: async () => { throw new Error("Cosmos read failed"); },
-  }), /No retained-session source is available.*Telemetry read failed.*Cosmos read failed/);
+  }), /No retained-session source is available.*Telemetry read failed.*Storage read failed/);
   assert.equal(warnings.mock.callCount(), 2);
 });
 
@@ -301,7 +301,7 @@ test("a later Cosmos page failure disposes the client and never returns truncate
     loadCosmos: signal => loadCosmosSessionMetadata(config, fake.createClient, signal),
   });
   assert.deepEqual(ids(result), ["retained"]);
-  assert.match(result.warnings[0], /Cosmos source unavailable: Page failed/);
+  assert.match(result.warnings[0], /Cosmos source unavailable: Storage read failed/);
   assert.equal(fake.inspect().disposed, 1);
 });
 
@@ -322,4 +322,19 @@ test("Cosmos query initialization failures still dispose the client", async () =
     database() { throw new Error("Query initialization failed"); },
   })), /Query initialization failed/);
   assert.equal(fake.inspect().disposed, 1);
+});
+
+
+test("Cosmos outage warnings retain status and subscription guidance without SDK request dumps", async t => {
+  const warnings = t.mock.method(console, "warn", () => {});
+  const error = Object.assign(new Error(JSON.stringify({
+    code: "Forbidden", message: "Subscription owning the database account is disabled."
+  }) + "\nRequestUri: https://private.example/dbs/private\nHeader: Authorization: secret\nSDK: internal"), { code: 403 });
+  const result = await discoverRecordedSessions({
+    loadTelemetry: () => [trace("retained")],
+    loadCosmos: async () => { throw error; },
+  });
+  assert.deepEqual(ids(result), ["retained"]);
+  assert.deepEqual(result.warnings, ["Cosmos source unavailable: Storage subscription is disabled (HTTP 403). Restore subscription access before retrying."]);
+  assert.equal(warnings.mock.calls[0].arguments[0], `[Recorded session discovery] ${result.warnings[0]}`);
 });
