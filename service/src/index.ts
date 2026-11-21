@@ -1150,23 +1150,33 @@ app.post("/api/teaching/cleanup", (req, res, next) => {
 });
 
 let shuttingDown = false;
+let startupStage = "load-device-monitor-jobs";
 
 async function startService(): Promise<void> {
   const jobs = await loadDeviceMonitorJobs();
   if (shuttingDown) return;
+  startupStage = "register-device-monitors";
   registerDeviceMonitorJobs(jobs, cronJobs, {
     readState: (entityId, signal) => getHAEntityState(entityId, { abortSignal: signal }),
     announce: emitAnnouncement,
   });
+  startupStage = "device-state-logging";
   startDeviceStateLogging();
+  startupStage = "scheduled-tasks";
   startScheduledTaskFirer();
+  startupStage = "output-cleaner";
   startOutDirCleaner();
+  startupStage = "proactive-reminders";
   startProactiveReminders();
+  startupStage = "memory-consolidation";
   startMemoryConsolidation();
+  startupStage = "evaluation-supervisors";
   evalSupervisor.start();
   onlineSupervisor.start();
+  startupStage = "gesture-monitor";
   if (isRtspMode()) startGestureMonitor();
 
+  startupStage = "http-server";
   const server = app.listen(port, () => {
     console.log(`Server running on http://localhost:${port}`);
     console.log(`Visit http://localhost:${port} to access the application`);
@@ -1178,7 +1188,7 @@ async function startService(): Promise<void> {
 
 void startService().catch(error => {
   if (shuttingDown) return;
-  console.error("Service startup failed; check Cosmos DB settings and cron-job documents", describeDeviceMonitorConfigError(error));
+  console.error("Service startup failed", { stage: startupStage, ...describeDeviceMonitorConfigError(error) });
   process.exit(1);
 });
 

@@ -1,6 +1,6 @@
 import cron from "node-cron";
 import { z } from "zod";
-import { isValidTimezone, type CronJobScheduler } from "./cronJobs";
+import { CronJobConfigurationError, isValidTimezone, type CronJobScheduler } from "./cronJobs";
 import type { HassState } from "./types/ha";
 
 const conditionSchema = z.strictObject({
@@ -35,6 +35,9 @@ export function parseDeviceMonitorJobs(input: unknown): DeviceMonitorJob[] {
 
 /** Startup diagnostics identify invalid fields without exposing device/config values. */
 export function describeDeviceMonitorConfigError(error: unknown): Record<string, unknown> {
+  if (error instanceof CronJobConfigurationError) {
+    return { type: error.name, field: error.field };
+  }
   if (error instanceof z.ZodError) {
     const fields = new Set(["id", "enabled", "cron", "timezone", "entityId", "conditions",
       "field", "operator", "value", "minStateDurationSeconds", "announcement", "announcementPolicy"]);

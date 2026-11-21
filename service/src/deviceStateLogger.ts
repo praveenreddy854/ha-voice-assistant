@@ -66,7 +66,9 @@ const captureAndPersistStates = async (reason: string, signal: AbortSignal): Pro
       return;
     }
 
-    await saveDeviceStatesBatch(records, abortSignal);
+    // Persistence has per-operation deadlines; a healthy large batch must not
+    // inherit the remaining HA-read budget. Shutdown still cancels all writes.
+    await saveDeviceStatesBatch(records, signal);
     console.info(
       `Persisted ${records.length} Home Assistant device states to Azure Cosmos DB (${reason})`
     );

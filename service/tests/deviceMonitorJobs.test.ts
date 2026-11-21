@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Databases } from "@azure/cosmos";
+import { CronJobScheduler } from "../src/cronJobs";
 import { describeDeviceMonitorConfigError, parseDeviceMonitorJobs, registerDeviceMonitorJobs } from "../src/deviceMonitorJobs";
 import { z } from "zod";
 import type { CronJob } from "../src/cronJobs";
@@ -163,4 +164,21 @@ test("a transient read failure leaves the episode eligible for a later retry", a
   const signal = new AbortController().signal;
   await assert.rejects(async () => job.run(signal, "scheduled"), /Temporary HA failure/);
   await job.run(signal, "scheduled"); assert.equal(announcements, 1);
+});
+
+
+test("scheduler startup errors identify invalid fields without including configuration values", () => {
+  const scheduler = new CronJobScheduler();
+  for (const [field, job] of [
+    ["cron", { expression: "private-invalid-expression" }],
+    ["timezone", { expression: "* * * * * *", timezone: "private-invalid-zone" }],
+  ] as const) {
+    try {
+      scheduler.register({ id: "private-job", run: () => {}, ...job });
+      assert.fail("Expected invalid scheduler settings");
+    } catch (error) {
+      assert.deepEqual(describeDeviceMonitorConfigError(error), { type: "CronJobConfigurationError", field });
+      assert.doesNotMatch(JSON.stringify(describeDeviceMonitorConfigError(error)), /private/);
+    }
+  }
 });

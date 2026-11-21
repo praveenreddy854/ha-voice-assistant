@@ -387,9 +387,12 @@ export const saveDeviceStatesBatch = async (
     return;
   }
 
-  const signal = abortSignal ?? AbortSignal.timeout(10_000);
-  const container = await getCosmosContainer(signal);
-  signal.throwIfAborted();
+  const operationSignal = (): AbortSignal => AbortSignal.any([
+    ...(abortSignal ? [abortSignal] : []), AbortSignal.timeout(10_000),
+  ]);
+  const initializationSignal = operationSignal();
+  const container = await getCosmosContainer(initializationSignal);
+  initializationSignal.throwIfAborted();
   if (!container) {
     console.warn(
       "Azure Cosmos DB container is not available; skipping device state persistence"
@@ -398,6 +401,8 @@ export const saveDeviceStatesBatch = async (
   }
 
   for (const record of deviceStates) {
+    // Bound each request without repeatedly starving the tail of large batches.
+    const signal = operationSignal();
     signal.throwIfAborted();
     try {
       await container.items.upsert(record, { abortSignal: signal });

@@ -10,12 +10,16 @@ test("stalled startup snapshots time out, later ticks recover, and shutdown canc
   const requireModule = createRequire(__filename);
   const previous = new Map<string, NodeModule | undefined>();
   const saved: unknown[][] = [];
+  let persistenceSignal: AbortSignal | undefined;
   const stubs = {
     "../src/ai": { generateCompletion: async () => { throw new Error("Unexpected model call"); } },
     "../src/memory": { retrieveMemories: async () => [], formatMemoryContext: () => "" },
     "../src/cosmos": {
       isCosmosConfigured: () => true,
-      saveDeviceStatesBatch: async (records: unknown[]) => { saved.push(records); },
+      saveDeviceStatesBatch: async (records: unknown[], signal: AbortSignal) => {
+        persistenceSignal = signal;
+        saved.push(records);
+      },
     },
   };
   for (const [name, exports] of Object.entries(stubs)) {
@@ -59,10 +63,13 @@ test("stalled startup snapshots time out, later ticks recover, and shutdown canc
     t.mock.timers.tick(1000); await settle();
     assert.equal(requests.length, 2, "a later tick retries after the timeout");
     assert.equal(saved.length, 1);
+    deadlines[1].abort(new DOMException("HA deadline", "TimeoutError"));
+    assert.equal(persistenceSignal!.aborted, false, "persistence does not inherit the completed HA read deadline");
     t.mock.timers.tick(1000); await settle();
     assert.equal(requests.length, 3);
     await cronJobs.stop(); await settle();
     assert.equal(requests[2].aborted, true, "shutdown cancels the outstanding Axios request");
+    assert.equal(persistenceSignal!.aborted, true, "shutdown still cancels persistence");
     assert.equal(saved.length, 1, "cancelled captures do not persist a snapshot");
     assert.equal(errors.mock.callCount(), 1, "shutdown cancellation is not reported as failure");
     t.mock.timers.tick(1000); await settle();

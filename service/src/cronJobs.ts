@@ -18,6 +18,14 @@ export function isValidTimezone(timezone: string): boolean {
   }
 }
 
+/** Safe, structured diagnostics for scheduler settings; never include values. */
+export class CronJobConfigurationError extends Error {
+  constructor(readonly field: "cron" | "timezone") {
+    super(field === "cron" ? "Invalid cron expression" : "Invalid timezone");
+    this.name = "CronJobConfigurationError";
+  }
+}
+
 /** Shared process-local scheduler for recurring service work, including six-field cron. */
 export class CronJobScheduler {
   private readonly jobs = new Map<string, { task: ScheduledTask; controller: AbortController }>();
@@ -28,8 +36,8 @@ export class CronJobScheduler {
 
   register(job: CronJob): void {
     if (this.jobs.has(job.id)) return;
-    if (!cron.validate(job.expression)) throw new Error(`Invalid cron expression for ${job.id}`);
-    if (job.timezone && !isValidTimezone(job.timezone)) throw new Error(`Invalid timezone for ${job.id}`);
+    if (!cron.validate(job.expression)) throw new CronJobConfigurationError("cron");
+    if (job.timezone && !isValidTimezone(job.timezone)) throw new CronJobConfigurationError("timezone");
 
     const controller = new AbortController();
     let running = false;

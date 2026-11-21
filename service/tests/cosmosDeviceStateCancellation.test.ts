@@ -57,9 +57,42 @@ test("device-state initialization, queries and writes cancel and retry after out
   const shutdown = new AbortController();
   const write = saveDeviceStatesBatch([record, record], shutdown.signal);
   for (let i = 0; i < 30; i++) await Promise.resolve();
-  assert.equal(writeSignal, shutdown.signal, "shutdown reaches the SDK upsert");
+  assert.ok(writeSignal, "the SDK receives a cancellation signal");
   shutdown.abort();
+  assert.equal(writeSignal!.aborted, true, "shutdown reaches the SDK upsert");
   await assert.rejects(write, { name: "AbortError" });
   stallWrite = false;
   await saveDeviceStatesBatch([record]);
+
+  // Healthy sequential writes may exceed ten seconds in total. Only a stalled
+  // individual operation should time out and release the scheduler guard.
+  let elapsed = 0;
+  const deadlines: { controller: AbortController; expires: number }[] = [];
+  t.mock.method(AbortSignal, "timeout", (duration: number) => {
+    assert.equal(duration, 10_000);
+    const controller = new AbortController();
+    deadlines.push({ controller, expires: elapsed + duration });
+    return controller.signal;
+  });
+  const advance = (milliseconds: number): void => {
+    elapsed += milliseconds;
+    for (const deadline of deadlines) {
+      if (elapsed >= deadline.expires) deadline.controller.abort(new DOMException("Deadline", "TimeoutError"));
+    }
+  };
+  const persisted: string[] = [];
+  t.mock.method(items, "upsert", async (item: unknown, options: { abortSignal: AbortSignal }) => {
+    advance(6_000);
+    options.abortSignal.throwIfAborted();
+    persisted.push((item as { id: string }).id);
+  });
+  await saveDeviceStatesBatch([0, 1, 2].map(index => ({ ...record, id: String(index) })));
+  assert.deepEqual(persisted, ["0", "1", "2"], "healthy writes outlive earlier operations' deadlines");
+  t.mock.method(items, "upsert", async (_item: unknown, options: { abortSignal: AbortSignal }) => {
+    advance(10_001);
+    options.abortSignal.throwIfAborted();
+  });
+  await assert.rejects(saveDeviceStatesBatch([record, record]), { name: "TimeoutError" });
+  assert.equal(persisted.length, 3);
+
 });
