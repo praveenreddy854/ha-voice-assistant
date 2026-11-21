@@ -1,6 +1,7 @@
 import { CosmosClient, Container, PartitionKeyKind } from "@azure/cosmos";
 import {
   AZURE_COSMOS_CONTAINER,
+  AZURE_COSMOS_CRON_JOBS_CONTAINER,
   AZURE_COSMOS_DATABASE,
   AZURE_COSMOS_ENDPOINT,
   AZURE_COSMOS_KEY,
@@ -10,6 +11,7 @@ import {
 import type { ScheduledTask, ScheduledTaskRun } from "./types/scheduledTask";
 import { scheduledTasksChanged, ScheduledTaskMutationError } from "./scheduledTaskChanges";
 import { randomUUID } from "node:crypto";
+import { parseDeviceMonitorJobs, type DeviceMonitorJob } from "./deviceMonitorJobs";
 
 let containerPromise: Promise<Container | null> | null = null;
 let scheduledTasksContainerPromise: Promise<Container | null> | null = null;
@@ -26,19 +28,39 @@ export const isCosmosConfigured = (): boolean => {
   );
 };
 
-export const getCosmosContainer = async (): Promise<Container | null> => {
+export const getCosmosContainer = async (abortSignal?: AbortSignal): Promise<Container | null> => {
+  abortSignal?.throwIfAborted();
   if (!isCosmosConfigured()) {
     return null;
   }
 
   if (!containerPromise) {
-    containerPromise = initializeContainer().catch((error) => {
+    containerPromise = initializeContainer(abortSignal).catch((error) => {
+      // A transient failure must not leave every later scheduler tick idle.
+      containerPromise = null;
+      abortSignal?.throwIfAborted();
       console.error("Failed to initialize Azure Cosmos DB container", error);
       return null;
     });
   }
 
-  return containerPromise;
+  if (!abortSignal) return containerPromise;
+  // Shared initialization may belong to another job. Each waiter must still be
+  // able to stop promptly on its own deadline or shutdown signal.
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      abortSignal.removeEventListener("abort", onAbort);
+      reject(abortSignal.reason);
+    };
+    abortSignal.addEventListener("abort", onAbort, { once: true });
+    containerPromise!.then(value => {
+      abortSignal.removeEventListener("abort", onAbort);
+      resolve(value);
+    }, error => {
+      abortSignal.removeEventListener("abort", onAbort);
+      reject(error);
+    });
+  });
 };
 
 const getCosmosClient = (): CosmosClient => {
@@ -51,14 +73,34 @@ const getCosmosClient = (): CosmosClient => {
   return cosmosClient;
 };
 
-const initializeContainer = async (): Promise<Container> => {
+export async function loadDeviceMonitorJobs(): Promise<DeviceMonitorJob[]> {
+  if (!AZURE_COSMOS_ENDPOINT && !AZURE_COSMOS_KEY) return [];
+  if (!AZURE_COSMOS_ENDPOINT || !AZURE_COSMOS_KEY || !AZURE_COSMOS_DATABASE) {
+    throw new Error("Incomplete Cosmos DB configuration for cron jobs");
+  }
+
+  const options = { abortSignal: AbortSignal.timeout(30_000) };
+  const { database } = await getCosmosClient().databases.createIfNotExists(
+    { id: AZURE_COSMOS_DATABASE }, options
+  );
+  const { container } = await database.containers.createIfNotExists({
+    id: AZURE_COSMOS_CRON_JOBS_CONTAINER,
+    partitionKey: { kind: PartitionKeyKind.Hash, paths: ["/id"] },
+  }, options);
+  const { resources } = await container.items.query<Record<string, unknown>>("SELECT * FROM c", options).fetchAll();
+  // Ignore only Cosmos-managed metadata; unknown application fields must still fail validation.
+  return parseDeviceMonitorJobs(resources.map(({ _rid, _self, _etag, _attachments, _ts, ...job }) => job));
+}
+
+const initializeContainer = async (abortSignal?: AbortSignal): Promise<Container> => {
   if (!isCosmosConfigured()) {
     throw new Error("Azure Cosmos DB configuration is incomplete");
   }
 
+  const options = { abortSignal: abortSignal ?? AbortSignal.timeout(10_000) };
   const { database } = await getCosmosClient().databases.createIfNotExists({
     id: AZURE_COSMOS_DATABASE!,
-  });
+  }, options);
 
   const { container } = await database.containers.createIfNotExists({
     id: AZURE_COSMOS_CONTAINER!,
@@ -66,7 +108,7 @@ const initializeContainer = async (): Promise<Container> => {
       kind: PartitionKeyKind.Hash,
       paths: ["/entityId"],
     },
-  });
+  }, options);
 
   return container;
 };
@@ -318,29 +360,39 @@ export interface DeviceStateRecord {
 }
 
 export const queryRecentDeviceStates = async (
-  sinceIso: string
+  sinceIso: string,
+  abortSignal?: AbortSignal
 ): Promise<DeviceStateRecord[]> => {
-  const container = await getCosmosContainer();
+  const signal = abortSignal ?? AbortSignal.timeout(10_000);
+  const container = await getCosmosContainer(signal);
+  signal.throwIfAborted();
   if (!container) return [];
 
   const { resources } = await container.items
     .query<DeviceStateRecord>({
       query: "SELECT * FROM c WHERE c.capturedAt >= @since",
       parameters: [{ name: "@since", value: sinceIso }],
-    })
+    }, { abortSignal: signal })
     .fetchAll();
 
+  signal.throwIfAborted();
   return resources;
 };
 
 export const saveDeviceStatesBatch = async (
-  deviceStates: DeviceStateRecord[]
+  deviceStates: DeviceStateRecord[],
+  abortSignal?: AbortSignal
 ): Promise<void> => {
   if (deviceStates.length === 0) {
     return;
   }
 
-  const container = await getCosmosContainer();
+  const operationSignal = (): AbortSignal => AbortSignal.any([
+    ...(abortSignal ? [abortSignal] : []), AbortSignal.timeout(10_000),
+  ]);
+  const initializationSignal = operationSignal();
+  const container = await getCosmosContainer(initializationSignal);
+  initializationSignal.throwIfAborted();
   if (!container) {
     console.warn(
       "Azure Cosmos DB container is not available; skipping device state persistence"
@@ -349,9 +401,14 @@ export const saveDeviceStatesBatch = async (
   }
 
   for (const record of deviceStates) {
+    // Bound each request without repeatedly starving the tail of large batches.
+    const signal = operationSignal();
+    signal.throwIfAborted();
     try {
-      await container.items.upsert(record);
+      await container.items.upsert(record, { abortSignal: signal });
+      signal.throwIfAborted();
     } catch (error) {
+      signal.throwIfAborted();
       console.error(
         `Failed to upsert device state for ${record.entityId} (${record.id})`,
         error

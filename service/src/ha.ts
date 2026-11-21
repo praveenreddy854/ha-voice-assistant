@@ -326,9 +326,9 @@ export const matchesKnownDevice = (
  *
  * @returns Promise<HassState[]> - Array of filtered device states
  */
-export const getKnownDeviceStates = async (): Promise<HassState[]> => {
+export const getKnownDeviceStates = async (options?: HAExecutionOptions): Promise<HassState[]> => {
   const [states, knownDevices] = await Promise.all([
-    fetchAllStates(),
+    fetchAllStates(options),
     getKnownDevices(),
   ]);
 

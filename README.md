@@ -73,6 +73,53 @@ device states on startup and then on the defined schedule (hourly by default).
 Captured records include the entity ID, friendly name, state, timestamps, and
 full attribute payload to support AI-driven reminders.
 
+### Recurring device monitoring
+
+Device monitoring runs on the service through the existing `node-cron` library.
+The laundry/vacuum-specific endpoints, browser timers and local monitoring toggles
+have been removed. Device monitor definitions live in the `cron-jobs` container
+in `AZURE_COSMOS_DATABASE` (override its name with `AZURE_COSMOS_CRON_JOBS_CONTAINER`).
+With Cosmos configured, the service creates the container if needed, partitioned
+by `/id`. It never seeds jobs. Without Cosmos credentials or with an empty
+container, no device monitors run.
+
+Use Cosmos DB Data Explorer to add, edit or delete **one item per job**, then
+restart the service to apply changes. If you used the earlier JSON file, insert
+each array entry as its own item before restarting; the service no longer reads
+the file. The startup read and validation must succeed before background jobs or
+the HTTP listener start.
+
+Each job has a unique `id`, `entityId`, `cron`, optional IANA `timezone`, `conditions`
+and an `announcement`. Set `enabled: false` to disable a job. Every condition must
+match; conditions compare `state` or `attributes.<name>` using `equals` or
+`notEquals` against a string, number or boolean. Missing attributes and
+unknown/unavailable devices do not trigger announcements.
+
+Five-field cron expressions run at minute precision; six fields include seconds:
+`* * * * * *` runs every second, `*/30 * * * * *` every 30 seconds, and
+`0 9 * * *` daily at 9 AM in the job's timezone (server timezone when omitted).
+Use `UTC` for second-based polling uninterrupted by daylight-saving changes.
+See the [node-cron syntax reference](https://nodecron.com/cron-syntax.html).
+
+`minStateDurationSeconds` defaults to zero. A positive value requires the current
+state to have lasted that long according to Home Assistant's `last_changed`
+timestamp. Switching off cancels an on-state condition without a pending browser
+timer. `announcementPolicy` defaults to `oncePerState`, which announces once per
+state episode per service process; `everyMatch` announces on every matching cron
+run, useful for daily checks. Episode deduplication resets on service restart.
+
+Monitor reads, snapshot capture/persistence, and reminder Cosmos queries time out after 10 seconds.
+Cosmos initialization and operations receive shutdown cancellation; a failed initialization can retry on a later tick. Each job skips ticks while a previous run
+is active, and shutdown destroys schedules and aborts monitor reads. These are
+process-local jobs: run one scheduler instance for a household. Missed ticks are
+not replayed. The existing durable, voice-created ScheduledTasks keep their own
+firing path. Announcements use the existing SSE stream and need a connected
+browser for speech playback.
+
+Proactive reminder summaries also have a 10-second model deadline, then use the
+existing deterministic reminder fallback. Shutdown cancels model requests and
+suppresses announcements; cancelled evaluations leave the episode eligible.
+
 ### Installation & Setup
 
 1. **Clone the repository**
