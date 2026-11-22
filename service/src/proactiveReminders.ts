@@ -1,4 +1,4 @@
-import cron from "node-cron";
+import { cronJobs } from "./cronJobs";
 import {
   AI_MODEL_MINI,
   PROACTIVE_REMINDERS_CRON,
@@ -12,8 +12,7 @@ import {
 } from "./cosmos";
 import { emitAnnouncement } from "./announcementBus";
 import { generateCompletion } from "./ai";
-
-let started = false;
+import { safeErrorDetails } from "./logSanitizer";
 
 interface Situation {
   entityId: string;
@@ -200,7 +199,8 @@ function detectSituations(
   return situations;
 }
 
-async function buildReminderMessage(situations: Situation[]): Promise<string> {
+async function buildReminderMessage(situations: Situation[], signal: AbortSignal): Promise<string> {
+  signal.throwIfAborted();
   const lines = situations.map((s) => {
     const rule = ruleByType.get(s.type);
     return rule ? rule.describe(s) : `${s.friendlyName} (${s.type})`;
@@ -210,8 +210,10 @@ async function buildReminderMessage(situations: Situation[]): Promise<string> {
   if (!AI_MODEL_MINI) return fallback;
 
   try {
+    const abortSignal = AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
     const text = await generateCompletion({
       model: AI_MODEL_MINI,
+      abortSignal,
       temperature: 0.4,
       maxTokens: 120,
       messages: [
@@ -231,26 +233,33 @@ async function buildReminderMessage(situations: Situation[]): Promise<string> {
         },
       ],
     });
+    abortSignal.throwIfAborted();
 
     const trimmed = text.trim();
     if (!trimmed || trimmed.toUpperCase() === "NONE") return "";
     return trimmed;
   } catch (error) {
+    // A model deadline uses the normal fallback; shutdown must not announce it.
+    signal.throwIfAborted();
     console.error(
       "[ProactiveReminders] AI summary failed, using fallback message",
-      error
+      safeErrorDetails(error)
     );
     return fallback;
   }
 }
 
-async function runReminderCheck(): Promise<void> {
+async function runReminderCheck(signal: AbortSignal): Promise<void> {
   try {
+    signal.throwIfAborted();
     const now = Date.now();
     const windowMinutes = Math.max(PROACTIVE_REMINDER_ON_MINUTES * 2, 360);
     const sinceIso = new Date(now - windowMinutes * 60000).toISOString();
 
-    const records = await queryRecentDeviceStates(sinceIso);
+    const readSignal = AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
+    const records = await queryRecentDeviceStates(sinceIso, readSignal);
+    readSignal.throwIfAborted();
+    signal.throwIfAborted();
     if (records.length === 0) return;
 
     const situations = detectSituations(records, now).filter(
@@ -258,12 +267,14 @@ async function runReminderCheck(): Promise<void> {
     );
     if (situations.length === 0) return;
 
-    // Mark each on-episode as handled up front so we evaluate (and bill the AI
-    // for) it at most once; a fresh turn-on changes the key and re-triggers.
+    const message = await buildReminderMessage(situations, signal);
+    signal.throwIfAborted();
+
+    // The scheduler prevents concurrent evaluations. Mark only completed checks
+    // so cancellation cannot consume an episode without evaluating it.
     for (const s of situations) handledEpisodes.add(episodeKey(s));
     pruneEpisodes();
 
-    const message = await buildReminderMessage(situations);
     if (!message) return;
 
     emitAnnouncement(message);
@@ -271,14 +282,12 @@ async function runReminderCheck(): Promise<void> {
       `[ProactiveReminders] Emitted reminder for ${situations.length} situation(s): ${message}`
     );
   } catch (error) {
-    console.error("[ProactiveReminders] Reminder check failed", error);
+    if (signal.aborted) return;
+    console.error("[ProactiveReminders] Reminder check failed", safeErrorDetails(error));
   }
 }
 
 export function startProactiveReminders(): void {
-  if (started) return;
-  started = true;
-
   if (!PROACTIVE_REMINDERS_ENABLED) {
     console.info(
       "[ProactiveReminders] Disabled via PROACTIVE_REMINDERS_ENABLED; scheduler will remain idle"
@@ -293,8 +302,10 @@ export function startProactiveReminders(): void {
     return;
   }
 
-  cron.schedule(PROACTIVE_REMINDERS_CRON, () => {
-    void runReminderCheck();
+  cronJobs.register({
+    id: "proactive-reminders",
+    expression: PROACTIVE_REMINDERS_CRON,
+    run: (signal) => runReminderCheck(signal),
   });
 
   console.info(
