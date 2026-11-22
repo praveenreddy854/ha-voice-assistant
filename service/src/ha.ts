@@ -329,9 +329,9 @@ export const matchesKnownDevice = (
  *
  * @returns Promise<HassState[]> - Array of filtered device states
  */
-export const getKnownDeviceStates = async (): Promise<HassState[]> => {
+export const getKnownDeviceStates = async (options?: HAExecutionOptions): Promise<HassState[]> => {
   const [states, knownDevices] = await Promise.all([
-    fetchAllStates(),
+    fetchAllStates(options),
     getKnownDevices(),
   ]);
 
@@ -780,9 +780,12 @@ async function executeMultipleHACommands(
     }
   }
   
+  const requestCount = commands.filter(command =>
+    normalizeHAUrlPath(command.url_path || "") !== INTERNAL_WAIT_URL_PATH
+  ).length;
   return {
     success: true,
-    message: `All ${commands.length} commands executed successfully for "${originalCommand}"`,
+    message: `Home Assistant accepted ${requestCount} requests; device effects have not been verified.`,
     data: results,
   };
 }

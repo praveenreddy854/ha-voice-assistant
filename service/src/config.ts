@@ -57,8 +57,6 @@ export const HOME_ASSISTANT_URL =
   process.env.HOME_ASSISTANT_URL || "http://homeassistant.local:8123";
 export const HOME_ASSISTANT_TOKEN = process.env.HOME_ASSISTANT_TOKEN;
 
-export const VACUUM_CLEANER_ENTITY_ID = process.env.VACUUM_CLEANER_ENTITY_ID;
-
 export const TV_REMOTE_ENTITY_ID = process.env.TV_REMOTE_ENTITY_ID;
 export const TV_DEFAULT_WAIT_MS = Number.parseInt(
   process.env.TV_DEFAULT_WAIT_MS || "1500",
@@ -82,6 +80,8 @@ export const AZURE_COSMOS_ENDPOINT = process.env.AZURE_COSMOS_ENDPOINT;
 export const AZURE_COSMOS_KEY = process.env.AZURE_COSMOS_KEY;
 export const AZURE_COSMOS_DATABASE = process.env.AZURE_COSMOS_DATABASE;
 export const AZURE_COSMOS_CONTAINER = process.env.AZURE_COSMOS_CONTAINER;
+export const AZURE_COSMOS_CRON_JOBS_CONTAINER =
+  process.env.AZURE_COSMOS_CRON_JOBS_CONTAINER || "cron-jobs";
 export const AZURE_COSMOS_TV_FLOW_CONTAINER =
   process.env.AZURE_COSMOS_TV_FLOW_CONTAINER;
 export const AZURE_COSMOS_MEMORY_CONTAINER =

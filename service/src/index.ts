@@ -27,11 +27,13 @@ import {
   HOME_ASSISTANT_TOKEN,
   SPEECH_KEY,
   SPEECH_REGION,
-  VACUUM_CLEANER_ENTITY_ID,
 } from "./config";
-import { fetchAllStates } from "./ha";
+import { fetchAllStates, getHAEntityState } from "./ha";
+import { cronJobs } from "./cronJobs";
+import { describeDeviceMonitorConfigError, registerDeviceMonitorJobs } from "./deviceMonitorJobs";
 import { startDeviceStateLogging } from "./deviceStateLogger";
 import {
+  loadDeviceMonitorJobs,
   listActiveScheduledTasks,
   deleteScheduledTaskOccurrence,
   deleteRecurrenceFamily,
@@ -50,7 +52,7 @@ import { onlineRouter } from "./evals/online/api";
 import { onlineSupervisor } from "./evals/online/supervisor";
 import { homePage } from "./homePage";
 import { setupRealtimeChatProxy } from "./realtimeChat";
-import { addAnnouncementClient } from "./announcementBus";
+import { addAnnouncementClient, emitAnnouncement } from "./announcementBus";
 import { startScheduledTaskFirer, stopScheduledTaskFirer } from "./scheduledTaskFirer";
 import { startOutDirCleaner } from "./outDirCleaner";
 import { startProactiveReminders } from "./proactiveReminders";
@@ -145,19 +147,6 @@ app.get("/traces", (_req, res) => {
 app.get("/dashboards", (_req, res) => {
   res.sendFile(path.join(__dirname, "./tracing/dashboardViewer.html"));
 });
-
-startDeviceStateLogging();
-startScheduledTaskFirer();
-startOutDirCleaner();
-startProactiveReminders();
-startMemoryConsolidation();
-evalSupervisor.start();
-onlineSupervisor.start();
-
-// Start gesture monitor for fist-to-pause TV control (RTSP mode only)
-if (isRtspMode()) {
-  startGestureMonitor();
-}
 
 app.get("/", (_req, res) => {
   res.type("html").send(homePage);
@@ -483,75 +472,6 @@ app.get("/api/get-speech-credentials", (req, res, next) => {
     }
   })();
 });
-
-// Endpoint to check laundry switch status
-app.get("/api/laundry-status", (req, res, next) => {
-  (async () => {
-    try {
-      const entityId = "switch.laundry_switch";
-      const response = await axios.get(
-        `${HOME_ASSISTANT_URL}/api/states/${entityId}`,
-        {
-          headers: {
-            Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
-            "Content-Type": "application/json",
-          },
-        }
-      );
-
-      const state = response.data as any;
-      res.json({
-        entity_id: entityId,
-        state: state.state,
-        last_changed: state.last_changed,
-        last_updated: state.last_updated,
-        attributes: state.attributes,
-      });
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      console.error("Error checking laundry status:", err);
-      res.status(500).json({
-        error: "Error checking laundry status",
-        message: err.message,
-      });
-    }
-  })();
-});
-
-// Endpoint to check vacuum status
-app.get("/api/vacuum-status", (req, res, next) => {
-  (async () => {
-    try {
-      const entityId = VACUUM_CLEANER_ENTITY_ID;
-      const response = await axios.get(
-        `${HOME_ASSISTANT_URL}/api/states/${entityId}`,
-        {
-          headers: {
-            Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`,
-            "Content-Type": "application/json",
-          },
-        }
-      );
-
-      const state = response.data as any;
-      res.json({
-        entity_id: entityId,
-        state: state.state,
-        last_changed: state.last_changed,
-        last_updated: state.last_updated,
-        attributes: state.attributes,
-      });
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      console.error("Error checking vacuum status:", err);
-      res.status(500).json({
-        error: "Error checking vacuum status",
-        message: err.message,
-      });
-    }
-  })();
-});
-
 
 // ============================================================================
 // Teaching Mode API Endpoints
@@ -1230,30 +1150,61 @@ app.post("/api/teaching/cleanup", (req, res, next) => {
   })();
 });
 
-const server = app.listen(port, () => {
-  console.log(`Server running on http://localhost:${port}`);
-  console.log(`Visit http://localhost:${port} to access the application`);
-  console.log(`Telemetry Viewer: http://localhost:${port}/telemetry`);
-  console.log(`Telemetry Dashboards: http://localhost:${port}/dashboards`);
+const startupController = new AbortController();
+let shuttingDown = false;
+let startupStage = "load-device-monitor-jobs";
+
+async function startService(): Promise<void> {
+  const jobs = await loadDeviceMonitorJobs(startupController.signal);
+  if (shuttingDown) return;
+  startupStage = "register-device-monitors";
+  registerDeviceMonitorJobs(jobs, cronJobs, {
+    readState: (entityId, signal) => getHAEntityState(entityId, { abortSignal: signal }),
+    announce: emitAnnouncement,
+  });
+  startupStage = "device-state-logging";
+  startDeviceStateLogging();
+  startupStage = "scheduled-tasks";
+  startScheduledTaskFirer();
+  startupStage = "output-cleaner";
+  startOutDirCleaner();
+  startupStage = "proactive-reminders";
+  startProactiveReminders();
+  startupStage = "memory-consolidation";
+  startMemoryConsolidation();
+  startupStage = "evaluation-supervisors";
+  evalSupervisor.start();
+  onlineSupervisor.start();
+  startupStage = "gesture-monitor";
+  if (isRtspMode()) startGestureMonitor();
+
+  startupStage = "http-server";
+  const server = app.listen(port, () => {
+    console.log(`Server running on http://localhost:${port}`);
+    console.log(`Visit http://localhost:${port} to access the application`);
+    console.log(`Telemetry Viewer: http://localhost:${port}/telemetry`);
+    console.log(`Telemetry Dashboards: http://localhost:${port}/dashboards`);
+  });
+  setupRealtimeChatProxy(server);
+}
+
+void startService().catch(error => {
+  if (shuttingDown) return;
+  console.error("Service startup failed", { stage: startupStage, ...describeDeviceMonitorConfigError(error) });
+  process.exit(1);
 });
 
-setupRealtimeChatProxy(server);
-
-// Graceful shutdown
-process.on("SIGTERM", async () => {
+async function shutdown(signal: NodeJS.Signals): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  startupController.abort();
+  await cronJobs.stop();
   stopScheduledTaskFirer();
   onlineSupervisor.stop();
   evalSupervisor.stop();
-  console.log("SIGTERM received, shutting down gracefully...");
+  console.log(`${signal} received, shutting down gracefully...`);
   await shutdownTracing();
   process.exit(0);
-});
-
-process.on("SIGINT", async () => {
-  stopScheduledTaskFirer();
-  onlineSupervisor.stop();
-  evalSupervisor.stop();
-  console.log("SIGINT received, shutting down gracefully...");
-  await shutdownTracing();
-  process.exit(0);
-});
+}
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);

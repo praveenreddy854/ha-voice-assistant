@@ -22,6 +22,7 @@ test-results/
 node_modules/
 
 devices.json
+service/device-monitor-jobs.json
 generated_data/
 
 # ML models (downloaded by service/scripts/download-models.js)
