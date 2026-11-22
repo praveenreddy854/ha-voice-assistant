@@ -1,5 +1,14 @@
 import cron, { type ScheduledTask } from "node-cron";
-import { safeErrorDetails } from "./logSanitizer";
+/** Scheduler logs never retain job IDs or arbitrary provider messages. */
+export function describeCronJobError(error: unknown): Record<string, unknown> {
+  const value = error as { name?: unknown; statusCode?: unknown; code?: unknown; response?: { status?: unknown } } | null;
+  const status = value?.statusCode ?? value?.response?.status ?? value?.code;
+  return {
+    type: value?.name === "TimeoutError" ? "TimeoutError" : value?.name === "AbortError" ? "AbortError" : "Error",
+    ...(typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599
+      ? { statusCode: status } : {}),
+  };
+}
 
 export interface CronJob {
   id: string;
@@ -30,8 +39,8 @@ export class CronJobConfigurationError extends Error {
 export class CronJobScheduler {
   private readonly jobs = new Map<string, { task: ScheduledTask; controller: AbortController }>();
 
-  constructor(private readonly onError = (id: string, error: unknown): void => {
-    console.error(`[CronJobs] ${id} failed`, safeErrorDetails(error));
+  constructor(private readonly onError = (_id: string, error: unknown): void => {
+    console.error("[CronJobs] Job failed", describeCronJobError(error));
   }) {}
 
   register(job: CronJob): void {

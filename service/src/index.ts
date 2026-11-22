@@ -1149,11 +1149,12 @@ app.post("/api/teaching/cleanup", (req, res, next) => {
   })();
 });
 
+const startupController = new AbortController();
 let shuttingDown = false;
 let startupStage = "load-device-monitor-jobs";
 
 async function startService(): Promise<void> {
-  const jobs = await loadDeviceMonitorJobs();
+  const jobs = await loadDeviceMonitorJobs(startupController.signal);
   if (shuttingDown) return;
   startupStage = "register-device-monitors";
   registerDeviceMonitorJobs(jobs, cronJobs, {
@@ -1195,6 +1196,7 @@ void startService().catch(error => {
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
+  startupController.abort();
   await cronJobs.stop();
   stopScheduledTaskFirer();
   onlineSupervisor.stop();

@@ -1,3 +1,4 @@
+import { describeCronJobError } from "./cronJobs";
 import { CosmosClient, Container, PartitionKeyKind } from "@azure/cosmos";
 import {
   AZURE_COSMOS_CONTAINER,
@@ -39,7 +40,7 @@ export const getCosmosContainer = async (abortSignal?: AbortSignal): Promise<Con
       // A transient failure must not leave every later scheduler tick idle.
       containerPromise = null;
       abortSignal?.throwIfAborted();
-      console.error("Failed to initialize Azure Cosmos DB container", error);
+      console.error("Failed to initialize Azure Cosmos DB container", describeCronJobError(error));
       return null;
     });
   }
@@ -73,21 +74,26 @@ const getCosmosClient = (): CosmosClient => {
   return cosmosClient;
 };
 
-export async function loadDeviceMonitorJobs(): Promise<DeviceMonitorJob[]> {
+export async function loadDeviceMonitorJobs(abortSignal?: AbortSignal): Promise<DeviceMonitorJob[]> {
+  abortSignal?.throwIfAborted();
   if (!AZURE_COSMOS_ENDPOINT && !AZURE_COSMOS_KEY) return [];
   if (!AZURE_COSMOS_ENDPOINT || !AZURE_COSMOS_KEY || !AZURE_COSMOS_DATABASE) {
     throw new Error("Incomplete Cosmos DB configuration for cron jobs");
   }
 
-  const options = { abortSignal: AbortSignal.timeout(30_000) };
+  const signal = AbortSignal.any([AbortSignal.timeout(30_000), ...(abortSignal ? [abortSignal] : [])]);
+  const options = { abortSignal: signal };
   const { database } = await getCosmosClient().databases.createIfNotExists(
     { id: AZURE_COSMOS_DATABASE }, options
   );
+  signal.throwIfAborted();
   const { container } = await database.containers.createIfNotExists({
     id: AZURE_COSMOS_CRON_JOBS_CONTAINER,
     partitionKey: { kind: PartitionKeyKind.Hash, paths: ["/id"] },
   }, options);
+  signal.throwIfAborted();
   const { resources } = await container.items.query<Record<string, unknown>>("SELECT * FROM c", options).fetchAll();
+  signal.throwIfAborted();
   // Ignore only Cosmos-managed metadata; unknown application fields must still fail validation.
   return parseDeviceMonitorJobs(resources.map(({ _rid, _self, _etag, _attachments, _ts, ...job }) => job));
 }

@@ -7,6 +7,7 @@ test("device-state initialization, queries and writes cancel and retry after out
   process.env.AZURE_COSMOS_KEY = "dGVzdA==";
   process.env.AZURE_COSMOS_DATABASE = "test";
   process.env.AZURE_COSMOS_CONTAINER = "states";
+  const errors = t.mock.method(console, "error", () => {});
   let initializationCalls = 0;
   let querySignal: AbortSignal | undefined;
   let writeSignal: AbortSignal | undefined;
@@ -29,6 +30,7 @@ test("device-state initialization, queries and writes cancel and retry after out
   t.mock.method(Databases.prototype, "createIfNotExists", async (_definition: unknown, options: { abortSignal: AbortSignal }) => {
     initializationCalls++;
     if (initializationCalls === 1) await pending(options.abortSignal);
+    if (initializationCalls === 2) throw Object.assign(new Error("RequestUri: https://private-db/dbs/private Header: secret"), { code: 403 });
     return { database: { containers: { createIfNotExists: async (_definition: unknown, containerOptions: { abortSignal: AbortSignal }) => {
       assert.equal(containerOptions.abortSignal, options.abortSignal);
       return { container: { items } };
@@ -44,10 +46,12 @@ test("device-state initialization, queries and writes cancel and retry after out
   assert.equal(first.signal.aborted, false, "one waiter can stop without waiting for the initialization owner");
   first.abort(new DOMException("Deadline", "TimeoutError"));
   await assert.rejects(initialization, { name: "TimeoutError" });
+  assert.deepEqual(await queryRecentDeviceStates("2026-11-20"), []);
+  assert.deepEqual(errors.mock.calls[0].arguments, ["Failed to initialize Azure Cosmos DB container", { type: "Error", statusCode: 403 }]);
   const second = new AbortController();
   const query = queryRecentDeviceStates("2026-11-20", second.signal);
   for (let i = 0; i < 30; i++) await Promise.resolve();
-  assert.equal(initializationCalls, 2, "an aborted initialization is retried");
+  assert.equal(initializationCalls, 3, "an aborted initialization is retried");
   assert.equal(querySignal, second.signal, "the deadline reaches the SDK query");
   second.abort(new DOMException("Deadline", "TimeoutError"));
   await assert.rejects(query, { name: "TimeoutError" });

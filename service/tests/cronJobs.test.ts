@@ -69,3 +69,14 @@ test("invalid cron expressions and timezones are rejected without registering wo
   assert.throws(() => scheduler.register({ id: "bad-zone", expression: "* * * * * *", timezone: "Invalid/Zone", run: () => {} }), /Invalid timezone/);
   await scheduler.stop();
 });
+
+test("default scheduler diagnostics exclude configured IDs and provider request dumps", async t => {
+  const errors = t.mock.method(console, "error", () => {});
+  const scheduler = new CronJobScheduler();
+  t.after(() => scheduler.stop());
+  scheduler.register({ id: "private-database-id", expression: "0 0 * * *", runOnStart: true, run: () => {
+    throw Object.assign(new Error("RequestUri: https://private-database/dbs/private Header: Authorization secret"), { code: 403 });
+  } });
+  await settle();
+  assert.deepEqual(errors.mock.calls[0].arguments, ["[CronJobs] Job failed", { type: "Error", statusCode: 403 }]);
+});
