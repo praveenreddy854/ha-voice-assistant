@@ -59,6 +59,7 @@ import { startProactiveReminders } from "./proactiveReminders";
 import { startMemoryConsolidation } from "./memory";
 import { createAppleShortcutRouter } from "./appleShortcutRouter";
 import { TextAssistantSessionManager } from "./textAssistantSessions";
+import { safeErrorDetails } from "./logSanitizer";
 // Teaching mode imports - for recording manual steps and fine-tuning data
 import {
   startTeachingSession,
@@ -528,7 +529,7 @@ app.post("/api/teaching/start", (req, res, next) => {
         message: `Teaching session started for "${taskName}". Perform steps on your TV and call /api/teaching/step to record each action.`,
       });
     } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
+      const err = safeErrorDetails(error);
       console.error("Error starting teaching session:", err);
       res.status(500).json({
         error: "Error starting teaching session",
@@ -640,7 +641,7 @@ app.post("/api/teaching/analyze-screenshot", (req, res, next) => {
         inferredAction: analysis.inferredAction,
       });
     } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
+      const err = safeErrorDetails(error);
       console.error("Error analyzing screenshot:", err);
       res.status(500).json({
         success: false,
@@ -686,7 +687,7 @@ app.post("/api/teaching/capture", (req, res, next) => {
         message: `Screenshot capture ${captureIndex || 0} added as step ${step.stepNumber}`,
       });
     } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
+      const err = safeErrorDetails(error);
       console.error("Error adding screenshot capture:", err);
       res.status(500).json({
         error: "Error adding screenshot capture",

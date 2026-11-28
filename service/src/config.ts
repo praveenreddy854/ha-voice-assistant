@@ -1,4 +1,5 @@
 import dotenv from "dotenv";
+import { MODEL_CATALOG, regionForDeployment } from "./modelCatalog";
 
 dotenv.config();
 
@@ -6,17 +7,18 @@ dotenv.config();
 // Azure OpenAI
 // ============================================================================
 
-export const AZURE_OPENAI_API_KEY = process.env.AZURE_OPENAI_API_KEY;
-
-function extractResourceName(endpoint?: string): string | undefined {
-  if (!endpoint) return undefined;
-  const match = endpoint.match(/https?:\/\/([^.]+)\.openai\.azure\.com/);
-  return match?.[1];
+export function foundryConnectionFor(model: string) {
+  const suffix = regionForDeployment(model).toUpperCase();
+  const resourceVar = `AZURE_OPENAI_RESOURCE_NAME_${suffix}`;
+  const keyVar = `AZURE_OPENAI_API_KEY_${suffix}`;
+  const resourceName = process.env[resourceVar]?.trim();
+  const apiKey = process.env[keyVar]?.trim();
+  if (!resourceName || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(resourceName)) {
+    throw new Error(`Configure ${resourceVar} with an Azure resource name, not a URL`);
+  }
+  if (!apiKey) throw new Error(`Configure ${keyVar} for this Foundry region`);
+  return { resourceName, apiKey, hostname: `${resourceName.toLowerCase()}.openai.azure.com` };
 }
-
-export const AZURE_OPENAI_RESOURCE_NAME =
-  process.env.AZURE_OPENAI_RESOURCE_NAME ??
-  extractResourceName(process.env.AZURE_OPENAI_ENDPOINT);
 
 export const AZURE_OPENAI_API_VERSION =
   process.env.AZURE_OPENAI_API_VERSION ?? "2025-01-01-preview";
@@ -25,28 +27,14 @@ export const AZURE_OPENAI_API_VERSION =
 // Three-Tier Model System
 // ============================================================================
 
-/** Nano: simple JSON extraction */
-export const AI_MODEL_NANO = process.env.AI_MODEL_NANO;
-
-/** Mini: HA commands, vision helpers */
-export const AI_MODEL_MINI = process.env.AI_MODEL_MINI ?? process.env.AI_MODEL_NANO;
-
-/** Advanced: agent loops (TV agent, navigation, typing) */
-export const AI_MODEL_ADVANCED = process.env.AI_MODEL_ADVANCED ?? process.env.AI_MODEL_MINI;
-/** Device-command translation needs the same intent fidelity as voice reasoning. */
-export const AI_MODEL_HOME_ASSISTANT = process.env.AI_MODEL_HOME_ASSISTANT ?? AI_MODEL_ADVANCED;
-export const EMBEDDING_MODEL =
-  process.env.EMBEDDING_MODEL ?? "text-embedding-ada-002";
-
-/** GPT Live voice deployment; client delegation uses the existing AI SDK models. */
-export const AI_MODEL_LIVE = process.env.AI_MODEL_LIVE ?? "gpt-live-1";
+export const { model: AI_MODEL_NANO, reasoningEffort: AI_MODEL_NANO_REASONING_EFFORT } = MODEL_CATALOG.nano;
+export const { model: AI_MODEL_MINI, reasoningEffort: AI_MODEL_MINI_REASONING_EFFORT } = MODEL_CATALOG.mini;
+export const { model: AI_MODEL_ADVANCED, reasoningEffort: AI_MODEL_ADVANCED_REASONING_EFFORT } = MODEL_CATALOG.advanced;
+export const { model: AI_MODEL_HOME_ASSISTANT, reasoningEffort: AI_MODEL_HOME_ASSISTANT_REASONING_EFFORT } = MODEL_CATALOG.homeAssistant;
+// Keep existing vectors in the same model space when migrating Foundry settings.
+export const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL?.trim() || MODEL_CATALOG.embedding.model;
+export const AI_MODEL_LIVE = MODEL_CATALOG.live.model;
 export const GPT_LIVE_VOICE = process.env.GPT_LIVE_VOICE ?? "marin";
-
-/** Legacy native Realtime evaluation settings; browser voice uses GPT Live. */
-export const AI_MODEL_REALTIME = process.env.AI_MODEL_REALTIME;
-export const AI_MODEL_TRANSCRIBE = process.env.AI_MODEL_TRANSCRIBE ?? "whisper-1";
-export const AZURE_OPENAI_REALTIME_API_VERSION =
-  process.env.AZURE_OPENAI_REALTIME_API_VERSION ?? "2025-04-01-preview";
 
 // ============================================================================
 // User / Location

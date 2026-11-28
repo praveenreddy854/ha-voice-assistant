@@ -1,4 +1,6 @@
 import dotenv from "dotenv";
+import { formatModelSettingsIdentity, isValidModelOverride, parseModelSettings } from "../modelSettings";
+import { MODEL_CATALOG } from "../modelCatalog";
 import { randomUUID } from "node:crypto";
 import { EvalStore } from "./store";
 import { installNetworkBoundary } from "./network";
@@ -41,20 +43,24 @@ export async function runWorker(job: EvalJob, store = new EvalStore()): Promise<
     await updateRecordedDailyOutcome(store, job);
     await store.queueRecordedAttempts(job);
     const config = await import("../config");
-    if (!config.AZURE_OPENAI_RESOURCE_NAME) throw new Error("Azure model endpoint is not configured");
-    installNetworkBoundary(`${config.AZURE_OPENAI_RESOURCE_NAME}.openai.azure.com`, job.mode === "recorded" && registration.id === "tv" && config.AZURE_COSMOS_ENDPOINT ? new URL(config.AZURE_COSMOS_ENDPOINT).hostname : undefined);
+    const judgeProfile = MODEL_CATALOG.offlineJudge;
+    const modelHosts = [config.foundryConnectionFor(judgeProfile.model).hostname];
+    if (job.mode === "simulated") {
+      const assessed = parseModelSettings(job.model) ?? MODEL_CATALOG.advanced;
+      modelHosts.push(config.foundryConnectionFor(assessed.model).hostname);
+    }
+    installNetworkBoundary(modelHosts, job.mode === "recorded" && registration.id === "tv" && config.AZURE_COSMOS_ENDPOINT ? new URL(config.AZURE_COSMOS_ENDPOINT).hostname : undefined);
     const [{ createLlmJudge, GRADER_VERSION }, { EvalRunner }, { calibrateJudge }] = await Promise.all([
       import("./judge"), import("./runner"), import("./references"),
     ]);
-    const judgeModel = process.env.OFFLINE_EVAL_JUDGE_MODEL || config.AI_MODEL_ADVANCED;
-    if (!judgeModel) throw new Error("Configure OFFLINE_EVAL_JUDGE_MODEL or AI_MODEL_ADVANCED");
+    const judgeIdentity = formatModelSettingsIdentity(judgeProfile);
     const scenarios = await registration.scenarios();
-    const judge = await createLlmJudge(judgeModel, scenarios.map(s => s.context));
+    const judge = await createLlmJudge(judgeIdentity, scenarios.map(s => s.context));
     if (job.mode === "calibrate") {
-      const result = await calibrateJudge(store, judge, judgeModel, GRADER_VERSION, controller.signal, registration.id);
+      const result = await calibrateJudge(store, judge, judgeIdentity, GRADER_VERSION, controller.signal, registration.id);
       if (!result.passed) throw new Error("Judge disagreed with the selected agent's reference cases; inspect calibration results");
     } else {
-      const runner = new EvalRunner(store, judge, judgeModel, GRADER_VERSION);
+      const runner = new EvalRunner(store, judge, judgeIdentity, GRADER_VERSION);
       let batch: EvalBatch;
       if (job.mode === "recorded") {
         if (!job.sessionIds?.length) throw new Error("Select completed session IDs for recorded evaluation");
@@ -114,7 +120,7 @@ export function parseEvalArguments(args: string[]): Pick<EvalJob, "mode" | "agen
   }
   const agentId = getEvalAgent(flags.get("--agent")).id;
   const model = flags.get("--model");
-  if (model && (mode !== "simulated" || !/^[a-zA-Z0-9._-]+$/.test(model))) throw new Error("A valid --model deployment is supported only for simulations");
+  if (model !== undefined && (mode !== "simulated" || !isValidModelOverride(model))) throw new Error("A valid --model deployment or JSON model settings is supported only for simulations");
   if (mode === "calibrate" && identifiers.length) throw new Error("Judge calibration does not accept scenario or session IDs");
   if (mode === "recorded" && (!identifiers.length || identifiers.length > 100 || identifiers.some(id => !/^[a-zA-Z0-9_-]+$/.test(id)))) {
     throw new Error("Select 1 to 100 valid completed session IDs");

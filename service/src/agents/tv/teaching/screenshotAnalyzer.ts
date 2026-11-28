@@ -3,8 +3,15 @@
  * Uses vision models to analyze TV screenshots and infer user actions
  */
 
-import { AI_MODEL_ADVANCED } from "../../../config";
+import { z } from "zod";
+import { AI_MODEL_ADVANCED, AI_MODEL_ADVANCED_REASONING_EFFORT } from "../../../config";
 import { generateVisionText } from "../../../ai";
+
+const analysisSchema = z.object({
+  description: z.string().trim().min(1),
+  focusedElement: z.string().trim().nullish(),
+  inferredAction: z.string().trim().min(1),
+});
 
 /**
  * Previous step context for action inference
@@ -30,16 +37,9 @@ export async function analyzeScreenshot(
   focusedElement?: string;
   inferredAction: string;
 }> {
-  try {
-    if (!AI_MODEL_ADVANCED) {
-      throw new Error(
-        "AI_MODEL_ADVANCED or its lower-tier fallback must be configured"
-      );
-    }
-
-    let previousStepsContext = "";
-    if (previousSteps.length > 0) {
-      previousStepsContext = `
+  let previousStepsContext = "";
+  if (previousSteps.length > 0) {
+    previousStepsContext = `
 PREVIOUS STEPS IN THIS RECORDING:
 ${previousSteps
   .map(
@@ -52,13 +52,13 @@ ${previousSteps
 
 Based on the previous steps, the user is navigating the TV to: "${taskName}"
 `;
-    } else {
-      previousStepsContext = `This is the FIRST screenshot. The user just started the task: "${taskName}"`;
-    }
+  } else {
+    previousStepsContext = `This is the FIRST screenshot. The user just started the task: "${taskName}"`;
+  }
 
-    const stepNumber = previousSteps.length + 1;
+  const stepNumber = previousSteps.length + 1;
 
-    const prompt = `You are analyzing a TV screen recording where a user is teaching navigation steps.
+  const prompt = `You are analyzing a TV screen recording where a user is teaching navigation steps.
 
 TASK: "${taskName}"
 CURRENT STEP: ${stepNumber}
@@ -89,50 +89,22 @@ Return JSON:
 
 Return ONLY the JSON, no other text.`;
 
-    const responseText = await generateVisionText({
-      model: AI_MODEL_ADVANCED,
-      prompt,
-      imageBase64: screenshotBase64,
-      imageContentType: contentType,
-      maxTokens: 500,
-    });
+  const responseText = await generateVisionText({
+    model: AI_MODEL_ADVANCED,
+    reasoningEffort: AI_MODEL_ADVANCED_REASONING_EFFORT,
+    prompt,
+    imageBase64: screenshotBase64,
+    imageContentType: contentType,
+    maxTokens: 500,
+  });
 
-    if (!responseText) {
-      return {
-        description: "Screenshot captured",
-        focusedElement: undefined,
-        inferredAction:
-          stepNumber === 1 ? "Started recording" : "Navigation action",
-      };
-    }
-
-    try {
-      const cleaned = responseText
-        .replace(/```json\n?/g, "")
-        .replace(/```\n?/g, "")
-        .trim();
-      const parsed = JSON.parse(cleaned);
-      return {
-        description: parsed.description || "Screenshot captured",
-        focusedElement: parsed.focusedElement || undefined,
-        inferredAction:
-          parsed.inferredAction ||
-          (stepNumber === 1 ? "Started recording" : "Navigation action"),
-      };
-    } catch {
-      return {
-        description: responseText.substring(0, 200),
-        focusedElement: undefined,
-        inferredAction:
-          stepNumber === 1 ? "Started recording" : "Navigation action",
-      };
-    }
-  } catch (error) {
-    console.error("[Teaching] Error analyzing screenshot:", error);
-    return {
-      description: "Screenshot captured (analysis error)",
-      focusedElement: undefined,
-      inferredAction: "Unknown action",
-    };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(responseText.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i, "$1"));
+  } catch {
+    throw new Error("Vision model did not return a valid analysis");
   }
+  const analysis = analysisSchema.safeParse(parsed);
+  if (!analysis.success) throw new Error("Vision model did not return a valid analysis");
+  return { ...analysis.data, focusedElement: analysis.data.focusedElement || undefined };
 }

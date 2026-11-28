@@ -14,7 +14,7 @@ function runnerFixture(memory = async () => "Use bedroom lights by default.", be
   const evidence: Array<{ type: string; args: any[] }> = [];
   const capture = (type: string) => (...args: any[]) => evidence.push({ type, args });
   const stubs: Record<string, unknown> = {
-    "../src/config": { AI_MODEL_ADVANCED: "existing-advanced-deployment" },
+    "../src/config": { AI_MODEL_ADVANCED: "existing-advanced-deployment", AI_MODEL_ADVANCED_REASONING_EFFORT: "high" },
     "../src/memory": { getPromptMemoryContext: memory, recordMemoryInteraction: capture("memory") },
     "../src/tracing/agentTraceStore": {
       createTrace: capture("started"), addEvent: capture("event"), addLLMStep: capture("step"),
@@ -62,6 +62,7 @@ test("voice reasoning uses existing model, history, memory, and capability tools
   const result = await fixture.runLiveVoiceAgent(input, "Voice routing instructions", tools, async () => "Done.");
   assert.equal(result, "Done.");
   assert.equal(fixture.config().model, "existing-advanced-deployment");
+  assert.equal(fixture.config().reasoningEffort, "high");
   assert.equal(fixture.config().systemPrompt, buildLiveVoiceSystemPrompt("Voice routing instructions"));
   assert.equal(fixture.config().maxIterations, LIVE_VOICE_MAX_ITERATIONS);
   assert.deepEqual(fixture.config().tools.map(({ type, function: contract }) => ({ type, function: contract })), liveVoiceToolDefinitions(tools));

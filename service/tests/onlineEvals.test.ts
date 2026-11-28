@@ -10,6 +10,7 @@ import { onlineAssessment } from "../src/evals/online/snapshot";
 import { evaluateOnline } from "../src/evals/online/quality";
 import { onlineSummary, createOnlineRouter } from "../src/evals/online/api";
 import { OnlineEvalSupervisor } from "../src/evals/online/supervisor";
+import { runOnlineWorker } from "../src/evals/online/worker";
 import type { AgentTrace } from "../src/tracing/agentTraceStore";
 import type { Assessment, Grade, Judge, Verdict } from "../src/evals/types";
 import { calibrationReferenceAssessments } from "../src/evals/references";
@@ -38,6 +39,49 @@ async function fixture(fn: (store: EvalStore, engine: OnlineEvalEngine) => Promi
   try { await fn(store, engine); } finally { await rm(directory, { recursive: true, force: true }); }
 }
 const cutoff = "2026-11-07T00:00:00Z";
+
+test("missing judge credentials preserve enrollment and recover interrupted attempts without consuming the queue", async t => {
+  const settings = { ONLINE_EVAL_ENABLED: "true", ONLINE_EVAL_DIR: "", AZURE_OPENAI_RESOURCE_NAME_EUS: "test-resource", AZURE_OPENAI_API_KEY_EUS: "test-key" };
+  const previous = Object.keys(settings).map(key => [key, process.env[key]] as const);
+  t.after(() => {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  await fixture(async (store, engine) => {
+    const interruptedId = onlineRecordId(trace("interrupted"));
+    await engine.discover([trace(), trace("interrupted")], cutoff);
+    const id = onlineRecordId(trace());
+    const queued = await store.read<OnlineRecord>("records", id);
+    assert.equal(queued?.status, "queued");
+    const interrupted = await store.read<OnlineRecord>("records", interruptedId);
+    assert.ok(interrupted);
+    await store.write<OnlineRecord>("records", { ...interrupted, status: "running" });
+    const start = Date.now();
+    let enabledAt: string | undefined;
+    for (const invalidKey of ["AZURE_OPENAI_RESOURCE_NAME_EUS", "AZURE_OPENAI_API_KEY_EUS"] as const) {
+      Object.assign(process.env, settings, {
+        ONLINE_EVAL_DIR: engine.config.directory, [invalidKey]: "",
+      });
+      await assert.rejects(runOnlineWorker(AbortSignal.timeout(500)), new RegExp(invalidKey));
+      assert.deepEqual(await store.read<OnlineRecord>("records", id), queued);
+      const enrollment = await store.read<{ enabledAt: string }>("state", "enrollment");
+      assert.ok(enrollment);
+      const enrolledAt = Date.parse(enrollment.enabledAt);
+      assert.ok(enrolledAt >= start && enrolledAt <= Date.now());
+      enabledAt ??= enrollment.enabledAt;
+      assert.equal(enrollment.enabledAt, enabledAt);
+      const recovered = await store.read<OnlineRecord>("records", interruptedId);
+      assert.equal(recovered?.status, "eval_error");
+      assert.match(recovered?.error ?? "", /explicit retry required/);
+      assert.equal(await store.workerIsActive(), false);
+      const state = await store.read<{ error?: string; stopped?: boolean }>("state", "worker");
+      assert.equal(state?.stopped, true);
+      assert.match(state?.error ?? "", new RegExp(invalidKey));
+    }
+  }, { config: { sampleRate: 1 } });
+});
 
 test("online enrollment survives restart; discovery excludes history, incomplete runs and unsupported agents", async () => fixture(async (store, engine) => {
   assert.equal((await engine.enroll()).enabledAt, now().toISOString());
@@ -170,6 +214,26 @@ test("API retries preserve the previous attempt and are idempotent; summaries ex
     const summary = onlineSummary([{ ...body.records[0], status: "eval_error", verdicts: undefined }]);
     assert.equal(summary.completed, 0); assert.equal(summary.states.eval_error, 1);
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+}));
+
+test("online cohorts separate efforts for the same deployment, prompt and judge", async () => fixture(async (store, engine) => {
+  const traces = (["low", "high", undefined] as const).map(reasoningEffort => trace(reasoningEffort ?? "legacy", {
+    llmSteps: [{
+      stepNumber: 1, timestamp: now().toISOString(), finishReason: "stop", requestModel: "shared",
+      reasoningEffort, text: "On it.", toolCalls: [], systemMessages: ["unchanged instructions"],
+    }],
+  }));
+  await engine.discover(traces, cutoff);
+  for (const _ of traces) assert.equal(await engine.runNext(new AbortController().signal), true);
+  const { cohorts } = onlineSummary(await store.list<OnlineRecord>("records"));
+  assert.equal(cohorts.length, 3);
+  assert.equal(new Set(cohorts.map(cohort => cohort.promptVersion)).size, 1);
+  assert.equal(new Set(cohorts.map(cohort => cohort.judgeModel)).size, 1);
+  assert.deepEqual(new Set(cohorts.map(cohort => cohort.model)), new Set([
+    '{"model":"shared","reasoningEffort":"low"}',
+    '{"model":"shared","reasoningEffort":"high"}',
+    "shared",
+  ]));
 }));
 
 test("calibration includes paired guard-preference examples, wrong-device routing and timed-phase failures", () => {

@@ -29,7 +29,8 @@ function proxyFixture(run = async (..._args: any[]): Promise<string> => "Done.")
   let tvCallbacks: Message = {};
   const stubs: Record<string, unknown> = {
     ws: Object.assign(Socket, { WebSocketServer: SocketServer }),
-    "../src/config": { AI_MODEL_LIVE: "test-live", AI_MODEL_ADVANCED: "test-advanced", GPT_LIVE_VOICE: "marin", AZURE_OPENAI_RESOURCE_NAME: "test-resource", AZURE_OPENAI_API_KEY: "test-key" },
+    "../src/config": { AI_MODEL_LIVE: "test-live", AI_MODEL_ADVANCED: "test-advanced", GPT_LIVE_VOICE: "marin",
+      foundryConnectionFor: (model: string) => ({ hostname: `${model}.openai.azure.com`, apiKey: `${model}-key` }) },
     "../src/tvJobManager": { startTvAgentJob: (_prompt: string, callbacks: Message) => { tvCallbacks = callbacks; return { jobId: "tv-job" }; } },
     "../src/activeRunManager": { getActiveRun: () => undefined },
     "../src/tracing": { getTracer: () => ({ startSpan: () => ({ setAttribute() {}, end() {} }) }) },
@@ -77,6 +78,8 @@ test("GPT Live starts with client delegation and no managed backend model", () =
   const fixture = proxyFixture();
   const { azure } = fixture;
   assert.equal(new URL(azure.url!).pathname, "/openai/v1/live/sessions");
+  assert.equal(new URL(azure.url!).hostname, "test-live.openai.azure.com");
+  assert.equal(azure.options?.headers["api-key"], "test-live-key");
   assert.equal(new URL(azure.url!).search, "");
   const start = azure.sent[0];
   assert.equal(start.type, "session.start");

@@ -5,8 +5,8 @@ import type { ToolDefinition } from "../src/agents/core/agentLoop";
 
 // The real SDK runs against an in-process model; no Azure credentials or network
 // access are needed even though the service initializes its default provider.
-process.env.AZURE_OPENAI_RESOURCE_NAME ??= "agent-loop-test";
-process.env.AZURE_OPENAI_API_KEY ??= "agent-loop-test";
+process.env.AZURE_OPENAI_RESOURCE_NAME_EUS ??= "agent-loop-test";
+process.env.AZURE_OPENAI_API_KEY_EUS ??= "agent-loop-test";
 
 type ModelResult = Awaited<ReturnType<MockLanguageModelV4["doGenerate"]>>;
 

@@ -1,10 +1,26 @@
 import dotenv from "dotenv";
+import { formatModelSettingsIdentity } from "../../modelSettings";
+import { MODEL_CATALOG } from "../../modelCatalog";
 import { setTimeout as delay } from "node:timers/promises";
 import { EvalStore } from "../store";
 import { installNetworkBoundary } from "../network";
 import { onlineEvalConfig } from "./config";
 import { OnlineEvalEngine, type OnlineJudges } from "./engine";
 import { ONLINE_REVIEW_INSTRUCTIONS } from "./quality";
+
+async function loadJudges(): Promise<OnlineJudges> {
+  const settings = await import("../../config");
+  const { onlineJudge, onlineReviewer } = MODEL_CATALOG;
+  const judgeIdentity = formatModelSettingsIdentity(onlineJudge);
+  const reviewerIdentity = formatModelSettingsIdentity(onlineReviewer);
+  // Model calls only. No live tools, web fetches, or historical device replays.
+  installNetworkBoundary([onlineJudge, onlineReviewer].map(({ model }) => settings.foundryConnectionFor(model).hostname));
+  const { createLlmJudge } = await import("../judge");
+  return {
+    judgeModel: judgeIdentity, reviewerModel: reviewerIdentity, primary: await createLlmJudge(judgeIdentity, [], ""),
+    reviewer: await createLlmJudge(reviewerIdentity, [], ONLINE_REVIEW_INSTRUCTIONS),
+  };
+}
 
 export async function runOnlineWorker(signal: AbortSignal): Promise<void> {
   dotenv.config({ quiet: true });
@@ -13,27 +29,19 @@ export async function runOnlineWorker(signal: AbortSignal): Promise<void> {
   const store = new EvalStore(config.directory);
   const release = await store.acquire();
   if (!release) return;
-  let judges: Promise<OnlineJudges> | undefined;
-  const engine = new OnlineEvalEngine(store, config, () => judges ??= (async () => {
-    const settings = await import("../../config");
-    const judgeModel = process.env.ONLINE_EVAL_JUDGE_MODEL || process.env.OFFLINE_EVAL_JUDGE_MODEL || settings.AI_MODEL_ADVANCED;
-    const reviewerModel = process.env.ONLINE_EVAL_REVIEW_MODEL || judgeModel;
-    if (!judgeModel || !reviewerModel || !settings.AZURE_OPENAI_RESOURCE_NAME) throw new Error("Configure online eval judge models and the Azure model endpoint");
-    // Model calls only. No live tools, web fetches, or historical device replays.
-    installNetworkBoundary(`${settings.AZURE_OPENAI_RESOURCE_NAME}.openai.azure.com`);
-    const { createLlmJudge } = await import("../judge");
-    return {
-      judgeModel, reviewerModel, primary: await createLlmJudge(judgeModel),
-      reviewer: await createLlmJudge(reviewerModel, [], ONLINE_REVIEW_INSTRUCTIONS),
-    };
-  })());
   const heartbeat = (error?: string) => store.write("state", {
     id: "worker", pid: process.pid, updatedAt: new Date().toISOString(), error,
   });
-  const timer = setInterval(() => { void heartbeat().catch(error => console.error("[Online eval heartbeat]", error)); }, 10_000);
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let failure: string | undefined;
   try {
+    let judges: Promise<OnlineJudges> | undefined;
+    const getJudges = () => judges ??= loadJudges();
+    const engine = new OnlineEvalEngine(store, config, getJudges);
     const enrollment = await engine.enroll();
     await engine.recover();
+    await getJudges();
+    timer = setInterval(() => { void heartbeat().catch(error => console.error("[Online eval heartbeat]", error)); }, 10_000);
     // Import only the read-side trace store; never initialize the agent or telemetry SDK here.
     const { getAllTraces } = await import("../../tracing/agentTraceStore");
     while (!signal.aborted) {
@@ -49,10 +57,14 @@ export async function runOnlineWorker(signal: AbortSignal): Promise<void> {
       }
       await delay(config.pollMs, undefined, { signal }).catch(error => { if (!signal.aborted) throw error; });
     }
+  } catch (error) {
+    failure = error instanceof Error ? error.message : String(error);
+    throw error;
   } finally {
     clearInterval(timer);
-    await store.write("state", { id: "worker", pid: process.pid, updatedAt: new Date().toISOString(), stopped: true });
-    await release();
+    try {
+      await store.write("state", { id: "worker", pid: process.pid, updatedAt: new Date().toISOString(), stopped: true, error: failure });
+    } finally { await release(); }
   }
 }
 

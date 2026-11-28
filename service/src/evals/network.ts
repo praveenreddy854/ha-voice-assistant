@@ -1,9 +1,9 @@
 import http from "node:http";
 import https from "node:https";
 
-export function networkAllowed(url: URL, method: string, headers: Record<string, unknown>, modelHost: string, cosmosHost?: string): boolean {
+export function networkAllowed(url: URL, method: string, headers: Record<string, unknown>, modelHosts: readonly string[], cosmosHost?: string): boolean {
   if (url.protocol !== "https:" || (url.port && url.port !== "443") || url.username || url.password) return false;
-  if (url.hostname === modelHost && url.pathname.startsWith("/openai/")) return true;
+  if (modelHosts.includes(url.hostname) && url.pathname.startsWith("/openai/")) return true;
   if (cosmosHost && url.hostname === cosmosHost) {
     if (["GET", "HEAD"].includes(method.toUpperCase())) return true;
     const normalized = Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), String(value).toLowerCase()]));
@@ -16,9 +16,9 @@ export function networkAllowed(url: URL, method: string, headers: Record<string,
   return false;
 }
 /** Install before importing live tool modules. Only the worker calls this. */
-export function installNetworkBoundary(modelHost: string, cosmosHost?: string): void {
+export function installNetworkBoundary(modelHosts: readonly string[], cosmosHost?: string): void {
   const assert = (url: URL, method = "GET", headers: Record<string, unknown> = {}) => {
-    if (!networkAllowed(url, method, headers, modelHost, cosmosHost)) throw new Error(`Offline eval blocked network access to ${url.origin}${url.pathname}`);
+    if (!networkAllowed(url, method, headers, modelHosts, cosmosHost)) throw new Error(`Offline eval blocked network access to ${url.origin}${url.pathname}`);
   };
   const fetch = globalThis.fetch;
   globalThis.fetch = async (input, init) => {

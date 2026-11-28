@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AI_MODEL_ADVANCED, USER_ADDRESS } from "./config";
+import { AI_MODEL_ADVANCED, AI_MODEL_ADVANCED_REASONING_EFFORT, USER_ADDRESS } from "./config";
 import {
   executeHomeAssistantCapability,
   executeScheduledTaskCapability,
@@ -211,6 +211,7 @@ async function runTextRequest(options: TextAssistantRunOptions): Promise<TextAss
     tools: buildTools(options),
     maxIterations: 16,
     model: AI_MODEL_ADVANCED,
+    reasoningEffort: AI_MODEL_ADVANCED_REASONING_EFFORT,
   });
   const session = loop.createSession(
     options.command,

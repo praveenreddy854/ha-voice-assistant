@@ -482,7 +482,7 @@ The [local data audit](./offline-eval-data-audit.md) supports starting recorded-
 ## Remaining refinements and current limits
 
 - TV fixtures render simplified screens and model tool effects. They exercise the current prompt, skills, tool contracts, and shared model loop, while replacing live executors and persistence. They do not establish full fidelity to every real TV UI or device integration.
-- The judge deployment is configurable independently through `OFFLINE_EVAL_JUDGE_MODEL`. TV calibration checks six reviewed categorical cases and nine rubric-derived recorded-scoring fixtures; ScheduledTaskAgent and Realtime each check their six categorical starter cases. Reports are agent-scoped. A separately reviewed held-out set is still needed before claiming broader grader accuracy.
+- The [model catalog](../service/src/modelCatalog.ts) selects the `offlineJudge` independently of the assessed model. TV calibration checks six reviewed categorical cases and nine rubric-derived recorded-scoring fixtures; ScheduledTaskAgent and Realtime each check their six categorical starter cases. Reports are agent-scoped. A separately reviewed held-out set is still needed before claiming broader grader accuracy.
 - ScheduledTask fixtures model task-management behavior, not future firing reliability. Realtime fixtures assess native-model text/tool decisions, not wake-word detection, ASR, microphone timing, audio rendering or a real specialist's eventual execution.
 - Spending caps remain deferred. Timing comparisons are simulated execution wall times with virtual device waits, not a measurement of real device latency.
 - Notifications currently use persistent dashboard alerts. External delivery has no selected destination.

@@ -97,6 +97,7 @@ function getOrCreateLoop(def: AgentDefinition): AgentLoop {
       tools,
       maxIterations: def.maxIterations,
       model: def.model,
+      reasoningEffort: def.reasoningEffort,
       onStepFinish: (event) => {
         const toolNames = event.toolCalls.map((tc) => tc.toolName).join(", ") || "none";
         console.log(
@@ -109,6 +110,7 @@ function getOrCreateLoop(def: AgentDefinition): AgentLoop {
             timestamp: new Date().toISOString(),
             finishReason: event.finishReason,
             requestModel: event.requestModel,
+            reasoningEffort: event.reasoningEffort,
             responseModel: event.responseModel,
             responseId: event.responseId,
             provider: event.provider,

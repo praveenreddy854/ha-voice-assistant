@@ -1,6 +1,7 @@
 import { Container, CosmosClient, PartitionKeyKind } from "@azure/cosmos";
 import { embed } from "ai";
-import { azureProvider } from "../../ai";
+import { azureEmbeddingModel } from "../../ai";
+import { safeErrorDetails } from "../../logSanitizer";
 import {
   AZURE_COSMOS_DATABASE,
   AZURE_COSMOS_ENDPOINT,
@@ -189,14 +190,12 @@ function getPrimaryDeviceId(steps: TvAgentStep[]): string {
 }
 
 async function generateEmbedding(text: string): Promise<number[]> {
+  const model = azureEmbeddingModel(EMBEDDING_MODEL);
   try {
-    const { embedding } = await embed({
-      model: azureProvider.embeddingModel(EMBEDDING_MODEL),
-      value: text,
-    });
+    const { embedding } = await embed({ model, value: text });
     return embedding;
   } catch (error) {
-    console.error("[TV Flow Memory] Embedding generation failed", error);
+    console.error("[TV Flow Memory] Embedding generation failed", safeErrorDetails(error));
     return [];
   }
 }
@@ -378,7 +377,10 @@ export async function saveTvFlowMemory(
   const normalizedTaskText = normalizeTaskText(params.userPrompt);
   const primaryDeviceId = getPrimaryDeviceId(params.steps);
   const embeddingText = buildEmbeddingText(params.userPrompt, params.steps);
-  const embedding = await generateEmbedding(embeddingText);
+  const embedding = await generateEmbedding(embeddingText).catch((error) => {
+    console.warn("[TV Flow Memory] Saving flow history without an embedding", safeErrorDetails(error));
+    return [];
+  });
   const executionScore = computeExecutionScore(
     params.status,
     params.success,

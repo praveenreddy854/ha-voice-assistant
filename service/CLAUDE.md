@@ -13,15 +13,15 @@ npm --filter server dev
 
 ### Three-Tier Model System
 
-All AI calls use the Vercel AI SDK (`ai` + `@ai-sdk/azure`). Models are configured via three environment variables:
+The Vercel AI SDK (`ai` + `@ai-sdk/azure`) uses the deployment, region and reasoning profiles in `src/modelCatalog.ts`:
 
-| Env Var | Tier | Used For |
+| Config export | Tier | Used For |
 |---|---|---|
 | `AI_MODEL_NANO` | Nano | Simple JSON extraction |
 | `AI_MODEL_MINI` | Mini | HA commands, vision helpers (TV detection, screenshot analysis) |
 | `AI_MODEL_ADVANCED` | Advanced | Agent loops (TV agent) |
 
-Each tier falls back to the one below: `AI_MODEL_ADVANCED` → `AI_MODEL_MINI` → `AI_MODEL_NANO`.
+Edit the catalog to upgrade a tier. Resource names and keys belong only in the environment. Keep `EMBEDDING_MODEL` set to the existing deployment when migrating stored vectors to the regional configuration.
 
 ### AI Service Layer (`src/ai.ts`)
 
@@ -95,11 +95,10 @@ Agent telemetry is written to daily JSONL files in `service/logs/`:
 ## Required Environment Variables
 
 ```
-AZURE_OPENAI_API_KEY=
-AZURE_OPENAI_RESOURCE_NAME=       # or AZURE_OPENAI_ENDPOINT (resource name extracted)
-AI_MODEL_NANO=                     # e.g. gpt-4o-mini
-AI_MODEL_MINI=                     # e.g. gpt-4o-mini
-AI_MODEL_ADVANCED=                 # e.g. gpt-4o
+AZURE_OPENAI_API_KEY_EUS=
+AZURE_OPENAI_RESOURCE_NAME_EUS=
+AZURE_OPENAI_API_KEY_EUS2=
+AZURE_OPENAI_RESOURCE_NAME_EUS2=
 HOME_ASSISTANT_URL=
 HOME_ASSISTANT_TOKEN=
 HOME_ASSISTANT_DEVICES=            # comma-separated device prefixes
